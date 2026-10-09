@@ -1,36 +1,63 @@
-# main.py
-import tkinter as tk
-import modulo_famiglia # Importa il modulo separato
+import flet as ft
+import os
+import modulo_famiglia
 
-def avvia_app():
-    # Inizializza la finestra principale
-    root = tk.Tk()
-    root.title("App Gestione - Schermata Principale")
-    root.geometry("600x400")
-
-    # Creazione della barra dei menu in alto (la "tendina")
-    barra_menu = tk.Menu(root)
-
-    # Creazione della tendina specifica "Menu"
-    menu_tendina = tk.Menu(barra_menu, tearoff=0)
+def main(page: ft.Page):
+    page.title = "App Famiglia"
     
-    # Aggiunta del pulsante "Famiglia" nella tendina
-    # Quando cliccato, passa la finestra 'root' al modulo_famiglia
-    menu_tendina.add_command(label="Famiglia", command=lambda: modulo_famiglia.apri_schermata_famiglia(root))
+    # Funzione per gestire i cambi di pagina (Routing)
+    def route_change(route):
+        page.views.clear()
+        
+        # 1. Costruiamo sempre la pagina "Home" di base
+        page.views.append(
+            ft.View(
+                "/",
+                [
+                    ft.AppBar(
+                        title=ft.Text("Schermata Principale"), 
+                        bgcolor=ft.colors.BLUE_GREY_900,
+                        color=ft.colors.WHITE,
+                        actions=[
+                            # Questo è il menu a tendina
+                            ft.PopupMenuButton(
+                                items=[
+                                    ft.PopupMenuItem(text="Famiglia", on_click=lambda _: page.go("/famiglia")),
+                                ]
+                            )
+                        ]
+                    ),
+                    ft.Text("Benvenuto!\nClicca sui 3 puntini in alto a destra per aprire il menu.", size=18)
+                ]
+            )
+        )
+        
+        # 2. Se l'utente clicca su "Famiglia", carichiamo la vista dal modulo separato
+        if page.route == "/famiglia":
+            page.views.append(modulo_famiglia.vista_famiglia(page))
+        
+        page.update()
+
+    # Gestisce il tasto "Indietro" del browser
+    def view_pop(view):
+        page.views.pop()
+        top_view = page.views[-1]
+        page.go(top_view.route)
+
+    page.on_route_change = route_change
+    page.on_view_pop = view_pop
     
-    # Aggiunta di un separatore e del pulsante di uscita
-    menu_tendina.add_separator()
-    menu_tendina.add_command(label="Esci", command=root.quit)
-
-    # Associa la tendina alla barra dei menu principale
-    barra_menu.add_cascade(label="Seleziona Modulo", menu=menu_tendina)
-    root.config(menu=barra_menu)
-
-    # Testo di benvenuto nella schermata principale
-    tk.Label(root, text="Benvenuto!\nSeleziona un'opzione dalla tendina in alto.", font=("Arial", 16), justify="center").pack(expand=True)
-
-    # Avvia il loop dell'interfaccia grafica
-    root.mainloop()
+    # Inizializza la prima pagina
+    page.go(page.route)
 
 if __name__ == "__main__":
-    avvia_app()
+    # Cattura la porta assegnata da Render o Codespaces, di default usa 8080
+    porta = int(os.environ.get("PORT", 8080))
+    
+    # Avvia l'app in modalità web server con la sintassi aggiornata
+    ft.app(
+        target=main, 
+        view=ft.AppView.WEB_BROWSER, # <-- Modifica fondamentale
+        port=porta, 
+        host="0.0.0.0"       
+    )

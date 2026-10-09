@@ -1,30 +1,35 @@
-# modulo_famiglia.py
-import tkinter as tk
-from tkinter import messagebox
+import flet as ft
 
-def apri_schermata_famiglia(finestra_principale):
-    # Crea una nuova finestra "figlia" sovrapposta alla principale
-    finestra_famiglia = tk.Toplevel(finestra_principale)
-    finestra_famiglia.title("Gestione Famiglia")
-    finestra_famiglia.geometry("400x300")
+def vista_famiglia(page: ft.Page):
+    # Campo di input per il nome
+    nome_input = ft.TextField(label="Nome del componente", width=300)
 
-    # Titolo della pagina
-    tk.Label(finestra_famiglia, text="Inserisci un nuovo componente", font=("Arial", 14, "bold")).pack(pady=15)
-
-    # Campi di inserimento
-    tk.Label(finestra_famiglia, text="Nome del componente:").pack()
-    entry_nome = tk.Entry(finestra_famiglia, width=30)
-    entry_nome.pack(pady=5)
-
-    def salva_componente():
-        nome = entry_nome.get()
-        if nome:
-            # Qui in futuro inseriremo la connessione per salvare su Supabase
-            print(f"Pronto per salvare '{nome}' su Supabase!")
-            messagebox.showinfo("Successo", f"Componente '{nome}' aggiunto con successo!")
-            entry_nome.delete(0, tk.END) # Svuota il campo dopo il salvataggio
+    def salva_componente(e):
+        if nome_input.value:
+            # Qui in futuro inseriremo la chiamata a Supabase
+            print(f"Pronto per salvare '{nome_input.value}' su Supabase!")
+            
+            # Mostra un messaggio di conferma a schermo
+            page.snack_bar = ft.SnackBar(ft.Text(f"Componente '{nome_input.value}' aggiunto con successo!"))
+            page.snack_bar.open = True
+            
+            # Svuota il campo di testo
+            nome_input.value = ""
+            page.update()
         else:
-            messagebox.showwarning("Attenzione", "Il campo nome non può essere vuoto.")
+            # Mostra un messaggio di errore
+            page.snack_bar = ft.SnackBar(ft.Text("Il campo nome non può essere vuoto."))
+            page.snack_bar.open = True
+            page.update()
 
-    # Pulsante di salvataggio
-    tk.Button(finestra_famiglia, text="Salva", command=salva_componente, bg="lightblue").pack(pady=20)
+    # Costruisce l'interfaccia di questa pagina
+    return ft.View(
+        "/famiglia",
+        [
+            ft.AppBar(title=ft.Text("Gestione Famiglia"), bgcolor=ft.colors.SURFACE_VARIANT),
+            ft.Text("Inserisci un nuovo componente", size=20, weight=ft.FontWeight.BOLD),
+            nome_input,
+            ft.ElevatedButton("Salva Componente", on_click=salva_componente),
+            ft.ElevatedButton("Torna alla Schermata Principale", on_click=lambda _: page.go("/"))
+        ]
+    )
