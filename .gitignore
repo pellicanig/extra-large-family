@@ -1,0 +1,10 @@
+# Ignora il file con le password
+.env
+
+# Ignora l'ambiente virtuale
+.venv/
+venv/
+
+# Ignora i file temporanei di Python
+__pycache__/
+*.pyc
