@@ -1,13 +1,53 @@
 import flet as ft
+from datetime import datetime
+
+# ⚡ TAVOLOZZA COLORI: ESCLUSIVAMENTE 9 PALLINI SENZA TESTO ⚡
+PALETTE_COLORI = [
+    {"nome": "🔴", "hex": "#F44336"},
+    {"nome": "🟠", "hex": "#FF9800"},
+    {"nome": "🟡", "hex": "#FFC107"},
+    {"nome": "🟢", "hex": "#4CAF50"},
+    {"nome": "🔵", "hex": "#2196F3"},
+    {"nome": "🟣", "hex": "#9C27B0"},
+    {"nome": "🟤", "hex": "#795548"},
+    {"nome": "⚫", "hex": "#212121"},
+    {"nome": "⚪", "hex": "#9E9E9E"},
+]
 
 def vista_famiglia(page: ft.Page, supabase):
     
-    # 1. Variabile per tenere in memoria l'ID del componente che stiamo modificando (se Nessuno, stiamo inserendo)
+    # 1. Variabile per tenere in memoria l'ID del componente che stiamo modificando
     id_in_modifica = [None]
+    
+    # Variabile per memorizzare i colori gia' nel DB
+    dati_famiglia_memoria = []
 
     # 2. Campi di input
     nome_input = ft.TextField(label="Nome e Cognome", expand=True)
-    nascita_input = ft.TextField(label="Data di nascita (es. 12/05/1990)", expand=True)
+    
+    def formatta_data_nascita(e):
+        valore_pulito = "".join([c for c in nascita_input.value if c.isdigit()])
+        
+        risultato = ""
+        for i, num in enumerate(valore_pulito):
+            if i == 2 or i == 4:
+                risultato += "/"
+            risultato += num
+        
+        # Tronca a 10 caratteri via codice per evitare errori di Flet
+        risultato = risultato[:10] 
+        
+        if nascita_input.value != risultato:
+            nascita_input.value = risultato
+            nascita_input.error_text = None
+            page.update()
+
+    nascita_input = ft.TextField(
+        label="Data di nascita (es. 12/05/1990)", 
+        expand=True,
+        on_change=formatta_data_nascita
+    )
+    
     ruolo_input = ft.Dropdown(
         label="Ruolo nella famiglia",
         options=[
@@ -18,6 +58,11 @@ def vista_famiglia(page: ft.Page, supabase):
         ],
         expand=True
     )
+    
+    colore_input = ft.Dropdown(label="Colore", expand=True)
+    
+    # ⚡ TESTO DI ERRORE INVISIBILE ⚡
+    txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
     lista_componenti_ui = ft.ListView(expand=True, spacing=10, auto_scroll=True)
 
@@ -36,17 +81,40 @@ def vista_famiglia(page: ft.Page, supabase):
         color=ft.Colors.WHITE,
         bgcolor=ft.Colors.GREY_700,
         width=float("inf"),
-        visible=False # Inizialmente nascosto
+        visible=False 
     )
+    
+    # FUNZIONE PER CALCOLARE I COLORI NON ANCORA PRESI
+    def aggiorna_colori_disponibili():
+        colori_occupati = []
+        for membro in dati_famiglia_memoria:
+            if membro.get('colore') and membro['id'] != id_in_modifica[0]:
+                colori_occupati.append(membro['colore'])
+
+        colori_liberi = [c for c in PALETTE_COLORI if c['hex'] not in colori_occupati]
+        
+        # LOGICA DI EMERGENZA: SE I COLORI FINISCONO, RIMETTI TUTTI A DISPOSIZIONE
+        if not colori_liberi:
+            colori_liberi = PALETTE_COLORI
+            
+        colore_input.options = [ft.dropdown.Option(key=c['hex'], text=c['nome']) for c in colori_liberi]
+        
+        if colori_liberi and id_in_modifica[0] is None:
+            colore_input.value = colori_liberi[0]['hex']
 
     # FUNZIONE PER ANNULLARE LA MODIFICA E SVUOTARE I CAMPI
     def svuota_e_ripristina(e=None):
         id_in_modifica[0] = None
         nome_input.value = ""
+        nome_input.error_text = None
         nascita_input.value = ""
+        nascita_input.error_text = None
         ruolo_input.value = None
+        txt_errore_form.visible = False
         
-        # Riporta il bottone al suo stato originale (blu per salvare)
+        colore_input.value = None
+        aggiorna_colori_disponibili()
+        
         bottone_salva.text = "Salva nel Database"
         bottone_salva.icon = ft.Icons.SAVE
         bottone_salva.bgcolor = ft.Colors.BLUE_900
@@ -57,34 +125,34 @@ def vista_famiglia(page: ft.Page, supabase):
 
     # FUNZIONE PER CARICARE I DATI DA SUPABASE
     def carica_dati():
+        nonlocal dati_famiglia_memoria
         lista_componenti_ui.controls.clear()
         try:
-            # Ordiniamo i dati per data di creazione, così non cambiano posizione dopo una modifica
             risposta = supabase.table("famiglia").select("*").order("creato_il").execute()
-            dati = risposta.data
+            dati_famiglia_memoria = risposta.data
             
-            for componente in dati:
+            aggiorna_colori_disponibili()
+            
+            for componente in dati_famiglia_memoria:
                 crea_scheda_ui(
                     componente['id'], 
                     componente['nome'], 
                     componente.get('ruolo'), 
-                    componente.get('data_nascita')
+                    componente.get('data_nascita'),
+                    componente.get('colore') 
                 )
         except Exception as err:
             print("Errore caricamento dati:", err)
         page.update()
 
     # FUNZIONE PER DISEGNARE LA SCHEDA CON MATITA E CESTINO
-    def crea_scheda_ui(db_id, nome, ruolo, data_nascita):
+    def crea_scheda_ui(db_id, nome, ruolo, data_nascita, colore_assegnato):
         
         def elimina_dal_db(e):
              try:
                  supabase.table("famiglia").delete().eq("id", db_id).execute()
-                 
-                 # Se stiamo eliminando proprio il componente che avevamo messo in modifica, svuotiamo i campi
                  if id_in_modifica[0] == db_id:
                      svuota_e_ripristina()
-                     
                  carica_dati()
                  snack = ft.SnackBar(content=ft.Text(value=f"{nome} eliminato!"))
                  page.overlay.append(snack)
@@ -93,25 +161,31 @@ def vista_famiglia(page: ft.Page, supabase):
              except Exception as err:
                  print("Errore cancellazione:", err)
         
-        # Questa funzione prepara il modulo per l'aggiornamento
         def avvia_modifica(e):
             id_in_modifica[0] = db_id
             nome_input.value = nome
             nascita_input.value = data_nascita or ""
             ruolo_input.value = ruolo
             
-            # Trasforma il pulsante blu in un pulsante arancione di avvertimento
+            aggiorna_colori_disponibili()
+            colore_input.value = colore_assegnato
+            
             bottone_salva.text = "Aggiorna Componente"
             bottone_salva.icon = ft.Icons.EDIT
             bottone_salva.bgcolor = ft.Colors.ORANGE_800
             bottone_annulla.visible = True
             page.update()
 
+        colore_effettivo = colore_assegnato if colore_assegnato else "#9E9E9E"
+        icona_profilo = ft.CircleAvatar(
+            content=ft.Icon(ft.Icons.PERSON, color=ft.Colors.WHITE),
+            bgcolor=colore_effettivo
+        )
+
         scheda = ft.ListTile(
-            leading=ft.Icon(ft.Icons.PERSON),
+            leading=icona_profilo,
             title=ft.Text(f"{nome} ({ruolo or 'Nessun ruolo'})"),
             subtitle=ft.Text(f"Nato/a il: {data_nascita or 'Sconosciuta'}"),
-            # Inseriamo entrambi i pulsanti (matita e cestino) sulla stessa riga a destra
             trailing=ft.Row(
                 controls=[
                     ft.IconButton(ft.Icons.EDIT, icon_color="blue", on_click=avvia_modifica),
@@ -125,39 +199,55 @@ def vista_famiglia(page: ft.Page, supabase):
 
     # FUNZIONE PER INSERIRE O AGGIORNARE IN SUPABASE
     def salva_componente(e):
-        if nome_input.value:
+        # ⚡ RESET STATO ERRORI AD OGNI TENTATIVO DI SALVATAGGIO ⚡
+        txt_errore_form.visible = False
+        nome_input.error_text = None
+        nascita_input.error_text = None
+
+        # ⚡ CONTROLLO NOME ⚡
+        if not nome_input.value:
+            nome_input.error_text = "Obbligatorio"
+            txt_errore_form.value = "⚠️ Attenzione: Il nome è obbligatorio."
+            txt_errore_form.visible = True
+            page.update()
+            return
+
+        # ⚡ CONTROLLO DATA ⚡
+        if nascita_input.value:
             try:
-                record = {
-                    "nome": nome_input.value,
-                    "ruolo": ruolo_input.value,
-                    "data_nascita": nascita_input.value
-                }
-                
-                if id_in_modifica[0] is None:
-                    # Inserimento (se non stiamo modificando nessuno)
-                    supabase.table("famiglia").insert(record).execute()
-                    msg = f"{nome_input.value} salvato nel database!"
-                else:
-                    # Aggiornamento (se stiamo modificando)
-                    supabase.table("famiglia").update(record).eq("id", id_in_modifica[0]).execute()
-                    msg = f"{nome_input.value} aggiornato con successo!"
-                
-                # Ricarichiamo la lista e resettiamo il modulo
-                carica_dati()
-                svuota_e_ripristina()
-                
-                snack = ft.SnackBar(content=ft.Text(value=msg))
-                page.overlay.append(snack)
-                snack.open = True
+                datetime.strptime(nascita_input.value, "%d/%m/%Y")
+            except ValueError:
+                nascita_input.error_text = "Errore"
+                txt_errore_form.value = "⚠️ Formato data non valido! Usa GG/MM/AAAA"
+                txt_errore_form.visible = True
                 page.update()
-                
-            except Exception as err:
-                snack = ft.SnackBar(content=ft.Text(value=f"Errore DB: {err}", color="white"), bgcolor="red")
-                page.overlay.append(snack)
-                snack.open = True
-                page.update()
-        else:
-            snack = ft.SnackBar(content=ft.Text(value="Il nome è obbligatorio!", color="white"), bgcolor="red")
+                return
+
+        try:
+            record = {
+                "nome": nome_input.value,
+                "ruolo": ruolo_input.value,
+                "data_nascita": nascita_input.value,
+                "colore": colore_input.value 
+            }
+            
+            if id_in_modifica[0] is None:
+                supabase.table("famiglia").insert(record).execute()
+                msg = f"{nome_input.value} salvato nel database!"
+            else:
+                supabase.table("famiglia").update(record).eq("id", id_in_modifica[0]).execute()
+                msg = f"{nome_input.value} aggiornato con successo!"
+            
+            carica_dati()
+            svuota_e_ripristina()
+            
+            snack = ft.SnackBar(content=ft.Text(value=msg))
+            page.overlay.append(snack)
+            snack.open = True
+            page.update()
+            
+        except Exception as err:
+            snack = ft.SnackBar(content=ft.Text(value=f"Errore DB: {err}", color="white"), bgcolor="red")
             page.overlay.append(snack)
             snack.open = True
             page.update()
@@ -188,10 +278,9 @@ def vista_famiglia(page: ft.Page, supabase):
                         ft.Divider(height=5, color="transparent"),
                         nome_input,
                         nascita_input,
-                        ruolo_input,
+                        ft.Row([ruolo_input, colore_input]),
                         ft.Divider(height=10, color="transparent"),
-                        
-                        # Inseriamo i bottoni dinamici
+                        txt_errore_form, # ⚡ MESSAGGIO DI ERRORE INIETTATO QUI ⚡
                         bottone_salva,
                         bottone_annulla,
                         
