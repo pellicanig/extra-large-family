@@ -450,19 +450,28 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 for ev in eventi_esistenti:
                     if impegno_esistente and str(ev['id']) == str(impegno_esistente['id']):
                         continue
+                    
+                    # ⚡ TRUCCO "TUTTO IL GIORNO": 00:00 - 23:59 ⚡
+                    o_i = ev.get('ora_inizio') or "00:00"
+                    o_f = ev.get('ora_fine') or "23:59"
+                    
                     a_ids = [f['id_familiare'] for f in ev.get('impegni_familiari', [])]
                     lista_controllo.append({
                         'id': ev['id'],
-                        'ora_inizio': ev.get('ora_inizio'),
-                        'ora_fine': ev.get('ora_fine'),
+                        'ora_inizio': o_i,
+                        'ora_fine': o_f,
                         'assegnatari_ids': a_ids
                     })
                 
                 id_test_corrente = impegno_esistente['id'] if impegno_esistente else 'nuovo_temp'
+                
+                o_i_curr = ora_inizio_db if ora_inizio_db else "00:00"
+                o_f_curr = ora_fine_db if ora_fine_db else "23:59"
+                
                 lista_controllo.append({
                     'id': id_test_corrente,
-                    'ora_inizio': ora_inizio_db,
-                    'ora_fine': ora_fine_db,
+                    'ora_inizio': o_i_curr,
+                    'ora_fine': o_f_curr,
                     'assegnatari_ids': familiari_selezionati
                 })
                 
@@ -501,9 +510,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
                 if esito_conflitto:
                     testi_avviso = {
-                        'lieve': "🟡 ▲ Rilevata Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
-                        'media': "🟠 ▲ Rilevata Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
-                        'grave': "🔴 ▲ ATTENZIONE: Sovrapposizione Grave! Orari sovrapposti con STESSI ASSEGNATARI. Vuoi procedere?"
+                        'lieve': "🟡 ⚠️ Rilevata Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
+                        'media': "🟠 ⚠️ Rilevata Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
+                        'grave': "🔴 ⚠️ ATTENZIONE: Sovrapposizione Grave! Orari sovrapposti con STESSI ASSEGNATARI. Vuoi procedere?"
                     }
                     
                     def conferma_conflitto(ev_click):
