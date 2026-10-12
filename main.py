@@ -1,7 +1,7 @@
 import flet as ft
 import os
 import modulo_famiglia
-import modulo_calendario # 1. Importiamo il nuovo calendario
+import modulo_calendario
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -16,7 +16,8 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def main(page: ft.Page):
-    page.title = "Extra Large Family"
+    # ⚡ QUESTO È IL NOME CHE APPARIRÀ SOTTO L'ICONA SUL TELEFONO ⚡
+    page.title = "ELF" 
     page.theme_mode = ft.ThemeMode.LIGHT
     
     def naviga(route_string):
@@ -26,7 +27,6 @@ def main(page: ft.Page):
     def route_change(e):
         page.views.clear()
         
-        # Schermata Principale (HOME)
         page.views.append(
             ft.View(
                 route="/",
@@ -53,7 +53,6 @@ def main(page: ft.Page):
                             )
                         ]
                     ),
-                    # 2. Inseriamo il calendario a griglia dinamicamente
                     modulo_calendario.crea_calendario(page)
                 ],
                 padding=0 
@@ -82,5 +81,7 @@ if __name__ == "__main__":
     ft.run(
         main,
         port=porta, 
-        host="0.0.0.0"
+        host="0.0.0.0",
+        view=ft.AppView.WEB_BROWSER,
+        assets_dir="assets" # ⚡ FONDAMENTALE: DICE A FLET DI GENERARE IL MANIFEST PWA CON L'ELFO ⚡
     )

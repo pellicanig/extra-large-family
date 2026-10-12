@@ -128,6 +128,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             except:
                 pass
 
+        # ⚡ ETICHETTE PULITE, TESTO RIDOTTO E SUGGERIMENTI INVISIBILI ⚡
         txt_data = ft.TextField(label="Data", hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, expand=2, text_size=13, on_change=formatta_data_input)
         txt_inizio = ft.TextField(label="Inizio", hint_text="HH:MM", value=inizio_iniziale, dense=True, expand=1, text_size=13, on_change=formatta_ora_inizio)
         txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, dense=True, expand=1, text_size=13, on_change=formatta_ora_fine)
