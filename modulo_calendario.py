@@ -438,7 +438,8 @@ def crea_calendario(page: ft.Page):
             
             eventi_oggi = dizionario_eventi.get(data_str, [])
 
-            def crea_card_giorno(imp, espandi=False):
+            # Aggiungi margine_top=0 nei parametri
+            def crea_card_giorno(imp, espandi=False, margine_top=0):
                 titolo = imp.get('titolo', 'Senza Titolo')
                 ora_i = imp.get('ora_inizio')
                 ora_f = imp.get('ora_fine')
@@ -484,6 +485,10 @@ def crea_calendario(page: ft.Page):
                     bgcolor=ft.Colors.WHITE, padding=15, border_radius=8, ink=True, 
                     width=float('inf') if not espandi else None,
                     expand=1 if espandi else 0,
+                    
+                    # ⚡ ECCO LA MODIFICA CHIAVE: Applichiamo il margine superiore ⚡
+                    margin=ft.margin.only(top=margine_top, bottom=10),
+                    
                     border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
                 )
@@ -493,11 +498,24 @@ def crea_calendario(page: ft.Page):
                 
                 for gruppo in gruppi_oggi:
                     if len(gruppo) == 1:
-                        colonna_card_eventi.controls.append(crea_card_giorno(gruppo[0], espandi=False))
+                        colonna_card_eventi.controls.append(crea_card_giorno(gruppo[0], espandi=False, margine_top=0))
                     else:
-                        riga_sovrapposti = ft.Row(spacing=10, width=float('inf'))
+                        # ⚡ Forza l'allineamento in alto per permettere lo sfalsamento
+                        riga_sovrapposti = ft.Row(spacing=10, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                        
+                        # ⚡ Trova l'orario del primissimo evento del gruppo (il più in alto)
+                        minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
+                        
                         for imp in gruppo:
-                            riga_sovrapposti.controls.append(crea_card_giorno(imp, espandi=True))
+                            # Calcola quanti minuti dopo inizia questo specifico evento
+                            minuti_correnti = calcola_minuti(imp.get('ora_inizio'))
+                            differenza_minuti = minuti_correnti - minuti_minimi
+                            
+                            # 1 minuto = 1.5 pixel di scivolamento verso il basso (puoi aumentare/diminuire questo valore)
+                            sfalsamento = differenza_minuti * 1.5 
+                            
+                            riga_sovrapposti.controls.append(crea_card_giorno(imp, espandi=True, margine_top=sfalsamento))
+                            
                         colonna_card_eventi.controls.append(riga_sovrapposti)
             else:
                 colonna_card_eventi.controls.append(
