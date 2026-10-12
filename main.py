@@ -77,13 +77,14 @@ def main(page: ft.Page):
                         title=ft.Column(
                             controls=[
                                 ft.Text("Extra Large Family", weight=ft.FontWeight.BOLD, size=22),
-                                ft.Text(data_odierna_str, size=13, color=ft.Colors.WHITE70, weight=ft.FontWeight.NORMAL)
+                                # Corretto il colore in stringa "white70" per evitare l'errore di attributo
+                                ft.Text(data_odierna_str, size=13, color="white70", weight=ft.FontWeight.NORMAL)
                             ],
                             spacing=0,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER
                         ), 
-                        bgcolor=ft.Colors.BLUE_900,
-                        color=ft.Colors.WHITE,
+                        bgcolor=ft.colors.BLUE_900,
+                        color=ft.colors.WHITE,
                         center_title=True,
                         toolbar_height=70, # Leggermente più alto per far respirare i due testi
                         actions=[
