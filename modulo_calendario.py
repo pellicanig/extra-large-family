@@ -301,6 +301,7 @@ def crea_calendario(page: ft.Page):
                         colonna_indicatori = ft.Column(spacing=1, expand=True, scroll=ft.ScrollMode.AUTO)
                         
                         conteggio = 0
+                        conteggio = 0
                         for gruppo in gruppi_oggi:
                             if conteggio >= 3: break
                             if len(gruppo) == 1:
@@ -313,13 +314,17 @@ def crea_calendario(page: ft.Page):
                                 )
                                 colonna_indicatori.controls.append(indicatore)
                             else:
-                                riga_ind = ft.Row(spacing=1, width=float('inf'))
+                                riga_ind = ft.Row(spacing=1, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                                minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                                 for ev in gruppo:
+                                    minuti_correnti = calcola_minuti(ev.get('ora_inizio'))
+                                    sfalsamento = (minuti_correnti - minuti_minimi) * 0.2  # Scala minima per le celle del mese
                                     indicatore = ft.Container(
                                         content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
                                         bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
                                         padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
-                                        expand=1
+                                        expand=1,
+                                        margin=ft.margin.only(top=sfalsamento)
                                     )
                                     riga_ind.controls.append(indicatore)
                                 colonna_indicatori.controls.append(riga_ind)
@@ -389,14 +394,18 @@ def crea_calendario(page: ft.Page):
                         )
                         colonna_indicatori.controls.append(card_sett)
                     else:
-                        riga_ind = ft.Row(spacing=2, width=float('inf'))
+                        riga_ind = ft.Row(spacing=2, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                        minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                         for ev in gruppo:
+                            minuti_correnti = calcola_minuti(ev.get('ora_inizio'))
+                            sfalsamento = (minuti_correnti - minuti_minimi) * 0.5  # Scala ridotta per la settimana
                             orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
                             card_sett = ft.Container(
                                 content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
                                 bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
                                 padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
-                                expand=1
+                                expand=1,
+                                margin=ft.margin.only(top=sfalsamento)
                             )
                             riga_ind.controls.append(card_sett)
                         colonna_indicatori.controls.append(riga_ind)
@@ -487,7 +496,8 @@ def crea_calendario(page: ft.Page):
                     expand=1 if espandi else 0,
                     
                     # ⚡ ECCO LA MODIFICA CHIAVE: Applichiamo il margine superiore ⚡
-                    margin=ft.margin.only(top=margine_top, bottom=10),
+                    margin=ft.margin.only(top=margine_top, bottom=10), # Oppure semplicemente:
+                    margin=ft.margin.only(top=margine_top, bottom=10) se non importato, usa:
                     
                     border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
