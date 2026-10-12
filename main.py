@@ -1,6 +1,5 @@
 import flet as ft
 import os
-import logging
 from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
@@ -9,83 +8,88 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ⚡ CONFIGURAZIONE LOG PARLANTI ⚡
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logging.info("=== START APP: Inizializzazione Extra Large Family ===")
-
+# Il .strip() rimuove eventuali spazi vuoti invisibili copiati per sbaglio su Render
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
-supabase = None
-messaggio_errore = ""
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    messaggio_errore = "ERRORE: Variabili SUPABASE_URL o SUPABASE_KEY mancanti su Render."
-    logging.error(messaggio_errore)
+@@ -20,41 +19,41 @@
 else:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logging.info("Connessione Supabase configurata con successo.")
+        # Test di connessione reale: proviamo a leggere 1 riga
+        supabase.table('famiglia').select('id').limit(1).execute()
     except Exception as e:
         supabase = None
         messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
-        logging.error(messaggio_errore)
 
+# Array per tradurre il mese in italiano
 MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 
 def main(page: ft.Page):
     page.title = "ELF" 
     page.theme_mode = ft.ThemeMode.LIGHT
-    logging.info(f"Nuovo dispositivo connesso all'app (Sessione ID: {page.session_id})")
-    
+
+    # ⚡ LOG PARLANTE VISIVO ⚡
+    # ⚡ IL "MODULO MONITORAGGIO" INTEGRATO ⚡
+    # Poiché UptimeRobot aprirà questa pagina ogni 5 minuti,
+    # questo ping a Supabase verrà eseguito in automatico 288 volte al giorno,
+    # impedendo per sempre al piano gratuito di congelare il database.
     global messaggio_errore
     if supabase and not messaggio_errore:
         try:
             supabase.table('famiglia').select('id').limit(1).execute()
-            logging.info("Ping Supabase OK (Prevenzione spegnimento piano gratuito UptimeRobot)")
         except Exception as e:
             messaggio_errore = f"ERRORE DB: {str(e)}"
-            logging.error(f"Ping Supabase FALLITO: {e}")
 
     if messaggio_errore:
         page.add(
             ft.Container(
                 content=ft.Text(messaggio_errore, color="white", weight="bold", size=16),
+                bgcolor="red",
+                padding=20,
+                border_radius=10,
+                margin=20,
+                alignment=ft.Alignment(0, 0)
                 bgcolor="red", padding=20, border_radius=10, margin=20, alignment=ft.Alignment(0, 0)
             )
         )
+        return # Ferma l'esecuzione dell'app qui, non carica il calendario
         return 
 
+    # ⚡ MAGIA MULTI-PLAYER: L'ANTENNA RICEVENTE GLOBALE ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
-            logging.info("Broadcast ricevuto: avvio sincronizzazione dati in background sui dispositivi connessi.")
+            # Se la pagina ha una vista attiva configurata per aggiornarsi, la esegue in background
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
 
+    # Iscriviamo questo specifico dispositivo al canale radio di Flet
     page.pubsub.subscribe(ricevi_broadcast)
 
     def naviga(route_string):
-        page.route = route_string
-        route_change(None) 
-    
+@@ -64,7 +63,6 @@
     def route_change(e):
         page.views.clear()
-        
+
+        # Calcolo data odierna in italiano
         oggi = datetime.now()
         data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
-        
-        page.views.append(
-            ft.View(
+
+@@ -73,27 +71,21 @@
                 route="/",
                 controls=[
                     ft.AppBar(
+                        # ⚡ TITOLO PULITO CON DATA SOTTOSTANTE ⚡
                         title=ft.Column(
                             controls=[
                                 ft.Text("Extra Large Family", weight=ft.FontWeight.BOLD, size=22),
                                 ft.Text(data_odierna_str, size=13, color="white70", weight=ft.FontWeight.NORMAL)
                             ],
+                            spacing=0,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER
                             spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER
                         ), 
+                        # Corretto: 'Colors' con la C maiuscola
                         bgcolor=ft.Colors.BLUE_900,
                         color=ft.Colors.WHITE,
                         center_title=True,
@@ -93,38 +97,23 @@ def main(page: ft.Page):
                         actions=[
                             ft.PopupMenuButton(
                                 items=[
+                                    ft.PopupMenuItem(
+                                        content=ft.Text(value="Gestione Famiglia"), 
+                                        on_click=lambda _: naviga("/famiglia")
+                                    )
                                     ft.PopupMenuItem(content=ft.Text(value="Gestione Famiglia"), on_click=lambda _: naviga("/famiglia"))
                                 ]
                             )
                         ]
-                    ),
-                    modulo_calendario.crea_calendario(page)
-                ],
-                padding=0 
-            )
-        )
-        
-        if page.route == "/famiglia":
-            logging.info("L'utente ha aperto la schermata 'Gestione Famiglia'")
-            page.views.append(modulo_famiglia.vista_famiglia(page, supabase))
-        else:
-            logging.info("L'utente ha aperto la schermata 'Calendario principale'")
-        
-        page.update()
-
-    def view_pop(e):
-        page.views.pop()
-        if page.views:
-            page.route = page.views[-1].route
-            page.update()
-
-    page.on_route_change = route_change
-    page.on_view_pop = view_pop
-    
-    page.route = "/"
-    route_change(None)
+@@ -123,10 +115,4 @@
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 8080))
-    logging.info(f"Avvio del server Gunicorn/Flet sulla porta {porta}")
+    ft.run(
+        main,
+        port=porta, 
+        host="0.0.0.0",
+        view=ft.AppView.WEB_BROWSER,
+        assets_dir="assets"
+    )
     ft.run(main, port=porta, host="0.0.0.0", view=ft.AppView.WEB_BROWSER, assets_dir="assets")
