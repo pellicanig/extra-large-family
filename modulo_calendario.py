@@ -115,9 +115,6 @@ def crea_calendario(page: ft.Page):
 
     page.aggiorna_vista_corrente = ricarica_e_aggiorna
 
-    # ==========================================
-    # LOGICA DI AFFIANCAMENTO E SOVRAPPOSIZIONE
-    # ==========================================
     def calcola_minuti(orario_str):
         if not orario_str: return 0
         try:
@@ -129,20 +126,26 @@ def crea_calendario(page: ft.Page):
         gruppi = []
         for ev in lista_eventi:
             inizio = calcola_minuti(ev.get('ora_inizio'))
-            fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else 1440
+            fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
+            if fine <= inizio and ev.get('ora_fine'): fine += 1440 # Gestione orario oltre la mezzanotte
             
             inserito = False
             if gruppi:
-                # Controlla l'ultimo gruppo per vedere se ci sono intersezioni di orario
                 ultimo_gruppo = gruppi[-1]
+                sovrappone = False
                 for g_ev in ultimo_gruppo:
                     g_inizio = calcola_minuti(g_ev.get('ora_inizio'))
-                    g_fine = calcola_minuti(g_ev.get('ora_fine')) if g_ev.get('ora_fine') else 1440
-                    # Se i due eventi si sovrappongono temporalmente
+                    g_fine = calcola_minuti(g_ev.get('ora_fine')) if g_ev.get('ora_fine') else g_inizio + 60
+                    if g_fine <= g_inizio and g_ev.get('ora_fine'): g_fine += 1440
+                    
                     if max(inizio, g_inizio) < min(fine, g_fine):
-                        ultimo_gruppo.append(ev)
-                        inserito = True
+                        sovrappone = True
                         break
+                
+                if sovrappone:
+                    ultimo_gruppo.append(ev)
+                    inserito = True
+                    
             if not inserito:
                 gruppi.append([ev])
         return gruppi
@@ -270,6 +273,105 @@ def crea_calendario(page: ft.Page):
             except Exception as e:
                 print("Errore caricamento impegni:", e)
 
+        # =======================================================
+        # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
+        # =======================================================
+        def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60):
+            titolo = imp.get('titolo', 'Senza Titolo')
+            ora_i = imp.get('ora_inizio')
+            ora_f = imp.get('ora_fine')
+            orario = f"{ora_i[:5]} - {ora_f[:5]}" if ora_i and ora_f else (ora_i[:5] if ora_i else "Tutto il giorno")
+            note = imp.get('note', '')
+
+            cat_dati = imp.get('categorie') or {}
+            cat_nome = cat_dati.get('nome', 'Nessuna')
+            cat_colore = cat_dati.get('colore', '#9E9E9E')
+
+            val_p = imp.get('is_periodico')
+            is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
+            icona_periodico = " 🔄" if is_p else ""
+
+            assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
+            imp['assegnatari_ids'] = assegnatari_ids
+
+            if vista == "Mese":
+                scala = 0.3
+                min_height = 20
+                padding_card = 2
+                border_radius_card = 2
+                content_col = ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
+                bgcolor_card = cat_colore
+                border_card = None
+                
+            elif vista == "Settimana":
+                scala = 0.8
+                min_height = 30
+                padding_card = 4
+                border_radius_card = 4
+                content_col = ft.Column([
+                    ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
+                ], spacing=0, alignment=ft.MainAxisAlignment.START)
+                bgcolor_card = cat_colore
+                border_card = None
+                
+            else: # Giorno
+                scala = 1.5
+                min_height = 60
+                padding_card = 12
+                border_radius_card = 8
+                riga_assegnatari = ft.Row(spacing=3, wrap=True)
+                if len(assegnatari_ids) > 0:
+                    for i, f_id in enumerate(assegnatari_ids):
+                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                        if fam_match:
+                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
+                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=11, color=fam_match.get('colore', ft.Colors.BLUE_900), weight=ft.FontWeight.BOLD))
+                else:
+                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True))
+
+                content_col = ft.Column([
+                    ft.Row([
+                        ft.Container(bgcolor=cat_colore, width=12, height=12, border_radius=6),
+                        ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore),
+                    ], alignment=ft.MainAxisAlignment.START),
+                    ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    riga_assegnatari,
+                    ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
+                ], spacing=3, scroll=ft.ScrollMode.AUTO)
+                bgcolor_card = ft.Colors.WHITE
+                border_card = ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
+
+            spazio_vuoto = offset_minuti * scala
+            altezza_card = max(durata_minuti * scala, min_height)
+
+            card_container = ft.Container(
+                content=content_col,
+                bgcolor=bgcolor_card,
+                padding=padding_card,
+                border_radius=border_radius_card,
+                border=border_card,
+                ink=True,
+                height=altezza_card,
+                on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
+            )
+
+            # Logica robusta per lo sfalsamento senza margin.only
+            if spazio_vuoto > 0:
+                card_container.width = float('inf')
+                wrapper = ft.Column([ft.Container(height=spazio_vuoto), card_container], spacing=0)
+                if espandi:
+                    wrapper.expand = 1
+                return wrapper
+            else:
+                if espandi:
+                    card_container.expand = 1
+                else:
+                    card_container.width = float('inf')
+                return card_container
+
+
         # ==========================================
         # VISUALIZZAZIONE MESE CON AFFIANCAMENTO
         # ==========================================
@@ -301,32 +403,26 @@ def crea_calendario(page: ft.Page):
                         colonna_indicatori = ft.Column(spacing=1, expand=True, scroll=ft.ScrollMode.AUTO)
                         
                         conteggio = 0
-                        conteggio = 0
                         for gruppo in gruppi_oggi:
                             if conteggio >= 3: break
                             if len(gruppo) == 1:
-                                ev = gruppo[0]
-                                indicatore = ft.Container(
-                                    content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
-                                    bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
-                                    padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
-                                    width=float('inf')
-                                )
-                                colonna_indicatori.controls.append(indicatore)
+                                inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
+                                fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
+                                se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
+                                durata = max((fine + se_notte) - inizio, 30)
+                                
+                                colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Mese", espandi=False, offset_minuti=0, durata_minuti=durata))
                             else:
-                                riga_ind = ft.Row(spacing=1, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                                riga_ind = ft.Row(spacing=1, vertical_alignment=ft.CrossAxisAlignment.START)
                                 minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                                 for ev in gruppo:
-                                    minuti_correnti = calcola_minuti(ev.get('ora_inizio'))
-                                    sfalsamento = (minuti_correnti - minuti_minimi) * 0.2  # Scala minima per le celle del mese
-                                    indicatore = ft.Container(
-                                        content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
-                                        bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
-                                        padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
-                                        expand=1,
-                                        margin=ft.margin.only(top=sfalsamento)
-                                    )
-                                    riga_ind.controls.append(indicatore)
+                                    inizio = calcola_minuti(ev.get('ora_inizio'))
+                                    fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
+                                    se_notte = 1440 if (fine <= inizio and ev.get('ora_fine')) else 0
+                                    durata = max((fine + se_notte) - inizio, 30)
+                                    offset = inizio - minuti_minimi
+                                    
+                                    riga_ind.controls.append(crea_card(ev, vista="Mese", espandi=True, offset_minuti=offset, durata_minuti=durata))
                                 colonna_indicatori.controls.append(riga_ind)
                             conteggio += 1
                         
@@ -353,6 +449,7 @@ def crea_calendario(page: ft.Page):
                 ),
                 griglia
             ])
+
 
         # ==========================================
         # VISUALIZZAZIONE SETTIMANA CON AFFIANCAMENTO
@@ -384,30 +481,23 @@ def crea_calendario(page: ft.Page):
                 
                 for gruppo in gruppi_oggi:
                     if len(gruppo) == 1:
-                        ev = gruppo[0]
-                        orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
-                        card_sett = ft.Container(
-                            content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
-                            bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
-                            padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
-                            width=float('inf')
-                        )
-                        colonna_indicatori.controls.append(card_sett)
+                        inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
+                        fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
+                        se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
+                        durata = max((fine + se_notte) - inizio, 30)
+                        
+                        colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Settimana", espandi=False, offset_minuti=0, durata_minuti=durata))
                     else:
-                        riga_ind = ft.Row(spacing=2, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                        riga_ind = ft.Row(spacing=2, vertical_alignment=ft.CrossAxisAlignment.START)
                         minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                         for ev in gruppo:
-                            minuti_correnti = calcola_minuti(ev.get('ora_inizio'))
-                            sfalsamento = (minuti_correnti - minuti_minimi) * 0.5  # Scala ridotta per la settimana
-                            orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
-                            card_sett = ft.Container(
-                                content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
-                                bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
-                                padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
-                                expand=1,
-                                margin=ft.margin.only(top=sfalsamento)
-                            )
-                            riga_ind.controls.append(card_sett)
+                            inizio = calcola_minuti(ev.get('ora_inizio'))
+                            fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
+                            se_notte = 1440 if (fine <= inizio and ev.get('ora_fine')) else 0
+                            durata = max((fine + se_notte) - inizio, 30)
+                            offset = inizio - minuti_minimi
+                            
+                            riga_ind.controls.append(crea_card(ev, vista="Settimana", espandi=True, offset_minuti=offset, durata_minuti=durata))
                         colonna_indicatori.controls.append(riga_ind)
 
                 layer_settimana.controls.append(
@@ -419,6 +509,7 @@ def crea_calendario(page: ft.Page):
                         expand=1, height=300, border=bordo_standard(), data=gc, on_click=vai_a_giorno
                     )
                 )
+
 
         # ==========================================
         # VISUALIZZAZIONE GIORNO CON AFFIANCAMENTO
@@ -447,83 +538,29 @@ def crea_calendario(page: ft.Page):
             
             eventi_oggi = dizionario_eventi.get(data_str, [])
 
-            # Aggiungi margine_top=0 nei parametri
-            def crea_card_giorno(imp, espandi=False, margine_top=0):
-                titolo = imp.get('titolo', 'Senza Titolo')
-                ora_i = imp.get('ora_inizio')
-                ora_f = imp.get('ora_fine')
-                orario = f"{ora_i[:5]} - {ora_f[:5]}" if ora_i and ora_f else (ora_i[:5] if ora_i else "Tutto il giorno")
-                note = imp.get('note', '')
-                
-                cat_dati = imp.get('categorie') or {}
-                cat_nome = cat_dati.get('nome', 'Nessuna')
-                cat_colore = cat_dati.get('colore', '#9E9E9E')
-
-                val_p = imp.get('is_periodico')
-                is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
-                icona_periodico = " 🔄" if is_p else ""
-
-                assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
-                imp['assegnatari_ids'] = assegnatari_ids
-                
-                riga_assegnatari = ft.Row(spacing=3, wrap=True)
-                if len(assegnatari_ids) > 0:
-                    for i, f_id in enumerate(assegnatari_ids):
-                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
-                        if fam_match:
-                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            riga_assegnatari.controls.append(
-                                ft.Text(nome_testo, size=11, color=fam_match.get('colore', ft.Colors.BLUE_900), weight=ft.FontWeight.BOLD)
-                            )
-                else:
-                    riga_assegnatari.controls.append(
-                        ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True)
-                    )
-
-                return ft.Container(
-                    content=ft.Column([
-                        ft.Row([
-                            ft.Container(bgcolor=cat_colore, width=12, height=12, border_radius=6),
-                            ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore),
-                        ], alignment=ft.MainAxisAlignment.START),
-                        ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                        ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
-                        riga_assegnatari,
-                        ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
-                    ], spacing=3),
-                    bgcolor=ft.Colors.WHITE, padding=15, border_radius=8, ink=True, 
-                    width=float('inf') if not espandi else None,
-                    expand=1 if espandi else 0,
-                    
-                    # ⚡ ECCO LA MODIFICA CHIAVE: Applichiamo il margine superiore ⚡
-                    margin=ft.margin.only(top=margine_top),
-                    
-                    border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
-                    on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
-                )
-
             if eventi_oggi:
                 gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
                 
                 for gruppo in gruppi_oggi:
                     if len(gruppo) == 1:
-                        colonna_card_eventi.controls.append(crea_card_giorno(gruppo[0], espandi=False, margine_top=0))
-                    else:
-                        # ⚡ Forza l'allineamento in alto per permettere lo sfalsamento
-                        riga_sovrapposti = ft.Row(spacing=10, width=float('inf'), vertical_alignment=ft.CrossAxisAlignment.START)
+                        inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
+                        fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
+                        se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
+                        durata = max((fine + se_notte) - inizio, 30)
                         
-                        # ⚡ Trova l'orario del primissimo evento del gruppo (il più in alto)
+                        colonna_card_eventi.controls.append(crea_card(gruppo[0], vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=durata))
+                    else:
+                        riga_sovrapposti = ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
                         minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                         
                         for imp in gruppo:
-                            # Calcola quanti minuti dopo inizia questo specifico evento
-                            minuti_correnti = calcola_minuti(imp.get('ora_inizio'))
-                            differenza_minuti = minuti_correnti - minuti_minimi
+                            inizio = calcola_minuti(imp.get('ora_inizio'))
+                            fine = calcola_minuti(imp.get('ora_fine')) if imp.get('ora_fine') else inizio + 60
+                            se_notte = 1440 if (fine <= inizio and imp.get('ora_fine')) else 0
+                            durata = max((fine + se_notte) - inizio, 30)
+                            offset = inizio - minuti_minimi
                             
-                            # 1 minuto = 1.5 pixel di scivolamento verso il basso (puoi aumentare/diminuire questo valore)
-                            sfalsamento = differenza_minuti * 1.5 
-                            
-                            riga_sovrapposti.controls.append(crea_card_giorno(imp, espandi=True, margine_top=sfalsamento))
+                            riga_sovrapposti.controls.append(crea_card(imp, vista="Giorno", espandi=True, offset_minuti=offset, durata_minuti=durata))
                             
                         colonna_card_eventi.controls.append(riga_sovrapposti)
             else:
