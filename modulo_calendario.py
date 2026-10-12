@@ -113,8 +113,39 @@ def crea_calendario(page: ft.Page):
         ricarica_dati_base()
         aggiorna_tutto()
 
-    # ⚡ DICIAMO AL MAIN CHE SE RICEVE UN SEGNALE DI SYNC DA ALTRI, DEVE USARE QUESTA FUNZIONE ⚡
     page.aggiorna_vista_corrente = ricarica_e_aggiorna
+
+    # ==========================================
+    # LOGICA DI AFFIANCAMENTO E SOVRAPPOSIZIONE
+    # ==========================================
+    def calcola_minuti(orario_str):
+        if not orario_str: return 0
+        try:
+            h, m = map(int, str(orario_str)[:5].split(':'))
+            return h * 60 + m
+        except: return 0
+
+    def ottieni_gruppi_sovrapposti(lista_eventi):
+        gruppi = []
+        for ev in lista_eventi:
+            inizio = calcola_minuti(ev.get('ora_inizio'))
+            fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else 1440
+            
+            inserito = False
+            if gruppi:
+                # Controlla l'ultimo gruppo per vedere se ci sono intersezioni di orario
+                ultimo_gruppo = gruppi[-1]
+                for g_ev in ultimo_gruppo:
+                    g_inizio = calcola_minuti(g_ev.get('ora_inizio'))
+                    g_fine = calcola_minuti(g_ev.get('ora_fine')) if g_ev.get('ora_fine') else 1440
+                    # Se i due eventi si sovrappongono temporalmente
+                    if max(inizio, g_inizio) < min(fine, g_fine):
+                        ultimo_gruppo.append(ev)
+                        inserito = True
+                        break
+            if not inserito:
+                gruppi.append([ev])
+        return gruppi
 
     def aggiorna_tutto():
         vista = stato["vista"]
@@ -140,9 +171,7 @@ def crea_calendario(page: ft.Page):
                 content=ft.Text("Tutte", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_tutte_cat else ft.Colors.BLACK), 
                 bgcolor=ft.Colors.BLUE_900 if is_tutte_cat else ft.Colors.TRANSPARENT, 
                 border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutte_cat else ft.Colors.GREY_400),
-                padding=6, 
-                border_radius=15, 
-                on_click=lambda e: imposta_filtro_cat(None)
+                padding=6, border_radius=15, on_click=lambda e: imposta_filtro_cat(None)
             )
         )
         
@@ -153,9 +182,7 @@ def crea_calendario(page: ft.Page):
                     content=ft.Text(c['nome'], size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else c['colore']), 
                     bgcolor=c['colore'] if is_sel else ft.Colors.TRANSPARENT, 
                     border=bordo_personalizzato(c['colore']), 
-                    padding=6, 
-                    border_radius=15, 
-                    on_click=lambda e, cid=c['id']: imposta_filtro_cat(cid)
+                    padding=6, border_radius=15, on_click=lambda e, cid=c['id']: imposta_filtro_cat(cid)
                 )
             )
 
@@ -165,9 +192,7 @@ def crea_calendario(page: ft.Page):
                 content=ft.Text("Tutti", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_tutti_fam else ft.Colors.BLACK), 
                 bgcolor=ft.Colors.BLUE_900 if is_tutti_fam else ft.Colors.TRANSPARENT, 
                 border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutti_fam else ft.Colors.GREY_400),
-                padding=6, 
-                border_radius=15, 
-                on_click=lambda e: imposta_filtro_fam(None)
+                padding=6, border_radius=15, on_click=lambda e: imposta_filtro_fam(None)
             )
         )
         
@@ -179,9 +204,7 @@ def crea_calendario(page: ft.Page):
                     content=ft.Text(f['nome'], size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else colore_fam), 
                     bgcolor=colore_fam if is_sel else ft.Colors.TRANSPARENT, 
                     border=bordo_personalizzato(colore_fam), 
-                    padding=6, 
-                    border_radius=15, 
-                    on_click=lambda e, fid=f['id']: imposta_filtro_fam(fid)
+                    padding=6, border_radius=15, on_click=lambda e, fid=f['id']: imposta_filtro_fam(fid)
                 )
             )
 
@@ -239,7 +262,6 @@ def crea_calendario(page: ft.Page):
                                     dizionario_eventi[d_str] = []
                                 dizionario_eventi[d_str].append(imp)
                                 
-                # ⚡ ORDINAMENTO PULITO: "Tutto il giorno" prima (0), poi cronologico (1) ⚡
                 for k in dizionario_eventi:
                     dizionario_eventi[k].sort(
                         key=lambda x: (0 if not x.get('ora_inizio') else 1, x.get('ora_inizio') or '24:00')
@@ -248,6 +270,9 @@ def crea_calendario(page: ft.Page):
             except Exception as e:
                 print("Errore caricamento impegni:", e)
 
+        # ==========================================
+        # VISUALIZZAZIONE MESE CON AFFIANCAMENTO
+        # ==========================================
         if vista == "Mese":
             testo_header.value = f"{MESI[data.month]} {data.year}"
             layer_mese.controls.clear()
@@ -263,7 +288,9 @@ def crea_calendario(page: ft.Page):
                         is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
                         is_sel = (giorno == data.day)
                         data_str = data.replace(day=giorno).strftime("%Y-%m-%d")
+                        
                         eventi_oggi = dizionario_eventi.get(data_str, [])
+                        gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
 
                         cerchio = ft.Container(
                             content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
@@ -271,20 +298,35 @@ def crea_calendario(page: ft.Page):
                             border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
                         )
 
-                        # ⚡ VISTA MESE: COLONNA SEMPLICE ⚡
                         colonna_indicatori = ft.Column(spacing=1, expand=True, scroll=ft.ScrollMode.AUTO)
                         
-                        for ev in eventi_oggi[:3]: # Massimo 3 eventi visibili
-                            indicatore = ft.Container(
-                                content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
-                                bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
-                                padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
-                                width=float('inf') # 100% larghezza
-                            )
-                            colonna_indicatori.controls.append(indicatore)
+                        conteggio = 0
+                        for gruppo in gruppi_oggi:
+                            if conteggio >= 3: break
+                            if len(gruppo) == 1:
+                                ev = gruppo[0]
+                                indicatore = ft.Container(
+                                    content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
+                                    bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
+                                    padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
+                                    width=float('inf')
+                                )
+                                colonna_indicatori.controls.append(indicatore)
+                            else:
+                                riga_ind = ft.Row(spacing=1, width=float('inf'))
+                                for ev in gruppo:
+                                    indicatore = ft.Container(
+                                        content=ft.Text(ev.get('titolo', ''), size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
+                                        bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'),
+                                        padding=2, border_radius=2, alignment=ft.Alignment(-1, 0),
+                                        expand=1
+                                    )
+                                    riga_ind.controls.append(indicatore)
+                                colonna_indicatori.controls.append(riga_ind)
+                            conteggio += 1
                         
-                        if len(eventi_oggi) > 3:
-                            colonna_indicatori.controls.append(ft.Text(f"+{len(eventi_oggi)-3} altri", size=7, color=ft.Colors.GREY_600))
+                        if len(gruppi_oggi) > 3:
+                            colonna_indicatori.controls.append(ft.Text(f"+ altri", size=7, color=ft.Colors.GREY_600))
 
                         riga.controls.append(
                             ft.Container(
@@ -307,6 +349,9 @@ def crea_calendario(page: ft.Page):
                 griglia
             ])
 
+        # ==========================================
+        # VISUALIZZAZIONE SETTIMANA CON AFFIANCAMENTO
+        # ==========================================
         elif vista == "Settimana":
             lunedi = data - timedelta(days=data.weekday())
             domenica = lunedi + timedelta(days=6)
@@ -315,7 +360,9 @@ def crea_calendario(page: ft.Page):
             for i in range(7):
                 gc = lunedi + timedelta(days=i)
                 data_str = gc.strftime("%Y-%m-%d")
+                
                 eventi_oggi = dizionario_eventi.get(data_str, [])
+                gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
 
                 intestazione = ft.Container(
                     content=ft.Column([
@@ -328,18 +375,31 @@ def crea_calendario(page: ft.Page):
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0), padding=5
                 )
 
-                # ⚡ VISTA SETTIMANA: LISTA VERTICALE PULITA A 100% LARGHEZZA ⚡
                 colonna_indicatori = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
                 
-                for ev in eventi_oggi:
-                    orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
-                    card_sett = ft.Container(
-                        content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
-                        bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
-                        padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
-                        width=float('inf') # 100% larghezza
-                    )
-                    colonna_indicatori.controls.append(card_sett)
+                for gruppo in gruppi_oggi:
+                    if len(gruppo) == 1:
+                        ev = gruppo[0]
+                        orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
+                        card_sett = ft.Container(
+                            content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
+                            bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
+                            padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
+                            width=float('inf')
+                        )
+                        colonna_indicatori.controls.append(card_sett)
+                    else:
+                        riga_ind = ft.Row(spacing=2, width=float('inf'))
+                        for ev in gruppo:
+                            orario = f"{ev.get('ora_inizio')[:5]}\n" if ev.get('ora_inizio') else ""
+                            card_sett = ft.Container(
+                                content=ft.Text(f"{orario}{ev.get('titolo', '')}", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True), 
+                                bgcolor=(ev.get('categorie') or {}).get('colore', '#9E9E9E'), 
+                                padding=3, border_radius=3, alignment=ft.Alignment(-1, 0),
+                                expand=1
+                            )
+                            riga_ind.controls.append(card_sett)
+                        colonna_indicatori.controls.append(riga_ind)
 
                 layer_settimana.controls.append(
                     ft.Container(
@@ -351,6 +411,9 @@ def crea_calendario(page: ft.Page):
                     )
                 )
 
+        # ==========================================
+        # VISUALIZZAZIONE GIORNO CON AFFIANCAMENTO
+        # ==========================================
         elif vista == "Giorno":
             testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
             is_oggi = (data.date() == oggi.date())
@@ -364,69 +427,78 @@ def crea_calendario(page: ft.Page):
                 padding=10, border=bordo_standard()
             )
             
-            # ⚡ PASSIAMO IL SEGNALE "AGGIORNA DATI" AL FORM TRAMITE CALLBACK ⚡
             btn_aggiungi_evento = ft.Container(
                 content=ft.Text("➕ Aggiungi Impegno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                 bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, alignment=ft.Alignment(0, 0),
                 on_click=lambda e: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"))
             )
 
-            # ⚡ VISTA GIORNO: LISTA VERTICALE AMPIA E PULITA ⚡
             colonna_card_eventi = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, spacing=10)
             data_str = data.strftime("%Y-%m-%d")
+            
             eventi_oggi = dizionario_eventi.get(data_str, [])
 
-            if eventi_oggi:
-                for imp in eventi_oggi:
-                    titolo = imp.get('titolo', 'Senza Titolo')
-                    ora_i = imp.get('ora_inizio')
-                    ora_f = imp.get('ora_fine')
-                    orario = f"{ora_i[:5]} - {ora_f[:5]}" if ora_i and ora_f else (ora_i[:5] if ora_i else "Tutto il giorno")
-                    note = imp.get('note', '')
-                    
-                    cat_dati = imp.get('categorie') or {}
-                    cat_nome = cat_dati.get('nome', 'Nessuna')
-                    cat_colore = cat_dati.get('colore', '#9E9E9E')
+            def crea_card_giorno(imp, espandi=False):
+                titolo = imp.get('titolo', 'Senza Titolo')
+                ora_i = imp.get('ora_inizio')
+                ora_f = imp.get('ora_fine')
+                orario = f"{ora_i[:5]} - {ora_f[:5]}" if ora_i and ora_f else (ora_i[:5] if ora_i else "Tutto il giorno")
+                note = imp.get('note', '')
+                
+                cat_dati = imp.get('categorie') or {}
+                cat_nome = cat_dati.get('nome', 'Nessuna')
+                cat_colore = cat_dati.get('colore', '#9E9E9E')
 
-                    val_p = imp.get('is_periodico')
-                    is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
-                    icona_periodico = " 🔄" if is_p else ""
+                val_p = imp.get('is_periodico')
+                is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
+                icona_periodico = " 🔄" if is_p else ""
 
-                    assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
-                    imp['assegnatari_ids'] = assegnatari_ids
-                    
-                    riga_assegnatari = ft.Row(spacing=3, wrap=True)
-                    if len(assegnatari_ids) > 0:
-                        for i, f_id in enumerate(assegnatari_ids):
-                            fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
-                            if fam_match:
-                                nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                                riga_assegnatari.controls.append(
-                                    ft.Text(nome_testo, size=11, color=fam_match.get('colore', ft.Colors.BLUE_900), weight=ft.FontWeight.BOLD)
-                                )
-                    else:
-                        riga_assegnatari.controls.append(
-                            ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True)
-                        )
-
-                    card = ft.Container(
-                        content=ft.Column([
-                            ft.Row([
-                                ft.Container(bgcolor=cat_colore, width=12, height=12, border_radius=6),
-                                ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore),
-                            ], alignment=ft.MainAxisAlignment.START),
-                            ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                            ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
-                            riga_assegnatari,
-                            ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
-                        ], spacing=3),
-                        bgcolor=ft.Colors.WHITE, padding=15, border_radius=8, ink=True, 
-                        width=float('inf'), # ⚡ FULL WIDTH: NESSUN SCHIACCIAMENTO ⚡
-                        border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
-                        # ⚡ PASSIAMO IL SEGNALE "AGGIORNA DATI" ANCHE ALLA MODIFICA ⚡
-                        on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
+                assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
+                imp['assegnatari_ids'] = assegnatari_ids
+                
+                riga_assegnatari = ft.Row(spacing=3, wrap=True)
+                if len(assegnatari_ids) > 0:
+                    for i, f_id in enumerate(assegnatari_ids):
+                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                        if fam_match:
+                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
+                            riga_assegnatari.controls.append(
+                                ft.Text(nome_testo, size=11, color=fam_match.get('colore', ft.Colors.BLUE_900), weight=ft.FontWeight.BOLD)
+                            )
+                else:
+                    riga_assegnatari.controls.append(
+                        ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True)
                     )
-                    colonna_card_eventi.controls.append(card)
+
+                return ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Container(bgcolor=cat_colore, width=12, height=12, border_radius=6),
+                            ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore),
+                        ], alignment=ft.MainAxisAlignment.START),
+                        ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
+                        ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
+                        riga_assegnatari,
+                        ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
+                    ], spacing=3),
+                    bgcolor=ft.Colors.WHITE, padding=15, border_radius=8, ink=True, 
+                    width=float('inf') if not espandi else None,
+                    expand=1 if espandi else 0,
+                    border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
+                    on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
+                )
+
+            if eventi_oggi:
+                gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
+                
+                for gruppo in gruppi_oggi:
+                    if len(gruppo) == 1:
+                        colonna_card_eventi.controls.append(crea_card_giorno(gruppo[0], espandi=False))
+                    else:
+                        riga_sovrapposti = ft.Row(spacing=10, width=float('inf'))
+                        for imp in gruppo:
+                            riga_sovrapposti.controls.append(crea_card_giorno(imp, espandi=True))
+                        colonna_card_eventi.controls.append(riga_sovrapposti)
             else:
                 colonna_card_eventi.controls.append(
                     ft.Container(
