@@ -242,6 +242,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     dd_categoria.options.append(ft.dropdown.Option(key=nuovo_id, text=nome_cat))
                     dd_categoria.value = nuovo_id
                     dd_categoria.update()
+                    page.pubsub.send_all("aggiorna_dati") # ⚡ SINCRONIZZA CATEGORIA CON GLI ALTRI
                 except Exception as ex:
                     txt_errore_cat.value = f"⚠️ Errore salvataggio: {ex}"
                     txt_errore_cat.visible = True
@@ -296,6 +297,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if dd_colore_mod.value:
                     try:
                         supabase.table('categorie').update({"colore": dd_colore_mod.value}).eq('id', cat_corrente['id']).execute()
+                        page.pubsub.send_all("aggiorna_dati") # ⚡ SINCRONIZZA IL NUOVO COLORE CON GLI ALTRI
                         if on_success_callback: on_success_callback() 
                     except Exception as ex:
                         txt_errore_mod.value = f"⚠️ Errore modifica: {ex}"
