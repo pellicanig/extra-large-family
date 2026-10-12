@@ -620,10 +620,13 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             
         colonna_contenuto.extend([switch_periodico, txt_avviso_periodico, txt_note, txt_errore_form])
         
-        # ⚡ FORZA IL POPUP AD ESTENDERSI AL MASSIMO CONSENTITO DAL DISPLAY ⚡
+        # ⚡ POPUP ESTESO DINAMICAMENTE AL MASSIMO DEL DISPLAY ⚡
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
-            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=1000, expand=True),
+            content=ft.Container(
+                content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), 
+                width=float('inf')  # ⚡ IL COMANDO CORRETTO PER L'ESTENSIONE MASSIMA
+            ),
             actions=[riga_azioni],
             shape=ft.RoundedRectangleBorder(radius=10),
             content_padding=15
