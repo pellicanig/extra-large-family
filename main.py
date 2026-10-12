@@ -43,6 +43,16 @@ def main(page: ft.Page):
         )
         return # Ferma l'esecuzione dell'app qui, non carica il calendario
 
+    # ⚡ MAGIA MULTI-PLAYER: L'ANTENNA RICEVENTE GLOBALE ⚡
+    def ricevi_broadcast(messaggio):
+        if messaggio == "aggiorna_dati":
+            # Se la pagina ha una vista attiva configurata per aggiornarsi, la esegue in background
+            if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
+                page.aggiorna_vista_corrente()
+
+    # Iscriviamo questo specifico dispositivo al canale radio di Flet
+    page.pubsub.subscribe(ricevi_broadcast)
+
     def naviga(route_string):
         page.route = route_string
         route_change(None) 
