@@ -295,15 +295,14 @@ def crea_calendario(page: ft.Page):
             assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
             imp['assegnatari_ids'] = assegnatari_ids
 
-            # ⚡ IL TRIANGOLO SULLA CARD APPARE SOLO IN VISTA GIORNO ⚡
             icona_conflitto = None
             if vista == "Giorno" and livello_sovrapposizione:
                 if livello_sovrapposizione == 'lieve':
-                    icona_conflitto = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
+                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
                 elif livello_sovrapposizione == 'media':
-                    icona_conflitto = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
+                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
                 elif livello_sovrapposizione == 'grave':
-                    icona_conflitto = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
+                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
             if vista == "Mese":
                 scala = 0.3
@@ -328,8 +327,8 @@ def crea_calendario(page: ft.Page):
                 
             else: # Giorno
                 scala = 1.5
-                min_height = 80 # ⚡ AUMENTATA ALTEZZA MINIMA
-                padding_card = 5  # ⚡ RIDOTTO IL PADDING
+                min_height = 80 
+                padding_card = 5  
                 border_radius_card = 8
                 riga_assegnatari = ft.Row(spacing=3, wrap=True)
                 if len(assegnatari_ids) > 0:
@@ -341,9 +340,9 @@ def crea_calendario(page: ft.Page):
                 else:
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True))
 
-                triangolo_categoria = ft.Text("▲", color=cat_colore, size=12)
+                pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=10)
                 
-                elementi_intestazione = [triangolo_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
                 if icona_conflitto:
                     elementi_intestazione.append(icona_conflitto)
 
@@ -410,7 +409,7 @@ def crea_calendario(page: ft.Page):
                         # ⚡ CALCOLA IL CONFLITTO GLOBALE DELLA GIORNATA ⚡
                         livello_giorno = None
                         if eventi_oggi:
-                            lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio'), 'ora_fine': ev.get('ora_fine'), 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
+                            lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio') or "00:00", 'ora_fine': ev.get('ora_fine') or "23:59", 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
                             mappa = analizza_sovrapposizioni_giornata(lista_analisi)
                             valori = list(mappa.values())
                             if 'grave' in valori: livello_giorno = 'grave'
@@ -418,9 +417,9 @@ def crea_calendario(page: ft.Page):
                             elif 'lieve' in valori: livello_giorno = 'lieve'
 
                         icona_header = None
-                        if livello_giorno == 'lieve': icona_header = ft.Text("▲", color=ft.Colors.YELLOW_700, size=12, weight=ft.FontWeight.BOLD)
-                        elif livello_giorno == 'media': icona_header = ft.Text("▲", color=ft.Colors.ORANGE, size=12, weight=ft.FontWeight.BOLD)
-                        elif livello_giorno == 'grave': icona_header = ft.Text("▲", color=ft.Colors.RED, size=12, weight=ft.FontWeight.BOLD)
+                        if livello_giorno == 'lieve': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=14)
+                        elif livello_giorno == 'media': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=14)
+                        elif livello_giorno == 'grave': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=14)
 
                         cerchio = ft.Container(
                             content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
@@ -498,7 +497,7 @@ def crea_calendario(page: ft.Page):
                 # ⚡ CALCOLA IL CONFLITTO GLOBALE DELLA GIORNATA ⚡
                 livello_giorno = None
                 if eventi_oggi:
-                    lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio'), 'ora_fine': ev.get('ora_fine'), 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
+                    lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio') or "00:00", 'ora_fine': ev.get('ora_fine') or "23:59", 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
                     mappa = analizza_sovrapposizioni_giornata(lista_analisi)
                     valori = list(mappa.values())
                     if 'grave' in valori: livello_giorno = 'grave'
@@ -506,9 +505,9 @@ def crea_calendario(page: ft.Page):
                     elif 'lieve' in valori: livello_giorno = 'lieve'
 
                 icona_header = None
-                if livello_giorno == 'lieve': icona_header = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
-                elif livello_giorno == 'media': icona_header = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
-                elif livello_giorno == 'grave': icona_header = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
+                if livello_giorno == 'lieve': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
+                elif livello_giorno == 'media': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
+                elif livello_giorno == 'grave': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
                 cerchio_sett = ft.Container(
                     content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=14, weight=ft.FontWeight.BOLD), 
@@ -590,8 +589,8 @@ def crea_calendario(page: ft.Page):
                 for ev in eventi_oggi:
                     lista_per_analisi.append({
                         'id': ev['id'],
-                        'ora_inizio': ev.get('ora_inizio'),
-                        'ora_fine': ev.get('ora_fine'),
+                        'ora_inizio': ev.get('ora_inizio') or "00:00",
+                        'ora_fine': ev.get('ora_fine') or "23:59",
                         'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []
                     })
                 mappa_conflitti = analizza_sovrapposizioni_giornata(lista_per_analisi)
