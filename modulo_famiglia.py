@@ -145,6 +145,9 @@ def vista_famiglia(page: ft.Page, supabase):
             print("Errore caricamento dati:", err)
         page.update()
 
+    # ⚡ DICIAMO AL MAIN CHE SE RICEVE UN SEGNALE DI SYNC DA ALTRI, DEVE USARE QUESTA FUNZIONE ⚡
+    page.aggiorna_vista_corrente = carica_dati
+
     # FUNZIONE PER DISEGNARE LA SCHEDA CON MATITA E CESTINO
     def crea_scheda_ui(db_id, nome, ruolo, data_nascita, colore_assegnato):
         
@@ -154,6 +157,7 @@ def vista_famiglia(page: ft.Page, supabase):
                  if id_in_modifica[0] == db_id:
                      svuota_e_ripristina()
                  carica_dati()
+                 page.pubsub.send_all("aggiorna_dati") # ⚡ Sincronizza eliminazione
                  snack = ft.SnackBar(content=ft.Text(value=f"{nome} eliminato!"))
                  page.overlay.append(snack)
                  snack.open = True
@@ -240,6 +244,7 @@ def vista_famiglia(page: ft.Page, supabase):
             
             carica_dati()
             svuota_e_ripristina()
+            page.pubsub.send_all("aggiorna_dati") # ⚡ Sincronizza salvataggio/modifica
             
             snack = ft.SnackBar(content=ft.Text(value=msg))
             page.overlay.append(snack)
