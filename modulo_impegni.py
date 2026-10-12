@@ -128,10 +128,17 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             except:
                 pass
 
-        # ⚡ ETICHETTE PULITE, TESTO RIDOTTO E SUGGERIMENTI INVISIBILI ⚡
-        txt_data = ft.TextField(label="Data", hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, expand=2, text_size=13, on_change=formatta_data_input)
-        txt_inizio = ft.TextField(label="Inizio", hint_text="HH:MM", value=inizio_iniziale, dense=True, expand=1, text_size=13, on_change=formatta_ora_inizio)
-        txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, dense=True, expand=1, text_size=13, on_change=formatta_ora_fine)
+        # ⚡ ETICHETTE ESTERNE, DATA PIÙ STRETTA E HINT INTERNI ⚡
+        # Rimuoviamo il parametro 'label' e lasciamo solo 'hint_text'
+        txt_data = ft.TextField(hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER)
+        txt_inizio = ft.TextField(hint_text="HH:MM", value=inizio_iniziale, dense=True, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER)
+        txt_fine = ft.TextField(hint_text="HH:MM", value=fine_iniziale, dense=True, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER)
+        
+        # Creiamo le colonne per posizionare il testo in piccolo sopra ai campi. 
+        # La data avrà larghezza fissa a 110px, orari in expand.
+        col_data = ft.Column([ft.Text("Data", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_data], spacing=2, width=110)
+        col_inizio = ft.Column([ft.Text("Inizio", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_inizio], spacing=2, expand=1)
+        col_fine = ft.Column([ft.Text("Fine", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_fine], spacing=2, expand=1)
         
         txt_note = ft.TextField(label="Note aggiuntive", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         
@@ -498,7 +505,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         colonna_contenuto = [
             txt_titolo,
             ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Row([txt_data, txt_inizio, txt_fine], spacing=5),
+            ft.Row([col_data, col_inizio, col_fine], spacing=5),
             ft.Divider(height=1, color="#E0E0E0"),
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
             ft.Column(checkboxes_famiglia, spacing=2),
