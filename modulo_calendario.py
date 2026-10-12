@@ -113,6 +113,9 @@ def crea_calendario(page: ft.Page):
         ricarica_dati_base()
         aggiorna_tutto()
 
+    # ⚡ DICIAMO AL MAIN CHE SE RICEVE UN SEGNALE DI SYNC DA ALTRI, DEVE USARE QUESTA FUNZIONE ⚡
+    page.aggiorna_vista_corrente = ricarica_e_aggiorna
+
     def aggiorna_tutto():
         vista = stato["vista"]
         data = stato["data"]
@@ -361,10 +364,11 @@ def crea_calendario(page: ft.Page):
                 padding=10, border=bordo_standard()
             )
             
+            # ⚡ PASSIAMO IL SEGNALE "AGGIORNA DATI" AL FORM TRAMITE CALLBACK ⚡
             btn_aggiungi_evento = ft.Container(
                 content=ft.Text("➕ Aggiungi Impegno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                 bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, alignment=ft.Alignment(0, 0),
-                on_click=lambda e: apri_form_impegno(page, data, ricarica_e_aggiorna)
+                on_click=lambda e: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"))
             )
 
             # ⚡ VISTA GIORNO: LISTA VERTICALE AMPIA E PULITA ⚡
@@ -419,7 +423,8 @@ def crea_calendario(page: ft.Page):
                         bgcolor=ft.Colors.WHITE, padding=15, border_radius=8, ink=True, 
                         width=float('inf'), # ⚡ FULL WIDTH: NESSUN SCHIACCIAMENTO ⚡
                         border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
-                        on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, ricarica_e_aggiorna, impegno_corrente) 
+                        # ⚡ PASSIAMO IL SEGNALE "AGGIORNA DATI" ANCHE ALLA MODIFICA ⚡
+                        on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
                     )
                     colonna_card_eventi.controls.append(card)
             else:
