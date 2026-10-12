@@ -83,9 +83,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             elif data_fine_db > data_selezionata.strftime("%Y-%m-%d"):
                 switch_on_iniziale = True
 
-        # Rimuoviamo la label interna per non farla tagliare
-        txt_titolo = ft.TextField(value=titolo_iniziale, dense=True, text_size=13, content_padding=10)
-        col_titolo = ft.Column([ft.Text("Titolo Impegno", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_titolo], spacing=2)
+        txt_titolo = ft.TextField(label="Titolo Impegno", value=titolo_iniziale, text_size=13)
         
         def formatta_data_input(e):
             valore_pulito = "".join([c for c in txt_data.value if c.isdigit()])
@@ -131,38 +129,56 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             except:
                 pass
 
-        # Aggiungiamo content_padding=10 per assottigliare le caselle
-        txt_data = ft.TextField(hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER, content_padding=10)
-        txt_inizio = ft.TextField(hint_text="HH:MM", value=inizio_iniziale, dense=True, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER, content_padding=10)
-        txt_fine = ft.TextField(hint_text="HH:MM", value=fine_iniziale, dense=True, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, content_padding=10)
+        txt_data = ft.TextField(label="Data", hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER, expand=True)
+        txt_inizio = ft.TextField(label="Inizio", hint_text="HH:MM", value=inizio_iniziale, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER, expand=True)
+        txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, expand=True)
         
-        col_data = ft.Column([ft.Text("Data", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_data], spacing=2, width=110)
-        col_inizio = ft.Column([ft.Text("Inizio", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_inizio], spacing=2, expand=1)
-        col_fine = ft.Column([ft.Text("Fine", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_fine], spacing=2, expand=1)
+        riga_date_orari = ft.Row([txt_data, txt_inizio, txt_fine], spacing=5)
         
         txt_note = ft.TextField(label="Note aggiuntive", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
-        
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
-        # Dropdown con etichetta esterna e padding ridotto
         dd_categoria = ft.Dropdown(
+            label="Categoria (*)", 
             value=cat_iniziale,
             options=[ft.dropdown.Option(key=c['id'], text=c['nome']) for c in lista_categorie],
-            dense=True, 
-            expand=True,
-            content_padding=10
+            expand=True
         )
-        col_categoria = ft.Column([ft.Text("Categoria (*)", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), dd_categoria], spacing=2, expand=True)
 
-        checkboxes_famiglia = [
-            ft.Checkbox(label=f['nome'], data=f['id'], value=(f['id'] in assegnatari_esistenti)) for f in lista_famiglia
-        ]
+        # ⚡ PULSANTI ASSEGNATARI IN STILE FILTRO ⚡
+        selezionati_famiglia = set(assegnatari_esistenti)
+
+        def toggle_famiglia(e, f_id, colore_fam):
+            if f_id in selezionati_famiglia:
+                selezionati_famiglia.remove(f_id)
+                e.control.bgcolor = ft.Colors.TRANSPARENT
+                e.control.content.color = colore_fam
+            else:
+                selezionati_famiglia.add(f_id)
+                e.control.bgcolor = colore_fam
+                e.control.content.color = ft.Colors.WHITE
+            e.control.update()
+
+        bottoni_famiglia = []
+        for f in lista_famiglia:
+            colore_fam = f.get('colore', '#9E9E9E')
+            is_sel = f['id'] in selezionati_famiglia
+            bottoni_famiglia.append(
+                ft.Container(
+                    content=ft.Text(f['nome'], size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else colore_fam),
+                    bgcolor=colore_fam if is_sel else ft.Colors.TRANSPARENT,
+                    border=ft.Border(top=ft.BorderSide(2, colore_fam), bottom=ft.BorderSide(2, colore_fam), left=ft.BorderSide(2, colore_fam), right=ft.BorderSide(2, colore_fam)),
+                    padding=6, border_radius=15, width=120, alignment=ft.Alignment(0, 0),
+                    on_click=lambda e, f_id=f['id'], c_fam=colore_fam: toggle_famiglia(e, f_id, c_fam)
+                )
+            )
         
-        # Gestione a due colonne per gli assegnatari
-        mezzo = (len(checkboxes_famiglia) + 1) // 2
-        col_fam_1 = ft.Column(checkboxes_famiglia[:mezzo], spacing=0)
-        col_fam_2 = ft.Column(checkboxes_famiglia[mezzo:], spacing=0)
-        griglia_assegnatari = ft.Row([col_fam_1, col_fam_2], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=20)
+        # Divisione in 2 colonne esatte
+        mezzo = (len(bottoni_famiglia) + 1) // 2
+        griglia_assegnatari = ft.Row([
+            ft.Column(bottoni_famiglia[:mezzo], spacing=5), 
+            ft.Column(bottoni_famiglia[mezzo:], spacing=5)
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.START)
 
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
@@ -411,7 +427,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
             try:
                 # Controllo preventivo sovrapposizioni basato su ID relazionali
-                familiari_selezionati = [cb.data for cb in checkboxes_famiglia if cb.value]
+                familiari_selezionati = list(selezionati_famiglia)
                 
                 res_giorno = supabase.table('impegni').select('*, impegni_familiari(id_familiare)').eq('data_evento', data_db).execute()
                 eventi_esistenti = res_giorno.data if res_giorno.data else []
@@ -564,24 +580,22 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         btn_salva = ft.Container(content=ft.Text(testo_btn_salva, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=salva_impegno)
         
         if impegno_esistente:
+            # ⚡ PULSANTI TUTTI SU UNA STESSA LINEA ⚡
+        if impegno_esistente:
             if is_p_db:
-                riga_azioni = ft.Row([
-                    ft.Row([
-                        ft.Container(content=ft.Text("🗑️ Singolo", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_500, padding=8, border_radius=5, on_click=conferma_elimina_singolo),
-                        ft.Container(content=ft.Text("🗑️ Serie", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_900, padding=8, border_radius=5, on_click=conferma_elimina_serie),
-                    ], spacing=5, wrap=True),
-                    ft.Row([btn_annulla, btn_salva], spacing=5)
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True)
+                btn_elimina_singolo = ft.Container(content=ft.Text("🗑️ Singolo", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_500, padding=8, border_radius=5, on_click=conferma_elimina_singolo)
+                btn_elimina_serie = ft.Container(content=ft.Text("🗑️ Serie", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_900, padding=8, border_radius=5, on_click=conferma_elimina_serie)
+                riga_azioni = ft.Row([ft.Row([btn_elimina_singolo, btn_elimina_serie], spacing=5), ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
             else:
                 btn_elimina = ft.Container(content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=conferma_elimina_normale)
-                riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True)
+                riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
         else:
-            riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END, wrap=True)
+            riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END)
 
         colonna_contenuto = [
-            col_titolo,
-            ft.Row([col_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.END),
-            ft.Row([col_data, col_inizio, col_fine], spacing=5),
+            txt_titolo,
+            ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            riga_date_orari,
             ft.Divider(height=1, color="#E0E0E0"),
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
             griglia_assegnatari,
@@ -593,10 +607,13 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             
         colonna_contenuto.extend([switch_periodico, txt_avviso_periodico, txt_note, txt_errore_form])
         
+        # ⚡ POPUP ESTESO A TUTTA LARGHEZZA ⚡
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
-            content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO),
-            actions=[riga_azioni]
+            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=400),
+            actions=[riga_azioni],
+            shape=ft.RoundedRectangleBorder(radius=10),
+            content_padding=15
         )
         
         try: page.open(dlg_impegno)
