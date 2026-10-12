@@ -295,26 +295,22 @@ def crea_calendario(page: ft.Page):
             assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
             imp['assegnatari_ids'] = assegnatari_ids
 
-            # ⚡ CREAZIONE DEL TRIANGOLO DI SOVRAPPOSIZIONE ⚡
+            # ⚡ IL TRIANGOLO SULLA CARD ORA APPARE SOLO IN VISTA GIORNO ⚡
             icona_conflitto = None
-            if livello_sovrapposizione == 'lieve':
-                icona_conflitto = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
-            elif livello_sovrapposizione == 'media':
-                icona_conflitto = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
-            elif livello_sovrapposizione == 'grave':
-                icona_conflitto = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
+            if vista == "Giorno" and livello_sovrapposizione:
+                if livello_sovrapposizione == 'lieve':
+                    icona_conflitto = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
+                elif livello_sovrapposizione == 'media':
+                    icona_conflitto = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
+                elif livello_sovrapposizione == 'grave':
+                    icona_conflitto = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
 
             if vista == "Mese":
                 scala = 0.3
                 min_height = 20
                 padding_card = 2
                 border_radius_card = 2
-                
-                elementi_testo = [ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)]
-                if icona_conflitto:
-                    elementi_testo.insert(0, icona_conflitto)
-                    
-                content_col = ft.Row(elementi_testo, spacing=2, alignment=ft.MainAxisAlignment.START)
+                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
                 bgcolor_card = cat_colore
                 border_card = None
                 
@@ -323,13 +319,8 @@ def crea_calendario(page: ft.Page):
                 min_height = 30
                 padding_card = 4
                 border_radius_card = 4
-                
-                riga_titolo_sett = [ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)]
-                if icona_conflitto:
-                    riga_titolo_sett.insert(0, icona_conflitto)
-
                 content_col = ft.Column([
-                    ft.Row(riga_titolo_sett, spacing=2),
+                    ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)], spacing=2),
                     ft.Text(titolo, size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
                 ], spacing=0, alignment=ft.MainAxisAlignment.START)
                 bgcolor_card = cat_colore
@@ -337,8 +328,8 @@ def crea_calendario(page: ft.Page):
                 
             else: # Giorno
                 scala = 1.5
-                min_height = 60
-                padding_card = 12
+                min_height = 80 # ⚡ AUMENTATA ALTEZZA MINIMA
+                padding_card = 5  # ⚡ RIDOTTO IL PADDING
                 border_radius_card = 8
                 riga_assegnatari = ft.Row(spacing=3, wrap=True)
                 if len(assegnatari_ids) > 0:
@@ -350,7 +341,6 @@ def crea_calendario(page: ft.Page):
                 else:
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True))
 
-                # ⚡ TRIANGOLO CATEGORIA (Sostituisce il pallino) ⚡
                 triangolo_categoria = ft.Text("▲", color=cat_colore, size=12)
                 
                 elementi_intestazione = [triangolo_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
@@ -417,11 +407,28 @@ def crea_calendario(page: ft.Page):
                         eventi_oggi = dizionario_eventi.get(data_str, [])
                         gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
 
+                        # ⚡ CALCOLA IL CONFLITTO GLOBALE DELLA GIORNATA ⚡
+                        livello_giorno = None
+                        if eventi_oggi:
+                            lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio'), 'ora_fine': ev.get('ora_fine'), 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
+                            mappa = analizza_sovrapposizioni_giornata(lista_analisi)
+                            valori = list(mappa.values())
+                            if 'grave' in valori: livello_giorno = 'grave'
+                            elif 'media' in valori: livello_giorno = 'media'
+                            elif 'lieve' in valori: livello_giorno = 'lieve'
+
+                        icona_header = None
+                        if livello_giorno == 'lieve': icona_header = ft.Text("▲", color=ft.Colors.YELLOW_700, size=12, weight=ft.FontWeight.BOLD)
+                        elif livello_giorno == 'media': icona_header = ft.Text("▲", color=ft.Colors.ORANGE, size=12, weight=ft.FontWeight.BOLD)
+                        elif livello_giorno == 'grave': icona_header = ft.Text("▲", color=ft.Colors.RED, size=12, weight=ft.FontWeight.BOLD)
+
                         cerchio = ft.Container(
                             content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
                             bgcolor=ft.Colors.BLUE_900 if is_oggi else (ft.Colors.BLUE_100 if is_sel else ft.Colors.TRANSPARENT),
                             border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
                         )
+                        
+                        riga_cerchio = ft.Row([cerchio, icona_header] if icona_header else [cerchio], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
 
                         colonna_indicatori = ft.Column(spacing=1, expand=True, scroll=ft.ScrollMode.AUTO)
                         
@@ -455,7 +462,7 @@ def crea_calendario(page: ft.Page):
                         riga.controls.append(
                             ft.Container(
                                 content=ft.Column([
-                                    ft.Container(content=cerchio, alignment=ft.Alignment(0,0)), 
+                                    ft.Container(content=riga_cerchio, alignment=ft.Alignment(0,0)), 
                                     ft.Container(content=colonna_indicatori, expand=True)
                                 ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=2),
                                 expand=1, height=70, border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
@@ -489,14 +496,33 @@ def crea_calendario(page: ft.Page):
                 eventi_oggi = dizionario_eventi.get(data_str, [])
                 gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
 
+                # ⚡ CALCOLA IL CONFLITTO GLOBALE DELLA GIORNATA ⚡
+                livello_giorno = None
+                if eventi_oggi:
+                    lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio'), 'ora_fine': ev.get('ora_fine'), 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
+                    mappa = analizza_sovrapposizioni_giornata(lista_analisi)
+                    valori = list(mappa.values())
+                    if 'grave' in valori: livello_giorno = 'grave'
+                    elif 'media' in valori: livello_giorno = 'media'
+                    elif 'lieve' in valori: livello_giorno = 'lieve'
+
+                icona_header = None
+                if livello_giorno == 'lieve': icona_header = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
+                elif livello_giorno == 'media': icona_header = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
+                elif livello_giorno == 'grave': icona_header = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
+
+                cerchio_sett = ft.Container(
+                    content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=14, weight=ft.FontWeight.BOLD), 
+                    bgcolor=ft.Colors.BLUE_900 if (gc.date() == oggi.date()) else ft.Colors.TRANSPARENT, 
+                    border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
+                )
+                
+                riga_cerchio = ft.Row([cerchio_sett, icona_header] if icona_header else [cerchio_sett], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
+
                 intestazione = ft.Container(
                     content=ft.Column([
                         ft.Text(GIORNI[i], size=9, color=ft.Colors.GREY_700),
-                        ft.Container(
-                            content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=14, weight=ft.FontWeight.BOLD), 
-                            bgcolor=ft.Colors.BLUE_900 if (gc.date() == oggi.date()) else ft.Colors.TRANSPARENT, 
-                            border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
-                        )
+                        riga_cerchio
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0), padding=5
                 )
 
@@ -562,7 +588,6 @@ def crea_calendario(page: ft.Page):
             eventi_oggi = dizionario_eventi.get(data_str, [])
 
             if eventi_oggi:
-                # ⚡ PRIMA PREPARIAMO I DATI E ANALIZZIAMO LE SOVRAPPOSIZIONI ⚡
                 lista_per_analisi = []
                 for ev in eventi_oggi:
                     lista_per_analisi.append({
@@ -582,9 +607,7 @@ def crea_calendario(page: ft.Page):
                         se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
                         durata = max((fine + se_notte) - inizio, 30)
                         
-                        # RECUPERO IL LIVELLO DI CONFLITTO (lieve, media, grave) E LO PASSO ALLA CARD
                         livello = mappa_conflitti.get(gruppo[0]['id'])
-                        
                         colonna_card_eventi.controls.append(crea_card(gruppo[0], vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=durata, livello_sovrapposizione=livello))
                     else:
                         riga_sovrapposti = ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
@@ -597,9 +620,7 @@ def crea_calendario(page: ft.Page):
                             durata = max((fine + se_notte) - inizio, 30)
                             offset = inizio - minuti_minimi
                             
-                            # RECUPERO IL LIVELLO DI CONFLITTO
                             livello = mappa_conflitti.get(imp['id'])
-                            
                             riga_sovrapposti.controls.append(crea_card(imp, vista="Giorno", espandi=True, offset_minuti=offset, durata_minuti=durata, livello_sovrapposizione=livello))
                             
                         colonna_card_eventi.controls.append(riga_sovrapposti)
@@ -620,30 +641,6 @@ def crea_calendario(page: ft.Page):
             page.update()
         except Exception:
             pass
-
-    header = ft.Row(
-        controls=[
-            ft.Row([
-                ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20),
-                ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20),
-                testo_header,
-            ], alignment=ft.MainAxisAlignment.START, spacing=0),
-            
-            ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5)
-        ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        wrap=True,         
-        run_spacing=10     
-    )
-
-    sezione_filtri = ft.Column([
-        ft.Text("Filtra per Categoria (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_cat,
-        ft.Text("Filtra per Assegnatario (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_fam
-    ], spacing=5)
-
-    aggiorna_tutto()
 
     return ft.Container(
         content=ft.Column([
