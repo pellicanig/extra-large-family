@@ -7,19 +7,42 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+# Il .strip() rimuove eventuali spazi vuoti invisibili copiati per sbaglio su Render
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+
+supabase = None
+messaggio_errore = ""
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("ATTENZIONE: File .env mancante o chiavi Supabase non trovate!")
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    messaggio_errore = "ERRORE: Variabili SUPABASE_URL o SUPABASE_KEY mancanti su Render."
+else:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # Test di connessione reale: proviamo a leggere 1 riga
+        supabase.table('famiglia').select('id').limit(1).execute()
+    except Exception as e:
+        supabase = None
+        messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
 
 def main(page: ft.Page):
-    # ⚡ QUESTO È IL NOME CHE APPARIRÀ SOTTO L'ICONA SUL TELEFONO ⚡
     page.title = "ELF" 
     page.theme_mode = ft.ThemeMode.LIGHT
     
+    # ⚡ LOG PARLANTE VISIVO ⚡
+    if messaggio_errore:
+        page.add(
+            ft.Container(
+                content=ft.Text(messaggio_errore, color="white", weight="bold", size=16),
+                bgcolor="red",
+                padding=20,
+                border_radius=10,
+                margin=20,
+                alignment=ft.Alignment(0, 0)
+            )
+        )
+        return # Ferma l'esecuzione dell'app qui, non carica il calendario
+
     def naviga(route_string):
         page.route = route_string
         route_change(None) 
@@ -83,5 +106,5 @@ if __name__ == "__main__":
         port=porta, 
         host="0.0.0.0",
         view=ft.AppView.WEB_BROWSER,
-        assets_dir="assets" # ⚡ FONDAMENTALE: DICE A FLET DI GENERARE IL MANIFEST PWA CON L'ELFO ⚡
+        assets_dir="assets"
     )
