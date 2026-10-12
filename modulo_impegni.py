@@ -579,8 +579,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         btn_annulla = ft.TextButton("Annulla", on_click=chiudi_form)
         btn_salva = ft.Container(content=ft.Text(testo_btn_salva, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=salva_impegno)
         
-        if impegno_esistente:
-            # ⚡ PULSANTI TUTTI SU UNA STESSA LINEA ⚡
+        # ⚡ PULSANTI TUTTI SU UNA STESSA LINEA ⚡
         if impegno_esistente:
             if is_p_db:
                 btn_elimina_singolo = ft.Container(content=ft.Text("🗑️ Singolo", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_500, padding=8, border_radius=5, on_click=conferma_elimina_singolo)
