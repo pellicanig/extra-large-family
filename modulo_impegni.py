@@ -65,7 +65,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         fine_iniziale = str(fine_val)[:5] if fine_val else ""
         
         note_iniziali = impegno_esistente.get('note', "") if (impegno_esistente and impegno_esistente.get('note')) else ""
+        
+        # ⚡ TRUCCO 1: Pre-seleziona la prima Categoria disponibile se è un nuovo impegno (costringe l'etichetta sul bordo)
         cat_iniziale = impegno_esistente.get('id_categoria') if impegno_esistente else None
+        if cat_iniziale is None and len(lista_categorie) > 0:
+            cat_iniziale = lista_categorie[0]['id']
+            
         assegnatari_esistenti = impegno_esistente.get('assegnatari_ids', []) if impegno_esistente else []
         
         is_p_db = False
@@ -83,7 +88,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             elif data_fine_db > data_selezionata.strftime("%Y-%m-%d"):
                 switch_on_iniziale = True
 
-        txt_titolo = ft.TextField(label="Titolo Impegno", value=titolo_iniziale, text_size=13)
+        # ⚡ TRUCCO 2: Aggiunto hint_text per costringere anche l'etichetta del Titolo sempre sul bordo
+        txt_titolo = ft.TextField(label="Titolo Impegno", hint_text="Scrivi qui...", value=titolo_iniziale, text_size=13)
         
         def formatta_data_input(e):
             valore_pulito = "".join([c for c in txt_data.value if c.isdigit()])
@@ -135,7 +141,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         
         riga_date_orari = ft.Row([txt_data, txt_inizio, txt_fine], spacing=5)
         
-        txt_note = ft.TextField(label="Note aggiuntive", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
+        txt_note = ft.TextField(label="Note aggiuntive", hint_text="Eventuali dettagli...", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
         dd_categoria = ft.Dropdown(
@@ -606,10 +612,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             
         colonna_contenuto.extend([switch_periodico, txt_avviso_periodico, txt_note, txt_errore_form])
         
-        # ⚡ POPUP ESTESO A TUTTA LARGHEZZA ⚡
+        # ⚡ POPUP NOTEVOLMENTE ALLARGATO A 550px ⚡
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
-            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=400),
+            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=550),
             actions=[riga_azioni],
             shape=ft.RoundedRectangleBorder(radius=10),
             content_padding=15
