@@ -1,5 +1,6 @@
 import flet as ft
 import os
+import logging
 from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
@@ -7,6 +8,10 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ⚡ CONFIGURAZIONE LOG PARLANTI ⚡
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info("=== START APP: Inizializzazione Extra Large Family ===")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
@@ -16,29 +21,31 @@ messaggio_errore = ""
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     messaggio_errore = "ERRORE: Variabili SUPABASE_URL o SUPABASE_KEY mancanti su Render."
+    logging.error(messaggio_errore)
 else:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logging.info("Connessione Supabase configurata con successo.")
     except Exception as e:
         supabase = None
         messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
+        logging.error(messaggio_errore)
 
 MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 
 def main(page: ft.Page):
     page.title = "ELF" 
     page.theme_mode = ft.ThemeMode.LIGHT
+    logging.info(f"Nuovo dispositivo connesso all'app (Sessione ID: {page.session_id})")
     
-    # ⚡ IL "MODULO MONITORAGGIO" INTEGRATO ⚡
-    # Poiché UptimeRobot aprirà questa pagina ogni 5 minuti,
-    # questo ping a Supabase verrà eseguito in automatico 288 volte al giorno,
-    # impedendo per sempre al piano gratuito di congelare il database.
     global messaggio_errore
     if supabase and not messaggio_errore:
         try:
             supabase.table('famiglia').select('id').limit(1).execute()
+            logging.info("Ping Supabase OK (Prevenzione spegnimento piano gratuito UptimeRobot)")
         except Exception as e:
             messaggio_errore = f"ERRORE DB: {str(e)}"
+            logging.error(f"Ping Supabase FALLITO: {e}")
 
     if messaggio_errore:
         page.add(
@@ -51,6 +58,7 @@ def main(page: ft.Page):
 
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
+            logging.info("Broadcast ricevuto: avvio sincronizzazione dati in background sui dispositivi connessi.")
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
 
@@ -97,7 +105,10 @@ def main(page: ft.Page):
         )
         
         if page.route == "/famiglia":
+            logging.info("L'utente ha aperto la schermata 'Gestione Famiglia'")
             page.views.append(modulo_famiglia.vista_famiglia(page, supabase))
+        else:
+            logging.info("L'utente ha aperto la schermata 'Calendario principale'")
         
         page.update()
 
@@ -115,4 +126,5 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 8080))
+    logging.info(f"Avvio del server Gunicorn/Flet sulla porta {porta}")
     ft.run(main, port=porta, host="0.0.0.0", view=ft.AppView.WEB_BROWSER, assets_dir="assets")
