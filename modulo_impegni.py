@@ -470,9 +470,18 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     }
                     
                     def conferma_conflitto(ev_click):
+                        # 1. Chiude il popup di avviso
                         try: page.close(dlg_avviso_sovrapposizione)
                         except AttributeError: dlg_avviso_sovrapposizione.open = False
-                        esegui_scrittura_db()
+                        
+                        # 2. Salva nel database
+                        esegui_scrittura_db() 
+                        
+                        # 3. Forza la chiusura del popup principale dell'impegno
+                        try: page.close(dlg_impegno)
+                        except AttributeError: dlg_impegno.open = False
+                        
+                        page.update()
 
                     def annulla_conflitto(ev_click):
                         try: page.close(dlg_avviso_sovrapposizione)
