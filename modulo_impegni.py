@@ -83,7 +83,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             elif data_fine_db > data_selezionata.strftime("%Y-%m-%d"):
                 switch_on_iniziale = True
 
-        txt_titolo = ft.TextField(label="Titolo Impegno", value=titolo_iniziale, dense=True)
+        # Rimuoviamo la label interna per non farla tagliare
+        txt_titolo = ft.TextField(value=titolo_iniziale, dense=True, text_size=13, content_padding=10)
+        col_titolo = ft.Column([ft.Text("Titolo Impegno", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_titolo], spacing=2)
         
         def formatta_data_input(e):
             valore_pulito = "".join([c for c in txt_data.value if c.isdigit()])
@@ -129,14 +131,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             except:
                 pass
 
-        # ⚡ ETICHETTE ESTERNE, DATA PIÙ STRETTA E HINT INTERNI ⚡
-        # Rimuoviamo il parametro 'label' e lasciamo solo 'hint_text'
-        txt_data = ft.TextField(hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER)
-        txt_inizio = ft.TextField(hint_text="HH:MM", value=inizio_iniziale, dense=True, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER)
-        txt_fine = ft.TextField(hint_text="HH:MM", value=fine_iniziale, dense=True, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER)
+        # Aggiungiamo content_padding=10 per assottigliare le caselle
+        txt_data = ft.TextField(hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, dense=True, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER, content_padding=10)
+        txt_inizio = ft.TextField(hint_text="HH:MM", value=inizio_iniziale, dense=True, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER, content_padding=10)
+        txt_fine = ft.TextField(hint_text="HH:MM", value=fine_iniziale, dense=True, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, content_padding=10)
         
-        # Creiamo le colonne per posizionare il testo in piccolo sopra ai campi. 
-        # La data avrà larghezza fissa a 110px, orari in expand.
         col_data = ft.Column([ft.Text("Data", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_data], spacing=2, width=110)
         col_inizio = ft.Column([ft.Text("Inizio", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_inizio], spacing=2, expand=1)
         col_fine = ft.Column([ft.Text("Fine", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), txt_fine], spacing=2, expand=1)
@@ -145,17 +144,25 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
+        # Dropdown con etichetta esterna e padding ridotto
         dd_categoria = ft.Dropdown(
-            label="Categoria (*)", 
             value=cat_iniziale,
             options=[ft.dropdown.Option(key=c['id'], text=c['nome']) for c in lista_categorie],
             dense=True, 
-            expand=True
+            expand=True,
+            content_padding=10
         )
+        col_categoria = ft.Column([ft.Text("Categoria (*)", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD), dd_categoria], spacing=2, expand=True)
 
         checkboxes_famiglia = [
             ft.Checkbox(label=f['nome'], data=f['id'], value=(f['id'] in assegnatari_esistenti)) for f in lista_famiglia
         ]
+        
+        # Gestione a due colonne per gli assegnatari
+        mezzo = (len(checkboxes_famiglia) + 1) // 2
+        col_fam_1 = ft.Column(checkboxes_famiglia[:mezzo], spacing=0)
+        col_fam_2 = ft.Column(checkboxes_famiglia[mezzo:], spacing=0)
+        griglia_assegnatari = ft.Row([col_fam_1, col_fam_2], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START, spacing=20)
 
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
@@ -572,12 +579,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END, wrap=True)
 
         colonna_contenuto = [
-            txt_titolo,
-            ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            col_titolo,
+            ft.Row([col_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.END),
             ft.Row([col_data, col_inizio, col_fine], spacing=5),
             ft.Divider(height=1, color="#E0E0E0"),
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
-            ft.Column(checkboxes_famiglia, spacing=2),
+            griglia_assegnatari,
             ft.Divider(height=1, color="#E0E0E0")
         ]
         
