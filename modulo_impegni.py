@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from modulo_sovrapposizioni import analizza_sovrapposizioni_giornata
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -402,35 +403,94 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     dati_impegno['data_fine_periodo'] = None
 
             try:
-                if impegno_esistente:
-                    if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                        data_sel_str = data_selezionata.strftime("%Y-%m-%d")
-                        nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
-                        supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
-
-                        dati_impegno['data_evento'] = data_db
-                        dati_impegno['is_periodico'] = False
-                        dati_impegno['data_fine_periodo'] = None
-                        res_impegno = supabase.table('impegni').insert(dati_impegno).execute()
-                        id_operazione = res_impegno.data[0]['id']
-                    else:
-                        if not is_p_db:
-                            dati_impegno['data_evento'] = data_db
-                        supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
-                        supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
-                        id_operazione = impegno_esistente['id']
-                else:
-                    dati_impegno["data_evento"] = data_db
-                    res_impegno = supabase.table('impegni').insert(dati_impegno).execute()
-                    id_operazione = res_impegno.data[0]['id']
-
+                # Controllo preventivo sovrapposizioni basato su ID relazionali
                 familiari_selezionati = [cb.data for cb in checkboxes_famiglia if cb.value]
-                for id_fam in familiari_selezionati:
-                    supabase.table('impegni_familiari').insert({"id_impegno": id_operazione, "id_familiare": id_fam}).execute()
+                
+                res_giorno = supabase.table('impegni').select('*, impegni_familiari(id_familiare)').eq('data_evento', data_db).execute()
+                eventi_esistenti = res_giorno.data if res_giorno.data else []
+                
+                lista_controllo = []
+                for ev in eventi_esistenti:
+                    if impegno_esistente and str(ev['id']) == str(impegno_esistente['id']):
+                        continue
+                    a_ids = [f['id_familiare'] for f in ev.get('impegni_familiari', [])]
+                    lista_controllo.append({
+                        'id': ev['id'],
+                        'ora_inizio': ev.get('ora_inizio'),
+                        'ora_fine': ev.get('ora_fine'),
+                        'assegnatari_ids': a_ids
+                    })
+                
+                id_test_corrente = impegno_esistente['id'] if impegno_esistente else 'nuovo_temp'
+                lista_controllo.append({
+                    'id': id_test_corrente,
+                    'ora_inizio': ora_inizio_db,
+                    'ora_fine': ora_fine_db,
+                    'assegnatari_ids': familiari_selezionati
+                })
+                
+                mappa_conflitti = analizza_sovrapposizioni_giornata(lista_controllo)
+                esito_conflitto = mappa_conflitti.get(id_test_corrente)
+                
+                def esegui_scrittura_db():
+                    if impegno_esistente:
+                        if is_p_db and dd_modifica_periodico.value == "Solo questa data":
+                            data_sel_str = data_selezionata.strftime("%Y-%m-%d")
+                            nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
+                            supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
 
-                chiudi_form(e) 
-                if on_success_callback:
-                    on_success_callback()
+                            dati_impegno['data_evento'] = data_db
+                            dati_impegno['is_periodico'] = False
+                            dati_impegno['data_fine_periodo'] = None
+                            res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                            id_op = res_imp.data[0]['id']
+                        else:
+                            if not is_p_db:
+                                dati_impegno['data_evento'] = data_db
+                            supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
+                            supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
+                            id_op = impegno_esistente['id']
+                    else:
+                        dati_impegno["data_evento"] = data_db
+                        res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                        id_op = res_imp.data[0]['id']
+
+                    for id_fam in familiari_selezionati:
+                        supabase.table('impegni_familiari').insert({"id_impegno": id_op, "id_familiare": id_fam}).execute()
+
+                    chiudi_form(e)
+                    if on_success_callback:
+                        on_success_callback()
+
+                if esito_conflitto:
+                    testi_avviso = {
+                        'lieve': "🟡 ▲ Rilevata Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
+                        'media': "🟠 ▲ Rilevata Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
+                        'grave': "🔴 ▲ ATTENZIONE: Sovrapposizione Grave! Orari sovrapposti con STESSI ASSEGNATARI. Vuoi procedere?"
+                    }
+                    
+                    def conferma_conflitto(ev_click):
+                        try: page.close(dlg_avviso_sovrapposizione)
+                        except AttributeError: dlg_avviso_sovrapposizione.open = False
+                        esegui_scrittura_db()
+
+                    def annulla_conflitto(ev_click):
+                        try: page.close(dlg_avviso_sovrapposizione)
+                        except AttributeError: dlg_avviso_sovrapposizione.open = False
+
+                    dlg_avviso_sovrapposizione = ft.AlertDialog(
+                        title=ft.Text("Avviso Sovrapposizione", size=16, weight=ft.FontWeight.BOLD),
+                        content=ft.Text(testi_avviso.get(esito_conflitto, "Attenzione alla sovrapposizione rilevata.")),
+                        actions=[
+                            ft.TextButton("Annulla", on_click=annulla_conflitto),
+                            ft.Container(content=ft.Text("Procedi ugualmente", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=conferma_conflitto)
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END
+                    )
+                    try: page.open(dlg_avviso_sovrapposizione)
+                    except AttributeError: page.overlay.append(dlg_avviso_sovrapposizione); dlg_avviso_sovrapposizione.open = True; page.update()
+                else:
+                    esegui_scrittura_db()
                     
             except Exception as ex:
                 txt_errore_form.value = f"⚠️ Errore salvataggio DB: {ex}"
