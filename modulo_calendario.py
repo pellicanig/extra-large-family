@@ -295,7 +295,7 @@ def crea_calendario(page: ft.Page):
             assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
             imp['assegnatari_ids'] = assegnatari_ids
 
-            # ⚡ IL TRIANGOLO SULLA CARD ORA APPARE SOLO IN VISTA GIORNO ⚡
+            # ⚡ IL TRIANGOLO SULLA CARD APPARE SOLO IN VISTA GIORNO ⚡
             icona_conflitto = None
             if vista == "Giorno" and livello_sovrapposizione:
                 if livello_sovrapposizione == 'lieve':
@@ -480,7 +480,6 @@ def crea_calendario(page: ft.Page):
                 griglia
             ])
 
-
         # ==========================================
         # VISUALIZZAZIONE SETTIMANA CON AFFIANCAMENTO
         # ==========================================
@@ -558,7 +557,6 @@ def crea_calendario(page: ft.Page):
                         expand=1, height=300, border=bordo_standard(), data=gc, on_click=vai_a_giorno
                     )
                 )
-
 
         # ==========================================
         # VISUALIZZAZIONE GIORNO CON AFFIANCAMENTO
@@ -641,6 +639,31 @@ def crea_calendario(page: ft.Page):
             page.update()
         except Exception:
             pass
+
+    # ⚡ QUI RICOMPARE LA PARTE MANCANTE DEL TUO CODICE ⚡
+    header = ft.Row(
+        controls=[
+            ft.Row([
+                ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20),
+                ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20),
+                testo_header,
+            ], alignment=ft.MainAxisAlignment.START, spacing=0),
+            
+            ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5)
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        wrap=True,         
+        run_spacing=10     
+    )
+
+    sezione_filtri = ft.Column([
+        ft.Text("Filtra per Categoria (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        row_filtri_cat,
+        ft.Text("Filtra per Assegnatario (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        row_filtri_fam
+    ], spacing=5)
+
+    aggiorna_tutto()
 
     return ft.Container(
         content=ft.Column([
