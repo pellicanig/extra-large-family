@@ -56,13 +56,15 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 liberi = PALETTE_COLORI
             return liberi
 
-        titolo_iniziale = impegno_esistente.get('titolo', "") if impegno_esistente else ""
+        # TRUCCO: Inseriamo il carattere invisibile \u200b nei campi vuoti.
+        # Flet crederà che il campo sia pieno e forzerà PER SEMPRE l'etichetta sul bordo superiore.
+        titolo_iniziale = impegno_esistente.get('titolo', "") if impegno_esistente else "\u200b"
         
         inizio_val = impegno_esistente.get('ora_inizio') if impegno_esistente else None
-        inizio_iniziale = str(inizio_val)[:5] if inizio_val else ""
+        inizio_iniziale = str(inizio_val)[:5] if inizio_val else "\u200b"
         
         fine_val = impegno_esistente.get('ora_fine') if impegno_esistente else None
-        fine_iniziale = str(fine_val)[:5] if fine_val else ""
+        fine_iniziale = str(fine_val)[:5] if fine_val else "\u200b"
         
         note_iniziali = impegno_esistente.get('note', "") if (impegno_esistente and impegno_esistente.get('note')) else ""
         
@@ -365,15 +367,18 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_inizio.error_text = None
             txt_fine.error_text = None
 
-            if not txt_titolo.value or not dd_categoria.value:
+            # Puliamo i campi dal carattere invisibile prima di validare
+            titolo_pulito = txt_titolo.value.replace("\u200b", "").strip() if txt_titolo.value else ""
+            
+            if not titolo_pulito or not dd_categoria.value:
                 txt_errore_form.value = "⚠️ Attenzione: Titolo e Categoria sono obbligatori!"
                 txt_errore_form.visible = True
-                if not txt_titolo.value: txt_titolo.error_text = "Obbligatorio"
+                if not titolo_pulito: txt_titolo.error_text = "Obbligatorio"
                 if not dd_categoria.value: dd_categoria.error_text = "Obbligatorio"
                 page.update()
                 return
 
-            data_inserita = txt_data.value.strip()
+            data_inserita = txt_data.value.replace("\u200b", "").strip() if txt_data.value else ""
             try:
                 dt_obj = datetime.strptime(data_inserita, "%d/%m/%Y")
                 data_db = dt_obj.strftime("%Y-%m-%d")
@@ -384,8 +389,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 page.update()
                 return
 
-            ora_inizio_db = txt_inizio.value.strip() if txt_inizio.value else None
-            ora_fine_db = txt_fine.value.strip() if txt_fine.value else None
+            ora_i_pulita = txt_inizio.value.replace("\u200b", "").strip() if txt_inizio.value else ""
+            ora_f_pulita = txt_fine.value.replace("\u200b", "").strip() if txt_fine.value else ""
+
+            ora_inizio_db = ora_i_pulita if ora_i_pulita else None
+            ora_fine_db = ora_f_pulita if ora_f_pulita else None
 
             if ora_inizio_db:
                 try:
@@ -408,7 +416,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     return
 
             dati_impegno = {
-                "titolo": txt_titolo.value.strip(),
+                "titolo": titolo_pulito,
                 "ora_inizio": ora_inizio_db,
                 "ora_fine": ora_fine_db,
                 "id_categoria": dd_categoria.value,
@@ -612,10 +620,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             
         colonna_contenuto.extend([switch_periodico, txt_avviso_periodico, txt_note, txt_errore_form])
         
-        # ⚡ POPUP NOTEVOLMENTE ALLARGATO A 550px ⚡
+        # ⚡ FORZA IL POPUP AD ESTENDERSI AL MASSIMO CONSENTITO DAL DISPLAY ⚡
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
-            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=550),
+            content=ft.Container(content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), width=1000, expand=True),
             actions=[riga_azioni],
             shape=ft.RoundedRectangleBorder(radius=10),
             content_padding=15
