@@ -496,8 +496,7 @@ def crea_calendario(page: ft.Page):
                     expand=1 if espandi else 0,
                     
                     # ⚡ ECCO LA MODIFICA CHIAVE: Applichiamo il margine superiore ⚡
-                    margin=ft.margin.only(top=margine_top, bottom=10), # Oppure semplicemente:
-                    margin=ft.margin.only(top=margine_top, bottom=10) se non importato, usa:
+                    margin=ft.margin.only(top=margine_top),
                     
                     border=ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE")),
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente) 
