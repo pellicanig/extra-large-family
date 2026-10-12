@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from modulo_impegni import apri_form_impegno
+from modulo_sovrapposizioni import analizza_sovrapposizioni_giornata
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -276,7 +277,7 @@ def crea_calendario(page: ft.Page):
         # =======================================================
         # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
         # =======================================================
-        def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60):
+        def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
             ora_f = imp.get('ora_fine')
@@ -294,12 +295,26 @@ def crea_calendario(page: ft.Page):
             assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
             imp['assegnatari_ids'] = assegnatari_ids
 
+            # ⚡ CREAZIONE DEL TRIANGOLO DI SOVRAPPOSIZIONE ⚡
+            icona_conflitto = None
+            if livello_sovrapposizione == 'lieve':
+                icona_conflitto = ft.Text("▲", color=ft.Colors.YELLOW_700, size=14, weight=ft.FontWeight.BOLD)
+            elif livello_sovrapposizione == 'media':
+                icona_conflitto = ft.Text("▲", color=ft.Colors.ORANGE, size=14, weight=ft.FontWeight.BOLD)
+            elif livello_sovrapposizione == 'grave':
+                icona_conflitto = ft.Text("▲", color=ft.Colors.RED, size=14, weight=ft.FontWeight.BOLD)
+
             if vista == "Mese":
                 scala = 0.3
                 min_height = 20
                 padding_card = 2
                 border_radius_card = 2
-                content_col = ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
+                
+                elementi_testo = [ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)]
+                if icona_conflitto:
+                    elementi_testo.insert(0, icona_conflitto)
+                    
+                content_col = ft.Row(elementi_testo, spacing=2, alignment=ft.MainAxisAlignment.START)
                 bgcolor_card = cat_colore
                 border_card = None
                 
@@ -308,8 +323,13 @@ def crea_calendario(page: ft.Page):
                 min_height = 30
                 padding_card = 4
                 border_radius_card = 4
+                
+                riga_titolo_sett = [ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)]
+                if icona_conflitto:
+                    riga_titolo_sett.insert(0, icona_conflitto)
+
                 content_col = ft.Column([
-                    ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                    ft.Row(riga_titolo_sett, spacing=2),
                     ft.Text(titolo, size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
                 ], spacing=0, alignment=ft.MainAxisAlignment.START)
                 bgcolor_card = cat_colore
@@ -330,11 +350,15 @@ def crea_calendario(page: ft.Page):
                 else:
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True))
 
+                # ⚡ TRIANGOLO CATEGORIA (Sostituisce il pallino) ⚡
+                triangolo_categoria = ft.Text("▲", color=cat_colore, size=12)
+                
+                elementi_intestazione = [triangolo_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                if icona_conflitto:
+                    elementi_intestazione.append(icona_conflitto)
+
                 content_col = ft.Column([
-                    ft.Row([
-                        ft.Container(bgcolor=cat_colore, width=12, height=12, border_radius=6),
-                        ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore),
-                    ], alignment=ft.MainAxisAlignment.START),
+                    ft.Row(elementi_intestazione, spacing=5, alignment=ft.MainAxisAlignment.START),
                     ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
                     ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari,
@@ -357,7 +381,6 @@ def crea_calendario(page: ft.Page):
                 on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
             )
 
-            # Logica robusta per lo sfalsamento senza margin.only
             if spazio_vuoto > 0:
                 card_container.width = float('inf')
                 wrapper = ft.Column([ft.Container(height=spazio_vuoto), card_container], spacing=0)
@@ -539,6 +562,17 @@ def crea_calendario(page: ft.Page):
             eventi_oggi = dizionario_eventi.get(data_str, [])
 
             if eventi_oggi:
+                # ⚡ PRIMA PREPARIAMO I DATI E ANALIZZIAMO LE SOVRAPPOSIZIONI ⚡
+                lista_per_analisi = []
+                for ev in eventi_oggi:
+                    lista_per_analisi.append({
+                        'id': ev['id'],
+                        'ora_inizio': ev.get('ora_inizio'),
+                        'ora_fine': ev.get('ora_fine'),
+                        'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []
+                    })
+                mappa_conflitti = analizza_sovrapposizioni_giornata(lista_per_analisi)
+
                 gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
                 
                 for gruppo in gruppi_oggi:
@@ -548,7 +582,10 @@ def crea_calendario(page: ft.Page):
                         se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
                         durata = max((fine + se_notte) - inizio, 30)
                         
-                        colonna_card_eventi.controls.append(crea_card(gruppo[0], vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=durata))
+                        # RECUPERO IL LIVELLO DI CONFLITTO (lieve, media, grave) E LO PASSO ALLA CARD
+                        livello = mappa_conflitti.get(gruppo[0]['id'])
+                        
+                        colonna_card_eventi.controls.append(crea_card(gruppo[0], vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=durata, livello_sovrapposizione=livello))
                     else:
                         riga_sovrapposti = ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
                         minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
@@ -560,7 +597,10 @@ def crea_calendario(page: ft.Page):
                             durata = max((fine + se_notte) - inizio, 30)
                             offset = inizio - minuti_minimi
                             
-                            riga_sovrapposti.controls.append(crea_card(imp, vista="Giorno", espandi=True, offset_minuti=offset, durata_minuti=durata))
+                            # RECUPERO IL LIVELLO DI CONFLITTO
+                            livello = mappa_conflitti.get(imp['id'])
+                            
+                            riga_sovrapposti.controls.append(crea_card(imp, vista="Giorno", espandi=True, offset_minuti=offset, durata_minuti=durata, livello_sovrapposizione=livello))
                             
                         colonna_card_eventi.controls.append(riga_sovrapposti)
             else:
