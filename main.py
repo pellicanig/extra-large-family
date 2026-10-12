@@ -1,5 +1,6 @@
 import flet as ft
 import os
+from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
 from supabase import create_client, Client
@@ -24,6 +25,9 @@ else:
     except Exception as e:
         supabase = None
         messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
+
+# Array per tradurre il mese in italiano
+MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 
 def main(page: ft.Page):
     page.title = "ELF" 
@@ -60,21 +64,28 @@ def main(page: ft.Page):
     def route_change(e):
         page.views.clear()
         
+        # Calcolo data odierna in italiano
+        oggi = datetime.now()
+        data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
+        
         page.views.append(
             ft.View(
                 route="/",
                 controls=[
                     ft.AppBar(
-                        title=ft.Text(
-                            value="Extra Large Family", 
-                            font_family="cursive", 
-                            italic=True,
-                            weight=ft.FontWeight.BOLD,
-                            size=24
+                        # ⚡ TITOLO PULITO CON DATA SOTTOSTANTE ⚡
+                        title=ft.Column(
+                            controls=[
+                                ft.Text("Extra Large Family", weight=ft.FontWeight.BOLD, size=22),
+                                ft.Text(data_odierna_str, size=13, color=ft.Colors.WHITE70, weight=ft.FontWeight.NORMAL)
+                            ],
+                            spacing=0,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER
                         ), 
                         bgcolor=ft.Colors.BLUE_900,
                         color=ft.Colors.WHITE,
                         center_title=True,
+                        toolbar_height=70, # Leggermente più alto per far respirare i due testi
                         actions=[
                             ft.PopupMenuButton(
                                 items=[
