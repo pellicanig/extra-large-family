@@ -191,7 +191,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
-        # Creazione dei componenti SENZA property visible
         switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
 
         def toggle_giorno(e, indice_giorno):
@@ -236,37 +235,42 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
         )
 
-        # ⚡ CONTENITORE DINAMICO: SI RIEMPIE E SI SVUOTA ⚡
-        periodico_container = ft.Column(spacing=5)
-
-        def aggiorna_visibilita(e=None):
-            # Svuota fisicamente il contenitore
-            periodico_container.controls.clear()
-
+        # ⚡ LOGICA DI VISIBILITA' PULITA E DIRETTA ⚡
+        def aggiorna_ui_periodico(e=None):
             if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                # Se "Solo questa data", il container rimane vuoto (nessuno switch, nessun avviso)
-                pass
+                switch_periodico.visible = False
+                riga_giorni.visible = False
+                txt_avviso_periodico.visible = False
             else:
-                # Appende lo switch
-                periodico_container.controls.append(switch_periodico)
+                switch_periodico.visible = True
+                riga_giorni.visible = switch_periodico.value
+                txt_avviso_periodico.visible = not switch_periodico.value if is_p_db else False
                 
-                if switch_periodico.value:
-                    # Se lo switch è ON, appende i pallini dei giorni
-                    periodico_container.controls.append(riga_giorni)
-                else:
-                    # Se lo switch è OFF e stavamo modificando un evento periodico, appende l'avviso
-                    if is_p_db:
-                        periodico_container.controls.append(txt_avviso_periodico)
-
-            # page.update() forza il ricalcolo dell'altezza nel popup
             try: page.update()
             except: pass
 
-        dd_modifica_periodico.on_change = aggiorna_visibilita
-        switch_periodico.on_change = aggiorna_visibilita
+        def cambia_stato_periodico(e):
+            riga_giorni.visible = switch_periodico.value
+            if is_p_db and dd_modifica_periodico.value != "Solo questa data":
+                txt_avviso_periodico.visible = not switch_periodico.value
+            else:
+                txt_avviso_periodico.visible = False
+                
+            try: page.update()
+            except: pass
 
-        # Inizializzazione pulita
-        aggiorna_visibilita()
+        dd_modifica_periodico.on_change = aggiorna_ui_periodico
+        switch_periodico.on_change = cambia_stato_periodico
+        
+        # ⚡ IMPOSTIAMO LA VISIBILITÀ INIZIALE CORRETTA ⚡
+        if is_p_db:
+            switch_periodico.visible = False
+            riga_giorni.visible = False
+            txt_avviso_periodico.visible = False
+        else:
+            switch_periodico.visible = True
+            riga_giorni.visible = switch_on_iniziale
+            txt_avviso_periodico.visible = False
 
         dlg_impegno = None
         dlg_categoria = None
@@ -698,9 +702,13 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Divider(height=1, color="#E0E0E0")
         ]
         
-        if is_p_db: colonna_contenuto.append(dd_modifica_periodico)
+        if is_p_db: 
+            colonna_contenuto.append(dd_modifica_periodico)
             
-        colonna_contenuto.append(periodico_container)
+        # ⚡ INSERIMENTO FISSO DEGLI ELEMENTI (NESSUN CONTENITORE CHE SI SVUOTA) ⚡
+        colonna_contenuto.append(switch_periodico)
+        colonna_contenuto.append(riga_giorni)
+        colonna_contenuto.append(txt_avviso_periodico)
         colonna_contenuto.extend([txt_note, txt_errore_form])
         
         dlg_impegno = ft.AlertDialog(
