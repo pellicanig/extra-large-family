@@ -334,7 +334,7 @@ def crea_calendario(page: ft.Page):
                 # Barra laterale categoria + rettangolo colorato assegnatario/gradiente
                 border_card = ft.Border(left=ft.BorderSide(3, cat_colore), top=ft.BorderSide(0.5, "#EEEEEE"), bottom=ft.BorderSide(0.5, "#EEEEEE"), right=ft.BorderSide(0.5, "#EEEEEE"))
                 
-           elif vista == "Settimana":
+            elif vista == "Settimana":
                 scala = 1.8 
                 min_height = 80
                 padding_card = 4
