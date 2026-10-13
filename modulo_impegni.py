@@ -3,7 +3,6 @@ import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from modulo_sovrapposizioni import analizza_sovrapposizioni_giornata
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -191,7 +190,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
-        # ⚡ L'INTERFACCIA DELLA PERIODICITA' ORA E' SEMPRE VISIBILE (TUA LOGICA!) ⚡
         switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
 
         def toggle_giorno(e, indice_giorno):
@@ -221,26 +219,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
         riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
 
-        txt_avviso_periodico = ft.Text(
-            value=f"🛑 Periodicità interrotta a partire dal {data_visualizzata_iniziale}",
-            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True,
-            visible=(is_p_db and not switch_on_iniziale)
-        )
-
-        dd_modifica_periodico = ft.Dropdown(
-            label="Applica modifiche a:",
-            options=[
-                ft.dropdown.Option("Solo questa data"), 
-                ft.dropdown.Option("Questo e i successivi"),
-                ft.dropdown.Option("Tutta la serie")
-            ],
-            value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
-        )
-
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
-            if is_p_db:
-                txt_avviso_periodico.visible = not switch_periodico.value
             try: page.update()
             except: pass
 
@@ -250,6 +230,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         dlg_categoria = None
         dlg_modifica_cat = None 
         dlg_conferma = None 
+        dlg_salvataggio_periodico = None
 
         def chiudi_form(e=None):
             if dlg_impegno:
@@ -364,7 +345,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         btn_edit_cat = ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, on_click=apri_modifica_categoria)
         btn_add_cat = ft.IconButton(icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.BLUE_900, on_click=apri_nuova_categoria)
 
-        def salva_impegno(e):
+        # ⚡ IL NUOVO FLUSSO DI SALVATAGGIO ⚡
+        def avvia_salvataggio(e):
             txt_errore_form.visible = False
             txt_titolo.error_text = None
             dd_categoria.error_text = None
@@ -427,7 +409,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     page.update()
                     return
 
-            dati_impegno = {
+            dati_base = {
                 "titolo": titolo_pulito,
                 "ora_inizio": ora_inizio_db,
                 "ora_fine": ora_fine_db,
@@ -435,8 +417,47 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 "note": txt_note.value.strip() if txt_note.value else None
             }
 
-            # ⚡ LA LETTURA DEI DATI SEGUE LA TUA LOGICA: SE SOLO QUESTO EVENTO -> NIENTE PERIODICITA' ⚡
-            if is_p_db and dd_modifica_periodico.value == "Solo questa data":
+            # Se modifichiamo un evento GIA' periodico, apriamo il popup per chiedere come applicare
+            if impegno_esistente and is_p_db:
+                apri_dialog_scelta_salvataggio(dati_base, data_db)
+            else:
+                # Altrimenti (nuovo evento o modifica evento singolo) salviamo direttamente come "Tutta la serie" (ovvero la nuova/unica entità)
+                esegui_scrittura_finale(dati_base, data_db, ambito="Tutta la serie")
+
+        def apri_dialog_scelta_salvataggio(dati_base, data_db):
+            nonlocal dlg_salvataggio_periodico
+            dd_scelta = ft.Dropdown(
+                label="Ambito di modifica",
+                options=[
+                    ft.dropdown.Option("Solo questo evento"),
+                    ft.dropdown.Option("Da questo in poi"),
+                    ft.dropdown.Option("Tutta la serie")
+                ], value="Solo questo evento", dense=True
+            )
+            
+            def on_conferma(ev):
+                try: page.close(dlg_salvataggio_periodico)
+                except AttributeError: dlg_salvataggio_periodico.open = False
+                esegui_scrittura_finale(dati_base, data_db, ambito=dd_scelta.value)
+
+            def on_annulla(ev):
+                try: page.close(dlg_salvataggio_periodico)
+                except AttributeError: dlg_salvataggio_periodico.open = False; page.update()
+
+            dlg_salvataggio_periodico = ft.AlertDialog(
+                title=ft.Text("Modifica Evento Periodico", size=16, weight=ft.FontWeight.BOLD),
+                content=ft.Column([ft.Text("Vuoi applicare queste modifiche a:"), dd_scelta], tight=True),
+                actions=[
+                    ft.TextButton("Annulla", on_click=on_annulla),
+                    ft.Container(content=ft.Text("Conferma", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=on_conferma)
+                ], actions_alignment=ft.MainAxisAlignment.END
+            )
+            try: page.open(dlg_salvataggio_periodico)
+            except AttributeError: page.overlay.append(dlg_salvataggio_periodico); dlg_salvataggio_periodico.open = True; page.update()
+
+        def esegui_scrittura_finale(dati_impegno, data_db, ambito):
+            # Valuta i parametri di periodicità
+            if is_p_db and ambito == "Solo questo evento":
                 dati_impegno['giorni_periodici'] = None
                 dati_impegno['is_periodico'] = False
             else:
@@ -453,115 +474,65 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             else:
                 dati_impegno['data_fine_periodo'] = None
 
+            familiari_selezionati = list(selezionati_famiglia)
+
             try:
-                familiari_selezionati = list(selezionati_famiglia)
-                res_giorno = supabase.table('impegni').select('*, impegni_familiari(id_familiare)').eq('data_evento', data_db).execute()
-                eventi_esistenti = res_giorno.data if res_giorno.data else []
-                
-                lista_controllo = []
-                for ev in eventi_esistenti:
-                    if impegno_esistente and str(ev['id']) == str(impegno_esistente['id']): continue
-                    o_i = ev.get('ora_inizio') or "00:00"
-                    o_f = ev.get('ora_fine') or "23:59"
-                    a_ids = [f['id_familiare'] for f in ev.get('impegni_familiari', [])]
-                    lista_controllo.append({'id': ev['id'], 'ora_inizio': o_i, 'ora_fine': o_f, 'assegnatari_ids': a_ids})
-                
-                id_test_corrente = impegno_esistente['id'] if impegno_esistente else 'nuovo_temp'
-                o_i_curr = ora_inizio_db if ora_inizio_db else "00:00"
-                o_f_curr = ora_fine_db if ora_fine_db else "23:59"
-                lista_controllo.append({'id': id_test_corrente, 'ora_inizio': o_i_curr, 'ora_fine': o_f_curr, 'assegnatari_ids': familiari_selezionati})
-                
-                mappa_conflitti = analizza_sovrapposizioni_giornata(lista_controllo)
-                esito_conflitto = mappa_conflitti.get(id_test_corrente)
-                
-                def esegui_scrittura_db():
-                    if impegno_esistente:
-                        vero_inizio = impegno_esistente['data_evento']
-                        try:
-                            res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
-                            if res_orig.data: vero_inizio = res_orig.data[0]['data_evento']
-                        except: pass
+                # NESSUN AVVISO SOVRAPPOSIZIONE! Salvataggio diretto nel DB.
+                if impegno_esistente:
+                    vero_inizio = impegno_esistente['data_evento']
+                    try:
+                        res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
+                        if res_orig.data: vero_inizio = res_orig.data[0]['data_evento']
+                    except: pass
 
-                        if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                            nuove_escluse = date_escluse_db + "," + data_istanza_str if date_escluse_db else data_istanza_str
-                            supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
+                    if is_p_db and ambito == "Solo questo evento":
+                        nuove_escluse = date_escluse_db + "," + data_istanza_str if date_escluse_db else data_istanza_str
+                        supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
 
+                        dati_impegno['data_evento'] = data_db
+                        dati_impegno['is_periodico'] = False
+                        dati_impegno['giorni_periodici'] = None
+                        dati_impegno['date_escluse'] = None
+                        dati_impegno['data_fine_periodo'] = None
+                        res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                        id_op = res_imp.data[0]['id']
+                        
+                    elif is_p_db and ambito == "Da questo in poi":
+                        ieri = data_istanza - timedelta(days=1)
+                        ieri_str = ieri.strftime("%Y-%m-%d")
+                        dt_evento_orig = datetime.strptime(vero_inizio, "%Y-%m-%d")
+
+                        if ieri < dt_evento_orig:
                             dati_impegno['data_evento'] = data_db
-                            dati_impegno['is_periodico'] = False
-                            dati_impegno['giorni_periodici'] = None
-                            dati_impegno['date_escluse'] = None
-                            dati_impegno['data_fine_periodo'] = None
-                            res_imp = supabase.table('impegni').insert(dati_impegno).execute()
-                            id_op = res_imp.data[0]['id']
-                            
-                        elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
-                            ieri = data_istanza - timedelta(days=1)
-                            ieri_str = ieri.strftime("%Y-%m-%d")
-                            dt_evento_orig = datetime.strptime(vero_inizio, "%Y-%m-%d")
-
-                            if ieri < dt_evento_orig:
-                                dati_impegno['data_evento'] = data_db
-                                supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
-                                supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
-                                id_op = impegno_esistente['id']
-                            else:
-                                supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
-                                dati_impegno['data_evento'] = data_db
-                                dati_impegno['data_fine_periodo'] = None 
-                                dati_impegno['date_escluse'] = None
-                                res_imp = supabase.table('impegni').insert(dati_impegno).execute()
-                                id_op = res_imp.data[0]['id']
-                        else: 
-                            if is_p_db: dati_impegno['data_evento'] = vero_inizio
-                            else: dati_impegno['data_evento'] = data_db
-                                
                             supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                             supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                             id_op = impegno_esistente['id']
-                    else:
-                        dati_impegno["data_evento"] = data_db
-                        dati_impegno['date_escluse'] = None
-                        res_imp = supabase.table('impegni').insert(dati_impegno).execute()
-                        id_op = res_imp.data[0]['id']
-
-                    for id_fam in familiari_selezionati:
-                        supabase.table('impegni_familiari').insert({"id_impegno": id_op, "id_familiare": id_fam}).execute()
-
-                    chiudi_form(e)
-                    if on_success_callback: on_success_callback()
-
-                if esito_conflitto:
-                    testi_avviso = {
-                        'lieve': "🟡 ⚠️ Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
-                        'media': "🟠 ⚠️ Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
-                        'grave': "🔴 ⚠️ ATTENZIONE: Sovrapposizione Grave! Orari sovrapposti con STESSI ASSEGNATARI. Vuoi procedere?"
-                    }
-                    def conferma_conflitto(ev_click):
-                        try: page.close(dlg_avviso_sovrapposizione)
-                        except AttributeError: dlg_avviso_sovrapposizione.open = False
-                        esegui_scrittura_db() 
-                        try: page.close(dlg_impegno)
-                        except AttributeError: dlg_impegno.open = False
-                        page.update()
-
-                    def annulla_conflitto(ev_click):
-                        try: page.close(dlg_avviso_sovrapposizione)
-                        except AttributeError: dlg_avviso_sovrapposizione.open = False
-
-                    dlg_avviso_sovrapposizione = ft.AlertDialog(
-                        title=ft.Text("Avviso Sovrapposizione", size=16, weight=ft.FontWeight.BOLD),
-                        content=ft.Text(testi_avviso.get(esito_conflitto, "Attenzione alla sovrapposizione rilevata.")),
-                        actions=[
-                            ft.TextButton("Annulla", on_click=annulla_conflitto),
-                            ft.Container(content=ft.Text("Procedi ugualmente", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=conferma_conflitto)
-                        ],
-                        actions_alignment=ft.MainAxisAlignment.END
-                    )
-                    try: page.open(dlg_avviso_sovrapposizione)
-                    except AttributeError: page.overlay.append(dlg_avviso_sovrapposizione); dlg_avviso_sovrapposizione.open = True; page.update()
+                        else:
+                            supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
+                            dati_impegno['data_evento'] = data_db
+                            dati_impegno['data_fine_periodo'] = None 
+                            dati_impegno['date_escluse'] = None
+                            res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                            id_op = res_imp.data[0]['id']
+                    else: 
+                        if is_p_db: dati_impegno['data_evento'] = vero_inizio
+                        else: dati_impegno['data_evento'] = data_db
+                            
+                        supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
+                        supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
+                        id_op = impegno_esistente['id']
                 else:
-                    esegui_scrittura_db()
-                    
+                    dati_impegno["data_evento"] = data_db
+                    dati_impegno['date_escluse'] = None
+                    res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                    id_op = res_imp.data[0]['id']
+
+                for id_fam in familiari_selezionati:
+                    supabase.table('impegni_familiari').insert({"id_impegno": id_op, "id_familiare": id_fam}).execute()
+
+                chiudi_form()
+                if on_success_callback: on_success_callback()
+
             except Exception as ex:
                 txt_errore_form.value = f"⚠️ Errore salvataggio DB: {ex}"
                 txt_errore_form.visible = True
@@ -663,7 +634,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         testo_btn_salva = "Aggiorna" if impegno_esistente else "Salva"
 
         btn_annulla = ft.TextButton("Annulla", on_click=chiudi_form)
-        btn_salva = ft.Container(content=ft.Text(testo_btn_salva, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=salva_impegno)
+        btn_salva = ft.Container(content=ft.Text(testo_btn_salva, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=avvia_salvataggio)
         
         if impegno_esistente:
             btn_elimina = ft.Container(content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=apri_dialog_eliminazione)
@@ -678,17 +649,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Divider(height=1, color="#E0E0E0"),
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
             griglia_assegnatari,
-            ft.Divider(height=1, color="#E0E0E0")
+            ft.Divider(height=1, color="#E0E0E0"),
+            switch_periodico,
+            riga_giorni,
+            txt_note,
+            txt_errore_form
         ]
-        
-        if is_p_db: 
-            colonna_contenuto.append(dd_modifica_periodico)
-            
-        # ⚡ ORA I CONTROLLI SONO FISSATI E SEMPRE VISIBILI ⚡
-        colonna_contenuto.append(switch_periodico)
-        colonna_contenuto.append(riga_giorni)
-        colonna_contenuto.append(txt_avviso_periodico)
-        colonna_contenuto.extend([txt_note, txt_errore_form])
         
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
