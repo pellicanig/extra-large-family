@@ -417,7 +417,7 @@ def crea_calendario(page: ft.Page):
                 riga = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
                 for giorno in settimana:
                     if giorno == 0:
-                        riga.controls.append(ft.Container(expand=1, min_height=80, border=bordo_standard()))
+                        riga.controls.append(ft.Container(expand=1, constraints=ft.BoxConstraints(min_height=90), border=bordo_standard()))
                     else:
                         is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
                         is_sel = (giorno == data.day)
@@ -484,7 +484,7 @@ def crea_calendario(page: ft.Page):
                                     ft.Container(content=riga_cerchio, alignment=ft.Alignment(0,0)), 
                                     ft.Container(content=colonna_indicatori, expand=True)
                                 ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=2),
-                                expand=1, min_height=80, border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
+                                expand=1, constraints=ft.BoxConstraints(min_height=90), border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
                             )
                         )
                 griglia.controls.append(riga)
