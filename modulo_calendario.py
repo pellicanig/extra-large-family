@@ -329,32 +329,31 @@ def crea_calendario(page: ft.Page):
                 min_height = 20
                 padding_card = 2
                 border_radius_card = 2
-                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
-                bgcolor_card = cat_colore
-                border_card = None
+                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo_prin, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
                 
-            elif vista == "Settimana":
-                scala = 1.8 # Aumentato per non dover scorrere
+                # Barra laterale categoria + rettangolo colorato assegnatario/gradiente
+                border_card = ft.Border(left=ft.BorderSide(3, cat_colore), top=ft.BorderSide(0.5, "#EEEEEE"), bottom=ft.BorderSide(0.5, "#EEEEEE"), right=ft.BorderSide(0.5, "#EEEEEE"))
+                
+           elif vista == "Settimana":
+                scala = 1.8 
                 min_height = 80
                 padding_card = 4
                 border_radius_card = 4
                 
-                # Grafica chiara come nel Giorno
                 pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=8)
-                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=colore_testo_prin)]
                 if icona_conflitto: elementi_intestazione.append(icona_conflitto)
 
                 elementi_settimana = [
                     ft.Row(elementi_intestazione, spacing=3, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=10, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                    ft.Text(titolo, size=11, color=ft.Colors.BLACK, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    ft.Text(orario, size=10, color=colore_testo_sec, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=11, color=colore_testo_prin, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari
                 ]
                 if note:
-                    elementi_settimana.append(ft.Text(note, size=9, color=ft.Colors.GREY_600, no_wrap=False))
+                    elementi_settimana.append(ft.Text(note, size=9, color=colore_testo_sec, no_wrap=False))
                     
                 content_col = ft.Column(elementi_settimana, spacing=2, alignment=ft.MainAxisAlignment.START)
-                bgcolor_card = ft.Colors.WHITE
                 border_card = ft.Border(left=ft.BorderSide(4, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
                 
             else: # Giorno
@@ -364,33 +363,31 @@ def crea_calendario(page: ft.Page):
                 border_radius_card = 8
 
                 pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=10)
-                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=colore_testo_prin)]
                 if icona_conflitto:
                     elementi_intestazione.append(icona_conflitto)
 
                 content_col = ft.Column([
                     ft.Row(elementi_intestazione, spacing=5, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                    ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    ft.Text(orario, size=13, color=colore_testo_sec, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=16, color=colore_testo_prin, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari,
-                    ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
+                    ft.Text(note, size=12, color=colore_testo_sec) if note else ft.Container()
                 ], spacing=3) 
                 
-                bgcolor_card = ft.Colors.WHITE
                 border_card = ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
 
             spazio_vuoto = offset_minuti * scala
             altezza_card = max(durata_minuti * scala, min_height)
 
             if vista == "Mese":
-                # NIENTE ON_CLICK QUI: impedisce di cliccare sul singolo evento
                 card_container = ft.Container(
-                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
+                    content=content_col, bgcolor=card_bgcolor, gradient=card_gradient, padding=padding_card,
                     border_radius=border_radius_card, border=border_card, height=altezza_card
                 )
             else:
                 card_container = ft.Container(
-                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
+                    content=content_col, bgcolor=card_bgcolor, gradient=card_gradient, padding=padding_card,
                     border_radius=border_radius_card, border=border_card, ink=True, height=altezza_card,
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
                 )
