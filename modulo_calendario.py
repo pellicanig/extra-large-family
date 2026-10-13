@@ -591,7 +591,7 @@ def crea_calendario(page: ft.Page):
                         intestazione, ft.Divider(height=1, color="#E0E0E0"), 
                         ft.Container(content=colonna_indicatori, padding=2, expand=True)
                     ]), 
-                    expand=1, height=600, border=bordo_standard(), data=gc, on_click=vai_a_giorno
+                    expand=1, height=400, border=bordo_standard(), data=gc, on_click=vai_a_giorno
                 )
 
                 # Distribuisce i giorni sulle due righe
