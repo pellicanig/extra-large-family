@@ -68,10 +68,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         
         note_iniziali = impegno_esistente.get('note', "") if (impegno_esistente and impegno_esistente.get('note')) else ""
         
-        # ⚡ TRUCCO 1: Pre-seleziona la prima Categoria disponibile se è un nuovo impegno (costringe l'etichetta sul bordo)
+        # Nessuna pre-selezione: il campo parte vuoto se è un nuovo impegno
         cat_iniziale = impegno_esistente.get('id_categoria') if impegno_esistente else None
-        if cat_iniziale is None and len(lista_categorie) > 0:
-            cat_iniziale = lista_categorie[0]['id']
             
         assegnatari_esistenti = impegno_esistente.get('assegnatari_ids', []) if impegno_esistente else []
         
@@ -170,8 +168,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         txt_note = ft.TextField(label="Note aggiuntive", hint_text="Eventuali dettagli...", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
+        # ⚡ Aggiunto hint_text per mantenere l'etichetta sul bordo anche quando è vuoto
         dd_categoria = ft.Dropdown(
             label="Categoria (*)", 
+            hint_text="Scegli una categoria...",
             value=cat_iniziale,
             options=[ft.dropdown.Option(key=c['id'], text=c['nome']) for c in lista_categorie],
             expand=True
