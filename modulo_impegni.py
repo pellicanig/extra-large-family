@@ -191,6 +191,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
+        # I componenti vengono creati ma NON diamo il parametro visible
+        switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
+        
         def toggle_giorno(e, indice_giorno):
             if not switch_periodico.value: return
             if indice_giorno in selezionati_giorni:
@@ -216,14 +219,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 )
             )
 
-        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
+        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER)
 
         txt_avviso_periodico = ft.Text(
             value=f"🛑 Periodicità interrotta a partire dal {data_visualizzata_iniziale}",
-            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True, visible=False
+            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True
         )
-
-        switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
 
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
@@ -235,40 +236,35 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
         )
 
-        # ⚡ FIX: AGGIORNAMENTO MIRATO DELL'INTERFACCIA ⚡
-        def aggiorna_ui_periodico(e=None):
-            if dd_modifica_periodico.value == "Solo questa data":
-                switch_periodico.visible = False
-                riga_giorni.visible = False
-                txt_avviso_periodico.visible = False
-            else:
-                switch_periodico.visible = True
-                riga_giorni.visible = switch_periodico.value
-                txt_avviso_periodico.visible = not switch_periodico.value
-            
-            # Forza l'aggiornamento visivo dei componenti nascosti
-            try:
-                switch_periodico.update()
-                riga_giorni.update()
-                txt_avviso_periodico.update()
+        # ⚡ IL WRAPPER DINAMICO CHE AGGIRA IL BUG DI FLET ⚡
+        periodico_wrapper = ft.Column(spacing=5)
+
+        def aggiorna_blocco_periodico(e=None):
+            # Svuotiamo fisicamente il contenitore
+            periodico_wrapper.controls.clear()
+
+            mostra_blocco = True
+            # Se è periodico e ho selezionato "Solo questa data", NON mostro la periodicità
+            if impegno_esistente and is_p_db and dd_modifica_periodico.value == "Solo questa data":
+                mostra_blocco = False
+
+            if mostra_blocco:
+                periodico_wrapper.controls.append(switch_periodico)
+                
+                if switch_periodico.value:
+                    periodico_wrapper.controls.append(riga_giorni)
+                elif impegno_esistente and is_p_db:
+                    periodico_wrapper.controls.append(txt_avviso_periodico)
+
+            # Flet adesso È OBBLIGATO a ridisegnare la UI perché sono stati aggiunti/tolti nodi strutturali
+            try: periodico_wrapper.update()
             except: pass
 
-        def cambia_stato_periodico(e):
-            riga_giorni.visible = switch_periodico.value
-            if impegno_esistente and is_p_db: txt_avviso_periodico.visible = not switch_periodico.value
-            
-            # Forza l'aggiornamento visivo dei componenti nascosti
-            try:
-                riga_giorni.update()
-                txt_avviso_periodico.update()
-            except: pass
-
-        switch_periodico.on_change = cambia_stato_periodico
-        dd_modifica_periodico.on_change = aggiorna_ui_periodico
-
-        if impegno_esistente and is_p_db:
-            switch_periodico.visible = False
-            riga_giorni.visible = False
+        dd_modifica_periodico.on_change = aggiorna_blocco_periodico
+        switch_periodico.on_change = aggiorna_blocco_periodico
+        
+        # Chiamiamo la funzione subito per settare lo stato iniziale
+        aggiorna_blocco_periodico()
 
         dlg_impegno = None
         dlg_categoria = None
@@ -702,7 +698,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         
         if is_p_db: colonna_contenuto.append(dd_modifica_periodico)
             
-        colonna_contenuto.extend([switch_periodico, riga_giorni, txt_avviso_periodico, txt_note, txt_errore_form])
+        # ⚡ INSERIAMO IL WRAPPER DINAMICO AL POSTO DEGLI ELEMENTI FISSI ⚡
+        colonna_contenuto.append(periodico_wrapper)
+        colonna_contenuto.extend([txt_note, txt_errore_form])
         
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
