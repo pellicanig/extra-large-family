@@ -279,24 +279,28 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
         data_str_it = f"{data_selezionata.day}/{data_selezionata.month}/{data_selezionata.year}"
         
-        # 1. Creiamo il testo di avviso (di default nascosto)
         txt_avviso_periodico = ft.Text(
             value=f"🛑 Periodicità interrotta a partire dal {data_str_it}",
-            color=ft.Colors.RED_700,
-            size=12,
-            weight=ft.FontWeight.BOLD,
-            italic=True,
-            visible=False
+            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True, visible=False
         )
-        if is_p_db and not switch_on_iniziale:
-            txt_avviso_periodico.visible = True
 
-        # 2. Definiamo i componenti UI principali "vuoti" o slegati per evitare errori di scoping
         switch_periodico = ft.Switch(
             label="Ripeti in questi giorni:", 
             value=switch_on_iniziale
         )
-        
+
+        def aggiorna_ui_periodico(e=None):
+            # Logica ferrea: se scelgo "Solo questa data", sparisce la gestione dei giorni.
+            if dd_modifica_periodico.value == "Solo questa data":
+                switch_periodico.visible = False
+                riga_giorni.visible = False
+                txt_avviso_periodico.visible = False
+            else:
+                switch_periodico.visible = True
+                riga_giorni.visible = switch_periodico.value
+                txt_avviso_periodico.visible = not switch_periodico.value
+            page.update()
+
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
             options=[
@@ -306,16 +310,15 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ],
             value="Solo questa data",
             dense=True,
-            visible=(impegno_esistente is not None and is_p_db)
+            visible=(impegno_esistente is not None and is_p_db),
+            on_change=aggiorna_ui_periodico
         )
 
-        # 3. Logica sicura della visibilità iniziale
-        is_switch_visibile = True
-        if impegno_esistente and is_p_db and dd_modifica_periodico.value == "Solo questa data":
-            is_switch_visibile = False
-            
-        switch_periodico.visible = is_switch_visibile
-        if not is_switch_visibile:
+        switch_periodico.on_change = aggiorna_ui_periodico
+
+        # Inizializzazione all'apertura del form
+        if impegno_esistente and is_p_db:
+            switch_periodico.visible = False
             riga_giorni.visible = False
 
         # 4. Assegnazione sicura delle azioni utente
@@ -603,54 +606,61 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 
                 def esegui_scrittura_db():
                     from datetime import timedelta
+                    
                     if impegno_esistente:
-                        # ⚡ RECUPERIAMO LA VERA DATA DI NASCITA DAL DB, IGNORANDO QUELLA FITTIZIA DEL CALENDARIO ⚡
-                        vero_inizio_str = impegno_esistente['data_evento']
+                        # 1. Recupero la VERA data di origine per non rovinare lo storico
+                        vero_inizio = impegno_esistente['data_evento']
                         try:
                             res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
-                            if res_orig.data:
-                                vero_inizio_str = res_orig.data[0]['data_evento']
+                            if res_orig.data: vero_inizio = res_orig.data[0]['data_evento']
                         except: pass
 
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
+                            # REGOLA: Modifica solo l'evento selezionato, non fa vedere copie.
+                            # Azione A: Escludiamo questa data dalla serie madre
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
                             supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
 
+                            # Azione B: Creiamo il record singolo con i nuovi orari/titoli per colmare il "buco"
                             dati_impegno['data_evento'] = data_db
                             dati_impegno['is_periodico'] = False
-                            dati_impegno['data_fine_periodo'] = None
                             dati_impegno['giorni_periodici'] = None
                             dati_impegno['date_escluse'] = None
+                            dati_impegno['data_fine_periodo'] = None
                             res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                             id_op = res_imp.data[0]['id']
                             
                         elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
+                            # REGOLA: Cambia tutti i successivi cristallizzando il passato.
+                            data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             ieri = data_selezionata - timedelta(days=1)
                             ieri_str = ieri.strftime("%Y-%m-%d")
-                            dt_evento_orig = datetime.strptime(vero_inizio_str, "%Y-%m-%d") # ⚡ USO DELLA VERA DATA
+                            
+                            dt_evento_orig = datetime.strptime(vero_inizio, "%Y-%m-%d")
 
                             if ieri < dt_evento_orig:
-                                # L'utente sta davvero modificando dalla primissima data di nascita
-                                dati_impegno['data_evento'] = data_db
+                                # Se stiamo modificando proprio dal primissimo giorno, aggiorniamo il padre
+                                dati_impegno['data_evento'] = data_sel_str
                                 supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                                 supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                                 id_op = impegno_esistente['id']
                             else:
-                                # Sdoppiamento serie garantito. Il vecchio si ferma a ieri.
+                                # Azione A: Fermiamo la vecchia serie a ieri
                                 supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
                                 
-                                # Il nuovo parte da "data_db". 
-                                dati_impegno['data_evento'] = data_db
+                                # Azione B: Creiamo la nuova serie che riparte da oggi
+                                dati_impegno['data_evento'] = data_sel_str
                                 dati_impegno['data_fine_periodo'] = None 
                                 dati_impegno['date_escluse'] = None
                                 res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                                 id_op = res_imp.data[0]['id']
                                 
-                        else: # "Tutta la serie" o evento non periodico
+                        else: 
+                            # REGOLA: "Tutta la serie" (o se l'evento NON era periodico)
                             if is_p_db:
-                                # ⚡ Mantiene la VERA radice storica per non spostare l'inizio ⚡
-                                dati_impegno['data_evento'] = vero_inizio_str
+                                # Fondamentale: Manteniamo la data di nascita originaria intatta!
+                                dati_impegno['data_evento'] = vero_inizio
                             else:
                                 dati_impegno['data_evento'] = data_db
                                 
@@ -658,11 +668,13 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                             supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                             id_op = impegno_esistente['id']
                     else:
+                        # Nuovo Impegno puro
                         dati_impegno["data_evento"] = data_db
                         dati_impegno['date_escluse'] = None
                         res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                         id_op = res_imp.data[0]['id']
 
+                    # Salva sempre gli assegnatari
                     for id_fam in familiari_selezionati:
                         supabase.table('impegni_familiari').insert({"id_impegno": id_op, "id_familiare": id_fam}).execute()
 
