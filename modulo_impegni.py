@@ -1,6 +1,6 @@
 import flet as ft
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from modulo_sovrapposizioni import analizza_sovrapposizioni_giornata
@@ -68,7 +68,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         
         note_iniziali = impegno_esistente.get('note', "") if (impegno_esistente and impegno_esistente.get('note')) else ""
         
-        # Nessuna pre-selezione: il campo parte vuoto se è un nuovo impegno
         cat_iniziale = impegno_esistente.get('id_categoria') if impegno_esistente else None
             
         assegnatari_esistenti = impegno_esistente.get('assegnatari_ids', []) if impegno_esistente else []
@@ -88,7 +87,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             elif data_fine_db > data_selezionata.strftime("%Y-%m-%d"):
                 switch_on_iniziale = True
 
-        # ⚡ TRUCCO 2: Aggiunto hint_text per costringere anche l'etichetta del Titolo sempre sul bordo
         txt_titolo = ft.TextField(label="Titolo Impegno", hint_text="Scrivi qui...", value=titolo_iniziale, text_size=13)
         
         def formatta_data_input(e):
@@ -117,7 +115,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 txt_inizio.error_text = None
                 aggiorna_ui = True
                 
-            # ⚡ AUTO-COMPILA L'ORARIO DI FINE A +1 ORA ⚡
             if len(risultato) == 5:
                 try:
                     dt_inizio = datetime.strptime(risultato, "%H:%M")
@@ -125,16 +122,15 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     m = dt_inizio.minute
                     
                     if h == 23:
-                        nuova_fine = "23:59" # Evita lo scavalco di mezzanotte
+                        nuova_fine = "23:59"
                     else:
                         nuova_fine = f"{(h + 1):02d}:{m:02d}"
                         
-                    # Scrive automaticamente l'orario di fine (sovrascrive per agevolare l'utente)
                     txt_fine.value = nuova_fine
                     txt_fine.error_text = None
                     aggiorna_ui = True
                 except ValueError:
-                    pass # Se scrive un orario impossibile (es 25:00) lo ignora qui, ci penserà la validazione
+                    pass
 
             if aggiorna_ui:
                 page.update()
@@ -168,7 +164,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         txt_note = ft.TextField(label="Note aggiuntive", hint_text="Eventuali dettagli...", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
-        # ⚡ Aggiunto hint_text per mantenere l'etichetta sul bordo anche quando è vuoto
         dd_categoria = ft.Dropdown(
             label="Categoria (*)", 
             hint_text="Scegli una categoria...",
@@ -177,7 +172,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             expand=True
         )
 
-        # ⚡ PULSANTI ASSEGNATARI IN STILE FILTRO ⚡
         selezionati_famiglia = set(assegnatari_esistenti)
 
         def toggle_famiglia(e, f_id, colore_fam):
@@ -205,31 +199,28 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 )
             )
         
-        # Divisione in 2 colonne esatte
         mezzo = (len(bottoni_famiglia) + 1) // 2
         griglia_assegnatari = ft.Row([
             ft.Column(bottoni_famiglia[:mezzo], spacing=5), 
             ft.Column(bottoni_famiglia[mezzo:], spacing=5)
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.START)
 
-        # ⚡ INIZIO GESTIONE GIORNI MULTIPLI (L M M G V S D) ⚡
+        # GESTIONE GIORNI MULTIPLI PER EVENTI PERIODICI
         giorni_db_str = impegno_esistente.get('giorni_periodici') if impegno_esistente else None
         selezionati_giorni = set()
         
         if giorni_db_str:
             selezionati_giorni = set([int(g) for g in giorni_db_str.split(',') if g.strip().isdigit()])
         elif is_p_db or not impegno_esistente:
-            # Di default accende il giorno della data selezionata (0=Lunedì, 6=Domenica)
             selezionati_giorni.add(data_selezionata.weekday())
 
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
         def toggle_giorno(e, indice_giorno):
-            if not switch_periodico.value: return # Bloccati se lo switch è spento
+            if not switch_periodico.value: return
             
             if indice_giorno in selezionati_giorni:
-                # Non permette di deselezionare l'ultimo giorno rimasto
                 if len(selezionati_giorni) > 1:
                     selezionati_giorni.remove(indice_giorno)
                     e.control.bgcolor = ft.Colors.TRANSPARENT
@@ -254,28 +245,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             )
 
         riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
-        # ⚡ FINE GESTIONE GIORNI MULTIPLI ⚡
-
-        # Funzione che scatta quando si cambia la voce nella tendina (Singolo / Successivi / Serie)
-        def on_change_tipo_modifica(e):
-            if dd_modifica_periodico.value == "Solo questa data":
-                # Se è "solo questa data", l'evento diventerà singolo. Nascondiamo lo switch e i giorni.
-                switch_periodico.visible = False
-                riga_giorni.visible = False
-                txt_avviso_periodico.visible = False
-            else:
-                # Per "Questo e i successivi" o "Tutta la serie", mostriamo lo switch e i giorni.
-                switch_periodico.visible = True
-                riga_giorni.visible = switch_periodico.value
-                
-                # Se l'utente spegne l'interruttore mentre applica al futuro, lo avvisiamo
-                if not switch_periodico.value:
-                    txt_avviso_periodico.value = f"🛑 Periodicità interrotta a partire dal {data_str_it}"
-                    txt_avviso_periodico.visible = True
-                else:
-                    txt_avviso_periodico.visible = False
-                    
-            page.update()
 
         data_str_it = f"{data_selezionata.day}/{data_selezionata.month}/{data_selezionata.year}"
         
@@ -289,24 +258,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value=switch_on_iniziale
         )
 
-        def aggiorna_ui_periodico(e=None):
-            # Se l'utente sceglie "Solo questa data", disattiva e nasconde i giorni
-            if dd_modifica_periodico.value == "Solo questa data":
-                switch_periodico.visible = False
-                riga_giorni.visible = False
-                txt_avviso_periodico.visible = False
-            else:
-                # Se sceglie "Questo e i successivi" o "Tutta la serie", mostra lo switch e i giorni
-                switch_periodico.visible = True
-                riga_giorni.visible = switch_periodico.value
-                txt_avviso_periodico.visible = not switch_periodico.value
-            
-            # Forza l'aggiornamento grafico del form a schermo
-            try:
-                page.update()
-            except:
-                pass
-
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
             options=[
@@ -318,24 +269,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             dense=True,
             visible=(impegno_esistente is not None and is_p_db)
         )
-        
-        # Assegnazione sicura dell'evento di cambio opzione
-        dd_modifica_periodico.on_change = aggiorna_ui_periodico
-        switch_periodico.on_change = aggiorna_ui_periodico
 
-        # Inizializzazione all'apertura del form
-        if impegno_esistente and is_p_db:
-            switch_periodico.visible = False
-            riga_giorni.visible = False
-
-        # 4. Assegnazione sicura delle azioni utente
-        def cambia_stato_periodico(e):
-            riga_giorni.visible = switch_periodico.value
-            if impegno_esistente and is_p_db:
-                txt_avviso_periodico.visible = not switch_periodico.value
-            page.update()
-
-        def on_change_tipo_modifica(e):
+        def aggiorna_ui_periodico(e=None):
             if dd_modifica_periodico.value == "Solo questa data":
                 switch_periodico.visible = False
                 riga_giorni.visible = False
@@ -343,14 +278,23 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             else:
                 switch_periodico.visible = True
                 riga_giorni.visible = switch_periodico.value
-                if not switch_periodico.value:
-                    txt_avviso_periodico.visible = True
-                else:
-                    txt_avviso_periodico.visible = False
+                txt_avviso_periodico.visible = not switch_periodico.value
+            try:
+                page.update()
+            except: pass
+
+        def cambia_stato_periodico(e):
+            riga_giorni.visible = switch_periodico.value
+            if impegno_esistente and is_p_db:
+                txt_avviso_periodico.visible = not switch_periodico.value
             page.update()
 
         switch_periodico.on_change = cambia_stato_periodico
-        dd_modifica_periodico.on_change = on_change_tipo_modifica
+        dd_modifica_periodico.on_change = aggiorna_ui_periodico
+
+        if impegno_esistente and is_p_db:
+            switch_periodico.visible = False
+            riga_giorni.visible = False
 
         dlg_impegno = None
         dlg_categoria = None
@@ -370,14 +314,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         def apri_nuova_categoria(e):
             nonlocal dlg_categoria
             txt_nuova_cat = ft.TextField(label="Nome Categoria", dense=True)
-            
-            # ⚡ Errore interno al popup Nuova Categoria ⚡
             txt_errore_cat = ft.Text(value="", color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, visible=False)
             
             colori_liberi = get_colori_liberi_cat(None)
             dd_colore = ft.Dropdown(
-                label="Colore", 
-                dense=True,
+                label="Colore", dense=True,
                 options=[ft.dropdown.Option(key=c['hex'], text=c['nome']) for c in colori_liberi],
                 value=colori_liberi[0]['hex']
             )
@@ -405,7 +346,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     dd_categoria.options.append(ft.dropdown.Option(key=nuovo_id, text=nome_cat))
                     dd_categoria.value = nuovo_id
                     dd_categoria.update()
-                    page.pubsub.send_all("aggiorna_dati") # ⚡ SINCRONIZZA CATEGORIA CON GLI ALTRI
+                    page.pubsub.send_all("aggiorna_dati")
                 except Exception as ex:
                     txt_errore_cat.value = f"⚠️ Errore salvataggio: {ex}"
                     txt_errore_cat.visible = True
@@ -429,7 +370,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_errore_form.visible = False
             dd_categoria.error_text = None
             
-            # ⚡ Errore instradato direttamente dentro il popup principale invece della SnackBar ⚡
             if not dd_categoria.value:
                 txt_errore_form.value = "⚠️ Seleziona una categoria dal menu a tendina per modificarla."
                 txt_errore_form.visible = True
@@ -440,13 +380,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             cat_corrente = next((c for c in lista_categorie if str(c['id']) == str(dd_categoria.value)), None)
             if not cat_corrente: return
 
-            # ⚡ Errore interno al popup Modifica Categoria ⚡
             txt_errore_mod = ft.Text(value="", color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, visible=False)
 
             colori_liberi = get_colori_liberi_cat(cat_corrente['id'])
             dd_colore_mod = ft.Dropdown(
-                label="Nuovo Colore", 
-                dense=True,
+                label="Nuovo Colore", dense=True,
                 options=[ft.dropdown.Option(key=c['hex'], text=c['nome']) for c in colori_liberi],
                 value=cat_corrente.get('colore') if cat_corrente.get('colore') in [c['hex'] for c in colori_liberi] else colori_liberi[0]['hex']
             )
@@ -460,7 +398,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if dd_colore_mod.value:
                     try:
                         supabase.table('categorie').update({"colore": dd_colore_mod.value}).eq('id', cat_corrente['id']).execute()
-                        page.pubsub.send_all("aggiorna_dati") # ⚡ SINCRONIZZA IL NUOVO COLORE CON GLI ALTRI
+                        page.pubsub.send_all("aggiorna_dati")
                         if on_success_callback: on_success_callback() 
                     except Exception as ex:
                         txt_errore_mod.value = f"⚠️ Errore modifica: {ex}"
@@ -491,7 +429,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_inizio.error_text = None
             txt_fine.error_text = None
 
-            # Puliamo i campi dal carattere invisibile prima di validare
             titolo_pulito = txt_titolo.value.replace("\u200b", "").strip() if txt_titolo.value else ""
             
             if not titolo_pulito or not dd_categoria.value:
@@ -539,7 +476,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     page.update()
                     return
 
-            # ⚡ BLOCCO ASSOLUTO: FINE DEVE ESSERE > DI INIZIO ⚡
             if ora_inizio_db and ora_fine_db:
                 dt_i = datetime.strptime(ora_inizio_db, "%H:%M")
                 dt_f = datetime.strptime(ora_fine_db, "%H:%M")
@@ -559,7 +495,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 "note": txt_note.value.strip() if txt_note.value else None
             }
 
-            # ⚡ GESTIONE SALVATAGGIO GIORNI MULTIPLI E PERIODICITA' ⚡
             if switch_periodico.value:
                 str_giorni = ",".join(map(str, sorted(list(selezionati_giorni))))
                 dati_impegno['giorni_periodici'] = str_giorni
@@ -574,7 +509,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 dati_impegno['data_fine_periodo'] = None
 
             try:
-                # Controllo preventivo sovrapposizioni basato su ID relazionali
                 familiari_selezionati = list(selezionati_famiglia)
                 
                 res_giorno = supabase.table('impegni').select('*, impegni_familiari(id_familiare)').eq('data_evento', data_db).execute()
@@ -587,35 +521,24 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     
                     o_i = ev.get('ora_inizio') or "00:00"
                     o_f = ev.get('ora_fine') or "23:59"
-                    
                     a_ids = [f['id_familiare'] for f in ev.get('impegni_familiari', [])]
                     lista_controllo.append({
-                        'id': ev['id'],
-                        'ora_inizio': o_i,
-                        'ora_fine': o_f,
-                        'assegnatari_ids': a_ids
+                        'id': ev['id'], 'ora_inizio': o_i, 'ora_fine': o_f, 'assegnatari_ids': a_ids
                     })
                 
                 id_test_corrente = impegno_esistente['id'] if impegno_esistente else 'nuovo_temp'
-                
                 o_i_curr = ora_inizio_db if ora_inizio_db else "00:00"
                 o_f_curr = ora_fine_db if ora_fine_db else "23:59"
                 
                 lista_controllo.append({
-                    'id': id_test_corrente,
-                    'ora_inizio': o_i_curr,
-                    'ora_fine': o_f_curr,
-                    'assegnatari_ids': familiari_selezionati
+                    'id': id_test_corrente, 'ora_inizio': o_i_curr, 'ora_fine': o_f_curr, 'assegnatari_ids': familiari_selezionati
                 })
                 
                 mappa_conflitti = analizza_sovrapposizioni_giornata(lista_controllo)
                 esito_conflitto = mappa_conflitti.get(id_test_corrente)
                 
                 def esegui_scrittura_db():
-                    from datetime import timedelta
-                    
                     if impegno_esistente:
-                        # 1. Recupero la VERA data di origine per non rovinare lo storico
                         vero_inizio = impegno_esistente['data_evento']
                         try:
                             res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
@@ -623,7 +546,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                         except: pass
 
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                            # REGOLA: Modifica solo l'evento selezionato, non fa vedere copie.
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
                             supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
@@ -637,7 +559,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                             id_op = res_imp.data[0]['id']
                             
                         elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
-                            # REGOLA: Cambia tutti i successivi cristallizzando il passato.
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             ieri = data_selezionata - timedelta(days=1)
                             ieri_str = ieri.strftime("%Y-%m-%d")
@@ -657,13 +578,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                                 dati_impegno['date_escluse'] = None
                                 res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                                 id_op = res_imp.data[0]['id']
-                                
                         else: 
-                            # REGOLA: "Tutta la serie" (o se l'evento NON era periodico)
-                            if is_p_db:
-                                dati_impegno['data_evento'] = vero_inizio
-                            else:
-                                dati_impegno['data_evento'] = data_db
+                            if is_p_db: dati_impegno['data_evento'] = vero_inizio
+                            else: dati_impegno['data_evento'] = data_db
                                 
                             supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                             supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
@@ -678,28 +595,23 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                         supabase.table('impegni_familiari').insert({"id_impegno": id_op, "id_familiare": id_fam}).execute()
 
                     chiudi_form(e)
-                    if on_success_callback:
-                        on_success_callback()
+                    if on_success_callback: on_success_callback()
 
                 if esito_conflitto:
                     testi_avviso = {
-                        'lieve': "🟡 ⚠️ Rilevata Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
-                        'media': "🟠 ⚠️ Rilevata Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
+                        'lieve': "🟡 ⚠️ Sovrapposizione Lieve (Gli impegni si susseguono con margine ≤ 5 min). Vuoi procedere?",
+                        'media': "🟠 ⚠️ Sovrapposizione Media (Orari sovrapposti > 5 min con assegnatari DIVERSI). Vuoi procedere?",
                         'grave': "🔴 ⚠️ ATTENZIONE: Sovrapposizione Grave! Orari sovrapposti con STESSI ASSEGNATARI. Vuoi procedere?"
                     }
                     
                     def conferma_conflitto(ev_click):
-                        # 1. Chiude il popup di avviso
                         try: page.close(dlg_avviso_sovrapposizione)
                         except AttributeError: dlg_avviso_sovrapposizione.open = False
                         
-                        # 2. Salva nel database
                         esegui_scrittura_db() 
                         
-                        # 3. Forza la chiusura del popup principale dell'impegno
                         try: page.close(dlg_impegno)
                         except AttributeError: dlg_impegno.open = False
-                        
                         page.update()
 
                     def annulla_conflitto(ev_click):
@@ -734,6 +646,30 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if on_success_callback: on_success_callback()
             except Exception as ex: print(f"Errore: {ex}")
 
+        def esegui_elimina_successivi():
+            try:
+                ieri = data_selezionata - timedelta(days=1)
+                ieri_str = ieri.strftime("%Y-%m-%d")
+                
+                vero_inizio = impegno_esistente['data_evento']
+                try:
+                    res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
+                    if res_orig.data: vero_inizio = res_orig.data[0]['data_evento']
+                except: pass
+                
+                dt_evento_orig = datetime.strptime(vero_inizio, "%Y-%m-%d")
+                
+                if ieri < dt_evento_orig:
+                    # Stiamo cancellando fin dal primissimo evento: equivale a eliminare tutta la serie
+                    supabase.table('impegni').delete().eq('id', impegno_esistente['id']).execute()
+                else:
+                    # Tranciamo la serie a ieri
+                    supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
+                
+                chiudi_form()
+                if on_success_callback: on_success_callback()
+            except Exception as ex: print(f"Errore: {ex}")
+
         def esegui_elimina_serie():
             try:
                 supabase.table('impegni').delete().eq('id', impegno_esistente['id']).execute()
@@ -741,33 +677,73 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if on_success_callback: on_success_callback()
             except Exception as ex: print(f"Errore: {ex}")
 
-        def chiedi_conferma(titolo, messaggio, funzione_esecutiva, avviso_rosso=False):
+        def apri_dialog_eliminazione(e):
             nonlocal dlg_conferma
             
-            def on_conferma_click(e):
-                chiudi_conferma()
-                funzione_esecutiva()
+            if is_p_db:
+                dd_scelta_elimina = ft.Dropdown(
+                    label="Ambito di eliminazione",
+                    options=[
+                        ft.dropdown.Option("Solo questo evento"),
+                        ft.dropdown.Option("Da questo in poi"),
+                        ft.dropdown.Option("Tutta la serie")
+                    ],
+                    value="Solo questo evento",
+                    dense=True
+                )
                 
-            dlg_conferma = ft.AlertDialog(
-                title=ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD),
-                content=ft.Text(messaggio, color=ft.Colors.RED_700 if avviso_rosso else ft.Colors.BLACK),
-                actions=[
-                    ft.TextButton("Annulla", on_click=chiudi_conferma),
-                    ft.Container(content=ft.Text("Conferma Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=on_conferma_click)
-                ],
-                actions_alignment=ft.MainAxisAlignment.END
-            )
+                txt_avviso_rosso = ft.Text(value="", color=ft.Colors.RED_700, weight=ft.FontWeight.BOLD, visible=False)
+                
+                def on_change_scelta(ev):
+                    if dd_scelta_elimina.value == "Tutta la serie":
+                        txt_avviso_rosso.value = "ATTENZIONE: L'evento scomparirà definitivamente anche dal passato!"
+                        txt_avviso_rosso.visible = True
+                    else:
+                        txt_avviso_rosso.visible = False
+                    try: page.update()
+                    except: pass
+
+                dd_scelta_elimina.on_change = on_change_scelta
+
+                def esegui_scelta(ev):
+                    if dd_scelta_elimina.value == "Solo questo evento":
+                        esegui_elimina_singolo()
+                    elif dd_scelta_elimina.value == "Da questo in poi":
+                        esegui_elimina_successivi()
+                    elif dd_scelta_elimina.value == "Tutta la serie":
+                        esegui_elimina_serie()
+                    chiudi_conferma()
+
+                dlg_conferma = ft.AlertDialog(
+                    title=ft.Text("Elimina Evento Periodico", size=16, weight=ft.FontWeight.BOLD),
+                    content=ft.Column([
+                        ft.Text("Scegli la modalità di eliminazione desiderata:"),
+                        dd_scelta_elimina,
+                        txt_avviso_rosso
+                    ], tight=True),
+                    actions=[
+                        ft.TextButton("Annulla", on_click=chiudi_conferma),
+                        ft.Container(content=ft.Text("Conferma Eliminazione", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=esegui_scelta)
+                    ],
+                    actions_alignment=ft.MainAxisAlignment.END
+                )
+            else:
+                def esegui_scelta(ev):
+                    esegui_elimina_serie()
+                    chiudi_conferma()
+                    
+                dlg_conferma = ft.AlertDialog(
+                    title=ft.Text("Elimina Evento", size=16, weight=ft.FontWeight.BOLD),
+                    content=ft.Text("Sei sicuro di voler eliminare questo evento?"),
+                    actions=[
+                        ft.TextButton("Annulla", on_click=chiudi_conferma),
+                        ft.Container(content=ft.Text("Conferma Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=esegui_scelta)
+                    ],
+                    actions_alignment=ft.MainAxisAlignment.END
+                )
+
             try: page.open(dlg_conferma)
             except AttributeError: page.overlay.append(dlg_conferma); dlg_conferma.open = True; page.update()
-
-        def conferma_elimina_singolo(e):
-            chiedi_conferma("Elimina Singolo Evento", "Sei sicuro di voler eliminare solo questo evento? Le altre ripetizioni della serie rimarranno intatte.", esegui_elimina_singolo)
-
-        def conferma_elimina_serie(e):
-            chiedi_conferma("Elimina Intera Serie", "ATTENZIONE: Sei sicuro di voler eliminare TUTTA la serie? Questo evento scomparirà definitivamente anche dal passato.", esegui_elimina_serie, avviso_rosso=True)
-
-        def conferma_elimina_normale(e):
-            chiedi_conferma("Elimina Evento", "Sei sicuro di voler eliminare questo evento?", esegui_elimina_serie)
 
         titolo_modal = "Modifica Impegno" if impegno_esistente else f"Nuovo Impegno"
         testo_btn_salva = "Aggiorna" if impegno_esistente else "Salva"
@@ -775,15 +751,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         btn_annulla = ft.TextButton("Annulla", on_click=chiudi_form)
         btn_salva = ft.Container(content=ft.Text(testo_btn_salva, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, on_click=salva_impegno)
         
-        # ⚡ PULSANTI TUTTI SU UNA STESSA LINEA ⚡
+        # ⚡ PULSANTE UNICO DI ELIMINAZIONE ⚡
         if impegno_esistente:
-            if is_p_db:
-                btn_elimina_singolo = ft.Container(content=ft.Text("🗑️ Singolo", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_500, padding=8, border_radius=5, on_click=conferma_elimina_singolo)
-                btn_elimina_serie = ft.Container(content=ft.Text("🗑️ Serie", color=ft.Colors.WHITE, size=11), bgcolor=ft.Colors.RED_900, padding=8, border_radius=5, on_click=conferma_elimina_serie)
-                riga_azioni = ft.Row([ft.Row([btn_elimina_singolo, btn_elimina_serie], spacing=5), ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-            else:
-                btn_elimina = ft.Container(content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=conferma_elimina_normale)
-                riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+            btn_elimina = ft.Container(content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.RED_700, padding=10, border_radius=5, on_click=apri_dialog_eliminazione)
+            riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
         else:
             riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END)
 
@@ -797,11 +768,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Divider(height=1, color="#E0E0E0")
         ]
         
-        # Se l'impegno è periodico, aggiungiamo la tendina di scelta della modifica
+        # Gestione pulita e sequenziale dei blocchi aggiuntivi (Bug di duplicazione corretto)
         if is_p_db:
             colonna_contenuto.append(dd_modifica_periodico)
             
-        # Aggiungiamo sempre lo switch della periodicità, i pallini dei giorni, l'avviso e le note
         colonna_contenuto.extend([
             switch_periodico, 
             riga_giorni, 
@@ -810,17 +780,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_errore_form
         ])
         
-        if is_p_db:
-            colonna_contenuto.append(dd_modifica_periodico)
-            
-        colonna_contenuto.extend([switch_periodico, riga_giorni, txt_avviso_periodico, txt_note, txt_errore_form])
-        
-        # ⚡ POPUP ESTESO DINAMICAMENTE AL MASSIMO DEL DISPLAY ⚡
         dlg_impegno = ft.AlertDialog(
             title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
             content=ft.Container(
                 content=ft.Column(colonna_contenuto, tight=True, scroll=ft.ScrollMode.AUTO), 
-                width=float('inf')  # ⚡ IL COMANDO CORRETTO PER L'ESTENSIONE MASSIMA
+                width=float('inf') 
             ),
             actions=[riga_azioni],
             shape=ft.RoundedRectangleBorder(radius=10),
