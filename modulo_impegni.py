@@ -604,6 +604,14 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 def esegui_scrittura_db():
                     from datetime import timedelta
                     if impegno_esistente:
+                        # ⚡ RECUPERIAMO LA VERA DATA DI NASCITA DAL DB, IGNORANDO QUELLA FITTIZIA DEL CALENDARIO ⚡
+                        vero_inizio_str = impegno_esistente['data_evento']
+                        try:
+                            res_orig = supabase.table('impegni').select('data_evento').eq('id', impegno_esistente['id']).execute()
+                            if res_orig.data:
+                                vero_inizio_str = res_orig.data[0]['data_evento']
+                        except: pass
+
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
@@ -620,32 +628,29 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                         elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
                             ieri = data_selezionata - timedelta(days=1)
                             ieri_str = ieri.strftime("%Y-%m-%d")
-                            dt_evento_orig = datetime.strptime(impegno_esistente['data_evento'], "%Y-%m-%d")
-                            
+                            dt_evento_orig = datetime.strptime(vero_inizio_str, "%Y-%m-%d") # ⚡ USO DELLA VERA DATA
+
                             if ieri < dt_evento_orig:
-                                # Stiamo modificando dalla prima data disponibile, aggiorna quello corrente
+                                # L'utente sta davvero modificando dalla primissima data di nascita
                                 dati_impegno['data_evento'] = data_db
                                 supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                                 supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                                 id_op = impegno_esistente['id']
                             else:
-                                # Sdoppiamento serie. Il vecchio si ferma a ieri.
+                                # Sdoppiamento serie garantito. Il vecchio si ferma a ieri.
                                 supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
                                 
                                 # Il nuovo parte da "data_db". 
-                                # IMPORTANTE: Non dobbiamo MAI permettere che il calendario legga le vecchie 
-                                # "date_escluse" passate per il nuovo evento.
                                 dati_impegno['data_evento'] = data_db
                                 dati_impegno['data_fine_periodo'] = None 
                                 dati_impegno['date_escluse'] = None
-                                
                                 res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                                 id_op = res_imp.data[0]['id']
                                 
                         else: # "Tutta la serie" o evento non periodico
                             if is_p_db:
-                                # Mantiene la radice storica
-                                dati_impegno['data_evento'] = impegno_esistente['data_evento']
+                                # ⚡ Mantiene la VERA radice storica per non spostare l'inizio ⚡
+                                dati_impegno['data_evento'] = vero_inizio_str
                             else:
                                 dati_impegno['data_evento'] = data_db
                                 
