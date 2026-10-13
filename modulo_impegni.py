@@ -277,6 +277,26 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     
             page.update()
 
+        data_str_it = f"{data_selezionata.day}/{data_selezionata.month}/{data_selezionata.year}"
+        
+        # 1. Creiamo il testo di avviso (di default nascosto)
+        txt_avviso_periodico = ft.Text(
+            value=f"🛑 Periodicità interrotta a partire dal {data_str_it}",
+            color=ft.Colors.RED_700,
+            size=12,
+            weight=ft.FontWeight.BOLD,
+            italic=True,
+            visible=False
+        )
+        if is_p_db and not switch_on_iniziale:
+            txt_avviso_periodico.visible = True
+
+        # 2. Definiamo i componenti UI principali "vuoti" o slegati per evitare errori di scoping
+        switch_periodico = ft.Switch(
+            label="Ripeti in questi giorni:", 
+            value=switch_on_iniziale
+        )
+        
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
             options=[
@@ -286,47 +306,41 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ],
             value="Solo questa data",
             dense=True,
-            visible=(impegno_esistente is not None and is_p_db),
-            on_change=on_change_tipo_modifica
+            visible=(impegno_esistente is not None and is_p_db)
         )
 
-        data_str_it = f"{data_selezionata.day}/{data_selezionata.month}/{data_selezionata.year}"
-        testo_avviso_iniziale = ""
-        visibile_iniziale = False
-        
-        # Inizializzazione corretta in base al Dropdown
-        is_switch_visibile = not (impegno_esistente and is_p_db and dd_modifica_periodico.value == "Solo questa data")
+        # 3. Logica sicura della visibilità iniziale
+        is_switch_visibile = True
+        if impegno_esistente and is_p_db and dd_modifica_periodico.value == "Solo questa data":
+            is_switch_visibile = False
+            
+        switch_periodico.visible = is_switch_visibile
+        if not is_switch_visibile:
+            riga_giorni.visible = False
 
-        txt_avviso_periodico = ft.Text(
-            value=testo_avviso_iniziale,
-            color=ft.Colors.RED_700,
-            size=12,
-            weight=ft.FontWeight.BOLD,
-            italic=True,
-            visible=visibile_iniziale
-        )
-
+        # 4. Assegnazione sicura delle azioni utente
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
-            
             if impegno_esistente and is_p_db:
+                txt_avviso_periodico.visible = not switch_periodico.value
+            page.update()
+
+        def on_change_tipo_modifica(e):
+            if dd_modifica_periodico.value == "Solo questa data":
+                switch_periodico.visible = False
+                riga_giorni.visible = False
+                txt_avviso_periodico.visible = False
+            else:
+                switch_periodico.visible = True
+                riga_giorni.visible = switch_periodico.value
                 if not switch_periodico.value:
-                    txt_avviso_periodico.value = f"🛑 Periodicità interrotta a partire dal {data_str_it}"
                     txt_avviso_periodico.visible = True
                 else:
                     txt_avviso_periodico.visible = False
             page.update()
 
-        switch_periodico = ft.Switch(
-            label="Ripeti in questi giorni:", 
-            value=switch_on_iniziale,
-            on_change=cambia_stato_periodico,
-            visible=is_switch_visibile
-        )
-        
-        # All'apertura, se è preimpostato "Solo questa data", nascondiamo subito i giorni
-        if not is_switch_visibile:
-            riga_giorni.visible = False
+        switch_periodico.on_change = cambia_stato_periodico
+        dd_modifica_periodico.on_change = on_change_tipo_modifica
 
         dlg_impegno = None
         dlg_categoria = None
