@@ -60,7 +60,7 @@ def crea_calendario(page: ft.Page):
         return ft.Border(top=ft.BorderSide(2, colore), bottom=ft.BorderSide(2, colore), left=ft.BorderSide(2, colore), right=ft.BorderSide(2, colore))
 
     layer_mese = ft.Column(spacing=0, visible=True)
-    layer_settimana = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0, visible=False)
+    layer_settimana = ft.Column(spacing=0, visible=False)
     layer_giorno = ft.Column(spacing=0, visible=False)
     area_dinamica = ft.Column([layer_mese, layer_settimana, layer_giorno], expand=True, spacing=0)
 
@@ -306,14 +306,11 @@ def crea_calendario(page: ft.Page):
 
             icona_conflitto = None
             if vista in ["Giorno", "Settimana"] and livello_sovrapposizione:
-                if livello_sovrapposizione == 'lieve':
-                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
-                elif livello_sovrapposizione == 'media':
-                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
-                elif livello_sovrapposizione == 'grave':
-                    icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
+                if livello_sovrapposizione == 'lieve': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
+                elif livello_sovrapposizione == 'media': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
+                elif livello_sovrapposizione == 'grave': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
-            # RIGA ASSEGNATARI (Sempre generata per Giorno e Settimana)
+            # RIGA ASSEGNATARI (Sempre con il colore della famiglia)
             riga_assegnatari = ft.Row(spacing=3, wrap=True)
             if vista in ["Giorno", "Settimana"]:
                 if len(assegnatari_ids) > 0:
@@ -321,10 +318,11 @@ def crea_calendario(page: ft.Page):
                         fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
                         if fam_match:
                             nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            col_testo = ft.Colors.WHITE if vista == "Settimana" else fam_match.get('colore', ft.Colors.BLUE_900)
+                            # USA SEMPRE IL COLORE FAMIGLIA
+                            col_testo = fam_match.get('colore', ft.Colors.BLUE_900)
                             riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=col_testo, weight=ft.FontWeight.BOLD))
                 else:
-                    col_testo = ft.Colors.WHITE if vista == "Settimana" else ft.Colors.BLUE_900
+                    col_testo = ft.Colors.BLUE_900
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=col_testo, italic=True))
 
             if vista == "Mese":
@@ -337,25 +335,29 @@ def crea_calendario(page: ft.Page):
                 border_card = None
                 
             elif vista == "Settimana":
-                scala = 1.8 # Aumentata per far spazio a tutti gli elementi
+                scala = 1.8 
                 min_height = 80
                 padding_card = 4
                 border_radius_card = 4
                 
-                elementi_settimana = [
-                    ft.Row([ft.Text(orario, size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)], spacing=2),
-                    ft.Text(titolo + icona_periodico, size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=False),
-                    riga_assegnatari
-                ]
-                if note:
-                    elementi_settimana.append(ft.Text(note, size=9, color=ft.Colors.WHITE70, no_wrap=False))
-                    
-                content_col = ft.Column(elementi_settimana, spacing=2, alignment=ft.MainAxisAlignment.START)
-                bgcolor_card = cat_colore
-                border_card = None
+                # Layout identico al Giorno (Sfondo bianco, nomi colorati), ma più piccolo
+                pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=8)
+                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                if icona_conflitto: elementi_intestazione.append(icona_conflitto)
+
+                content_col = ft.Column([
+                    ft.Row(elementi_intestazione, spacing=3, alignment=ft.MainAxisAlignment.START),
+                    ft.Text(orario, size=10, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=11, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    riga_assegnatari,
+                    ft.Text(note, size=9, color=ft.Colors.GREY_600) if note else ft.Container()
+                ], spacing=2, alignment=ft.MainAxisAlignment.START)
+                
+                bgcolor_card = ft.Colors.WHITE
+                border_card = ft.Border(left=ft.BorderSide(4, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
                 
             else: # Giorno
-                scala = 3.5 # Aumentata proporzionalmente
+                scala = 3.5 
                 min_height = 120 
                 padding_card = 5  
                 border_radius_card = 8
@@ -415,7 +417,7 @@ def crea_calendario(page: ft.Page):
                 riga = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
                 for giorno in settimana:
                     if giorno == 0:
-                        riga.controls.append(ft.Container(expand=1, height=70, border=bordo_standard()))
+                        riga.controls.append(ft.Container(expand=1, min_height=80, border=bordo_standard()))
                     else:
                         is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
                         is_sel = (giorno == data.day)
@@ -482,7 +484,7 @@ def crea_calendario(page: ft.Page):
                                     ft.Container(content=riga_cerchio, alignment=ft.Alignment(0,0)), 
                                     ft.Container(content=colonna_indicatori, expand=True)
                                 ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=2),
-                                expand=1, height=70, border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
+                                expand=1, min_height=80, border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
                             )
                         )
                 griglia.controls.append(riga)
@@ -505,6 +507,11 @@ def crea_calendario(page: ft.Page):
             domenica = lunedi + timedelta(days=6)
             testo_header.value = f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}" if lunedi.month == domenica.month else f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
             layer_settimana.controls.clear()
+            
+            # DUE RIGHE PER LA SETTIMANA DA MOBILE
+            riga1 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
+            riga2 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
+
             for i in range(7):
                 gc = lunedi + timedelta(days=i)
                 data_str = gc.strftime("%Y-%m-%d")
@@ -512,7 +519,6 @@ def crea_calendario(page: ft.Page):
                 eventi_oggi = dizionario_eventi.get(data_str, [])
                 gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
 
-                # ⚡ CALCOLA IL CONFLITTO GLOBALE DELLA GIORNATA ⚡
                 livello_giorno = None
                 if eventi_oggi:
                     lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio') or "00:00", 'ora_fine': ev.get('ora_fine') or "23:59", 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
@@ -565,15 +571,28 @@ def crea_calendario(page: ft.Page):
                             riga_ind.controls.append(crea_card(ev, vista="Settimana", espandi=True, offset_minuti=offset, durata_minuti=durata))
                         colonna_indicatori.controls.append(riga_ind)
 
-                layer_settimana.controls.append(
-                    ft.Container(
-                        content=ft.Column([
-                            intestazione, ft.Divider(height=1, color="#E0E0E0"), 
-                            ft.Container(content=colonna_indicatori, padding=2, expand=True)
-                        ]), 
-                        expand=1, height=800, border=bordo_standard(), data=gc, on_click=vai_a_giorno
-                    )
+                # Costruisce la colonna del giorno
+                contenitore_giorno = ft.Container(
+                    content=ft.Column([
+                        intestazione, ft.Divider(height=1, color="#E0E0E0"), 
+                        ft.Container(content=colonna_indicatori, padding=2, expand=True)
+                    ]), 
+                    expand=1, height=600, border=bordo_standard(), data=gc, on_click=vai_a_giorno
                 )
+
+                # Distribuisce i giorni sulle due righe
+                if i < 4:
+                    riga1.controls.append(contenitore_giorno)
+                else:
+                    riga2.controls.append(contenitore_giorno)
+
+            # Aggiungiamo un blocco vuoto per far pareggiare la larghezza delle due righe (4 colonne sopra, 3 sotto + 1 vuota)
+            riga2.controls.append(ft.Container(expand=1, border=ft.Border(top=ft.BorderSide(0, "transparent"))))
+            
+            # Aggiungiamo le due righe e uno spazio separatore al layer principale della settimana
+            layer_settimana.controls.append(riga1)
+            layer_settimana.controls.append(ft.Container(height=20)) # Spazio tra le due righe
+            layer_settimana.controls.append(riga2)
 
         # ==========================================
         # VISUALIZZAZIONE GIORNO CON AFFIANCAMENTO
