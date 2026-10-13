@@ -244,12 +244,21 @@ def crea_calendario(page: ft.Page):
                             
                             date_escluse_str = imp.get('date_escluse') or ""
                             lista_escluse = date_escluse_str.split(',') if date_escluse_str else []
+                            
+                            # ⚡ LEGGE I GIORNI SELEZIONATI DAL DB ⚡
+                            giorni_str = imp.get('giorni_periodici')
+                            if giorni_str:
+                                giorni_da_ripetere = [int(g) for g in giorni_str.split(',') if g.strip().isdigit()]
+                            else:
+                                # Retrocompatibilità: se vuoto, usa il giorno originario (L=0, D=6)
+                                giorni_da_ripetere = [data_start.weekday()]
 
                             corrente = inizio_finestra.date()
                             fine_f = fine_finestra.date()
                             
                             while corrente <= fine_f:
-                                if corrente >= data_start and corrente.weekday() == data_start.weekday():
+                                # ⚡ MOSTRA L'EVENTO IN TUTTI I GIORNI DELLA SETTIMANA SELEZIONATI ⚡
+                                if corrente >= data_start and corrente.weekday() in giorni_da_ripetere:
                                     if data_stop is None or corrente <= data_stop:
                                         d_str = corrente.strftime("%Y-%m-%d")
                                         if d_str not in lista_escluse:
