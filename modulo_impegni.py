@@ -212,9 +212,58 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Column(bottoni_famiglia[mezzo:], spacing=5)
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.START)
 
+        # ⚡ INIZIO GESTIONE GIORNI MULTIPLI (L M M G V S D) ⚡
+        giorni_db_str = impegno_esistente.get('giorni_periodici') if impegno_esistente else None
+        selezionati_giorni = set()
+        
+        if giorni_db_str:
+            selezionati_giorni = set([int(g) for g in giorni_db_str.split(',') if g.strip().isdigit()])
+        elif is_p_db or not impegno_esistente:
+            # Di default accende il giorno della data selezionata (0=Lunedì, 6=Domenica)
+            selezionati_giorni.add(data_selezionata.weekday())
+
+        etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
+        bottoni_giorni = []
+
+        def toggle_giorno(e, indice_giorno):
+            if not switch_periodico.value: return # Bloccati se lo switch è spento
+            
+            if indice_giorno in selezionati_giorni:
+                # Non permette di deselezionare l'ultimo giorno rimasto
+                if len(selezionati_giorni) > 1:
+                    selezionati_giorni.remove(indice_giorno)
+                    e.control.bgcolor = ft.Colors.TRANSPARENT
+                    e.control.content.color = ft.Colors.GREY_600
+            else:
+                selezionati_giorni.add(indice_giorno)
+                e.control.bgcolor = ft.Colors.BLUE_900
+                e.control.content.color = ft.Colors.WHITE
+            e.control.update()
+
+        for i, lettera in enumerate(etichette_giorni):
+            is_g_sel = i in selezionati_giorni
+            bottoni_giorni.append(
+                ft.Container(
+                    content=ft.Text(lettera, size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_g_sel else ft.Colors.GREY_600),
+                    bgcolor=ft.Colors.BLUE_900 if is_g_sel else ft.Colors.TRANSPARENT,
+                    border=ft.Border(top=ft.BorderSide(2, ft.Colors.BLUE_900), bottom=ft.BorderSide(2, ft.Colors.BLUE_900), left=ft.BorderSide(2, ft.Colors.BLUE_900), right=ft.BorderSide(2, ft.Colors.BLUE_900)),
+                    shape=ft.BoxShape.CIRCLE,
+                    width=30, height=30, alignment=ft.Alignment(0, 0),
+                    on_click=lambda e, idx=i: toggle_giorno(e, idx)
+                )
+            )
+
+        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
+        # ⚡ FINE GESTIONE GIORNI MULTIPLI ⚡
+
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
-            options=[ft.dropdown.Option("Solo questa data"), ft.dropdown.Option("Tutta la serie")],
+            # ⚡ PUNTO 3 DELLA TUA TODOLIST: AGGIUNTA OPZIONE "QUESTO E I SUCCESSIVI" ⚡
+            options=[
+                ft.dropdown.Option("Solo questa data"), 
+                ft.dropdown.Option("Questo e i successivi"),
+                ft.dropdown.Option("Tutta la serie")
+            ],
             value="Solo questa data",
             dense=True,
             visible=(impegno_esistente is not None and is_p_db)
@@ -238,6 +287,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         )
 
         def cambia_stato_periodico(e):
+            riga_giorni.visible = switch_periodico.value
+            riga_giorni.update()
+            
             if impegno_esistente and is_p_db:
                 if not switch_periodico.value:
                     txt_avviso_periodico.value = f"🛑 Periodicità interrotta a partire dal {data_str_it}"
@@ -247,7 +299,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 txt_avviso_periodico.update()
 
         switch_periodico = ft.Switch(
-            label="Ripeti ogni settimana", 
+            label="Ripeti in questi giorni:", 
             value=switch_on_iniziale,
             on_change=cambia_stato_periodico
         )
@@ -663,7 +715,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         if is_p_db:
             colonna_contenuto.append(dd_modifica_periodico)
             
-        colonna_contenuto.extend([switch_periodico, txt_avviso_periodico, txt_note, txt_errore_form])
+        colonna_contenuto.extend([switch_periodico, riga_giorni, txt_avviso_periodico, txt_note, txt_errore_form])
         
         # ⚡ POPUP ESTESO DINAMICAMENTE AL MASSIMO DEL DISPLAY ⚡
         dlg_impegno = ft.AlertDialog(
