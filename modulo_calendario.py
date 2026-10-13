@@ -286,9 +286,6 @@ def crea_calendario(page: ft.Page):
         # =======================================================
         # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
         # =======================================================
-        # =======================================================
-        # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
-        # =======================================================
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
@@ -326,7 +323,7 @@ def crea_calendario(page: ft.Page):
 
             if len(colori_assegnatari) == 0:
                 sfondo_card = "#ECEFF1" # Grigio se nessuno è assegnato
-                colore_testo = ft.Colors.BLACK87
+                colore_testo = ft.Colors.BLACK # ⚡ FIX DELL'ERRORE BLACK87
             elif len(colori_assegnatari) == 1:
                 sfondo_card = colori_assegnatari[0] # Tinta unita
             else:
@@ -334,7 +331,7 @@ def crea_calendario(page: ft.Page):
                     begin=ft.alignment.top_left, end=ft.alignment.bottom_right, colors=colori_assegnatari
                 ) # Gradiente per multipli assegnatari
 
-            # RIGA ASSEGNATARI (Sempre con testo a contrasto)
+            # RIGA ASSEGNATARI (Testo coerente in alto contrasto)
             riga_assegnatari = ft.Row(spacing=3, wrap=True)
             if vista in ["Giorno", "Settimana"]:
                 if len(assegnatari_ids) > 0:
@@ -342,6 +339,7 @@ def crea_calendario(page: ft.Page):
                         fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
                         if fam_match:
                             nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
+                            # ⚡ FIX COERENZA: Il colore del testo ORA usa colore_testo per contrastare con lo sfondo della card
                             riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=colore_testo, weight=ft.FontWeight.BOLD))
                 else:
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=colore_testo, italic=True))
@@ -353,7 +351,7 @@ def crea_calendario(page: ft.Page):
             if vista == "Mese":
                 content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
                 altezza_card = 20 
-                spazio_vuoto = 0  # FIX MESE: Niente sfalsamento orario per non strabordare
+                spazio_vuoto = 0
                 
             elif vista == "Settimana":
                 elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_testo, size=8), ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=colore_testo)]
