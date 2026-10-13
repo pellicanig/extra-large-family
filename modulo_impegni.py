@@ -112,9 +112,33 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if i == 2: risultato += ":"
                 risultato += num
             risultato = risultato[:5]
+            
+            aggiorna_ui = False
             if txt_inizio.value != risultato:
                 txt_inizio.value = risultato
                 txt_inizio.error_text = None
+                aggiorna_ui = True
+                
+            # ⚡ AUTO-COMPILA L'ORARIO DI FINE A +1 ORA ⚡
+            if len(risultato) == 5:
+                try:
+                    dt_inizio = datetime.strptime(risultato, "%H:%M")
+                    h = dt_inizio.hour
+                    m = dt_inizio.minute
+                    
+                    if h == 23:
+                        nuova_fine = "23:59" # Evita lo scavalco di mezzanotte
+                    else:
+                        nuova_fine = f"{(h + 1):02d}:{m:02d}"
+                        
+                    # Scrive automaticamente l'orario di fine (sovrascrive per agevolare l'utente)
+                    txt_fine.value = nuova_fine
+                    txt_fine.error_text = None
+                    aggiorna_ui = True
+                except ValueError:
+                    pass # Se scrive un orario impossibile (es 25:00) lo ignora qui, ci penserà la validazione
+
+            if aggiorna_ui:
                 page.update()
 
         def formatta_ora_fine(e):
@@ -411,6 +435,18 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 except:
                     txt_errore_form.value = "⚠️ Ora Fine non valida! Usa HH:MM"
                     txt_errore_form.visible = True
+                    txt_fine.error_text = "Errore"
+                    page.update()
+                    return
+
+            # ⚡ BLOCCO ASSOLUTO: FINE DEVE ESSERE > DI INIZIO ⚡
+            if ora_inizio_db and ora_fine_db:
+                dt_i = datetime.strptime(ora_inizio_db, "%H:%M")
+                dt_f = datetime.strptime(ora_fine_db, "%H:%M")
+                if dt_f <= dt_i:
+                    txt_errore_form.value = "⚠️ L'orario di fine deve essere successivo all'orario di inizio!"
+                    txt_errore_form.visible = True
+                    txt_inizio.error_text = "Errore"
                     txt_fine.error_text = "Errore"
                     page.update()
                     return
