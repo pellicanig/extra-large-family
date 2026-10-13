@@ -256,9 +256,29 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
         # ⚡ FINE GESTIONE GIORNI MULTIPLI ⚡
 
+        # Funzione che scatta quando si cambia la voce nella tendina (Singolo / Successivi / Serie)
+        def on_change_tipo_modifica(e):
+            if dd_modifica_periodico.value == "Solo questa data":
+                # Se è "solo questa data", l'evento diventerà singolo. Nascondiamo lo switch e i giorni.
+                switch_periodico.visible = False
+                riga_giorni.visible = False
+                txt_avviso_periodico.visible = False
+            else:
+                # Per "Questo e i successivi" o "Tutta la serie", mostriamo lo switch e i giorni.
+                switch_periodico.visible = True
+                riga_giorni.visible = switch_periodico.value
+                
+                # Se l'utente spegne l'interruttore mentre applica al futuro, lo avvisiamo
+                if not switch_periodico.value:
+                    txt_avviso_periodico.value = f"🛑 Periodicità interrotta a partire dal {data_str_it}"
+                    txt_avviso_periodico.visible = True
+                else:
+                    txt_avviso_periodico.visible = False
+                    
+            page.update()
+
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
-            # ⚡ PUNTO 3 DELLA TUA TODOLIST: AGGIUNTA OPZIONE "QUESTO E I SUCCESSIVI" ⚡
             options=[
                 ft.dropdown.Option("Solo questa data"), 
                 ft.dropdown.Option("Questo e i successivi"),
@@ -266,16 +286,16 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ],
             value="Solo questa data",
             dense=True,
-            visible=(impegno_esistente is not None and is_p_db)
+            visible=(impegno_esistente is not None and is_p_db),
+            on_change=on_change_tipo_modifica
         )
 
         data_str_it = f"{data_selezionata.day}/{data_selezionata.month}/{data_selezionata.year}"
         testo_avviso_iniziale = ""
         visibile_iniziale = False
         
-        if is_p_db and not switch_on_iniziale:
-            testo_avviso_iniziale = f"🛑 Periodicità interrotta a partire dal {data_str_it}"
-            visibile_iniziale = True
+        # Inizializzazione corretta in base al Dropdown
+        is_switch_visibile = not (impegno_esistente and is_p_db and dd_modifica_periodico.value == "Solo questa data")
 
         txt_avviso_periodico = ft.Text(
             value=testo_avviso_iniziale,
@@ -288,7 +308,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
-            riga_giorni.update()
             
             if impegno_esistente and is_p_db:
                 if not switch_periodico.value:
@@ -296,13 +315,18 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     txt_avviso_periodico.visible = True
                 else:
                     txt_avviso_periodico.visible = False
-                txt_avviso_periodico.update()
+            page.update()
 
         switch_periodico = ft.Switch(
             label="Ripeti in questi giorni:", 
             value=switch_on_iniziale,
-            on_change=cambia_stato_periodico
+            on_change=cambia_stato_periodico,
+            visible=is_switch_visibile
         )
+        
+        # All'apertura, se è preimpostato "Solo questa data", nascondiamo subito i giorni
+        if not is_switch_visibile:
+            riga_giorni.visible = False
 
         dlg_impegno = None
         dlg_categoria = None
@@ -567,12 +591,10 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     from datetime import timedelta
                     if impegno_esistente:
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                            # 1. Esclude questa data dalla serie madre
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
                             supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
 
-                            # 2. Crea un evento isolato per oggi
                             dati_impegno['data_evento'] = data_db
                             dati_impegno['is_periodico'] = False
                             dati_impegno['data_fine_periodo'] = None
@@ -582,33 +604,33 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                             id_op = res_imp.data[0]['id']
                             
                         elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
-                            # 1. Ferma la vecchia serie al giorno prima della data cliccata
                             ieri = data_selezionata - timedelta(days=1)
                             ieri_str = ieri.strftime("%Y-%m-%d")
-                            
-                            # ATTENZIONE: Se per caso "ieri" precede la data_evento originale, allora stiamo modificando 
-                            # dal primo giorno. In tal caso, sovrascriviamo l'originale invece di spezzare.
                             dt_evento_orig = datetime.strptime(impegno_esistente['data_evento'], "%Y-%m-%d")
+                            
                             if ieri < dt_evento_orig:
-                                dati_impegno['data_evento'] = data_db # Ripartiamo da oggi
+                                # Stiamo modificando dalla prima data disponibile, aggiorna quello corrente
+                                dati_impegno['data_evento'] = data_db
                                 supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                                 supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                                 id_op = impegno_esistente['id']
                             else:
+                                # Sdoppiamento serie. Il vecchio si ferma a ieri.
                                 supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
-                                # 2. Crea la NUOVA serie che riparte da oggi
-                                dati_impegno['data_evento'] = data_db # La nuova serie nasce oggi
+                                
+                                # Il nuovo parte da "data_db". 
+                                # IMPORTANTE: Non dobbiamo MAI permettere che il calendario legga le vecchie 
+                                # "date_escluse" passate per il nuovo evento.
+                                dati_impegno['data_evento'] = data_db
                                 dati_impegno['data_fine_periodo'] = None 
-                                dati_impegno['date_escluse'] = None # Ripuliamo le esclusioni storiche
+                                dati_impegno['date_escluse'] = None
+                                
                                 res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                                 id_op = res_imp.data[0]['id']
-                            
-                        else:
-                            # Caso "Tutta la serie" o Modifica di un Evento Singolo
-                            
-                            # Se modifichiamo TUTTA LA SERIE, non dobbiamo spostare la data_evento originale 
-                            # altrimenti sfalsiamo l'inizio storico! Lasciamo intatta la data_evento originale del DB.
+                                
+                        else: # "Tutta la serie" o evento non periodico
                             if is_p_db:
+                                # Mantiene la radice storica
                                 dati_impegno['data_evento'] = impegno_esistente['data_evento']
                             else:
                                 dati_impegno['data_evento'] = data_db
