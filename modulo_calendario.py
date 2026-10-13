@@ -286,6 +286,9 @@ def crea_calendario(page: ft.Page):
         # =======================================================
         # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
         # =======================================================
+        # =======================================================
+        # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
+        # =======================================================
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
@@ -323,15 +326,18 @@ def crea_calendario(page: ft.Page):
 
             if len(colori_assegnatari) == 0:
                 sfondo_card = "#ECEFF1" # Grigio se nessuno è assegnato
-                colore_testo = ft.Colors.BLACK # ⚡ FIX DELL'ERRORE BLACK87
+                colore_testo = ft.Colors.BLACK 
             elif len(colori_assegnatari) == 1:
                 sfondo_card = colori_assegnatari[0] # Tinta unita
             else:
+                # ⚡ FIX: Coordinate assolute per bypassare l'assenza degli attributi in Flet
                 gradiente_card = ft.LinearGradient(
-                    begin=ft.alignment.top_left, end=ft.alignment.bottom_right, colors=colori_assegnatari
-                ) # Gradiente per multipli assegnatari
+                    begin=ft.Alignment(-1.0, -1.0), 
+                    end=ft.Alignment(1.0, 1.0), 
+                    colors=colori_assegnatari
+                )
 
-            # RIGA ASSEGNATARI (Testo coerente in alto contrasto)
+            # RIGA ASSEGNATARI (Sempre con testo a contrasto)
             riga_assegnatari = ft.Row(spacing=3, wrap=True)
             if vista in ["Giorno", "Settimana"]:
                 if len(assegnatari_ids) > 0:
@@ -339,7 +345,6 @@ def crea_calendario(page: ft.Page):
                         fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
                         if fam_match:
                             nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            # ⚡ FIX COERENZA: Il colore del testo ORA usa colore_testo per contrastare con lo sfondo della card
                             riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=colore_testo, weight=ft.FontWeight.BOLD))
                 else:
                     riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=colore_testo, italic=True))
