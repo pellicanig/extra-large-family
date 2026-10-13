@@ -567,38 +567,58 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     from datetime import timedelta
                     if impegno_esistente:
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
+                            # 1. Esclude questa data dalla serie madre
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
                             nuove_escluse = date_escluse_db + "," + data_sel_str if date_escluse_db else data_sel_str
                             supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
 
+                            # 2. Crea un evento isolato per oggi
                             dati_impegno['data_evento'] = data_db
                             dati_impegno['is_periodico'] = False
                             dati_impegno['data_fine_periodo'] = None
                             dati_impegno['giorni_periodici'] = None
+                            dati_impegno['date_escluse'] = None
                             res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                             id_op = res_imp.data[0]['id']
                             
                         elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
-                            # ⚡ STORICO CRISTALLIZZATO: Fermiamo la vecchia serie a ieri ⚡
+                            # 1. Ferma la vecchia serie al giorno prima della data cliccata
                             ieri = data_selezionata - timedelta(days=1)
                             ieri_str = ieri.strftime("%Y-%m-%d")
-                            supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
                             
-                            # E creiamo una NUOVA serie che parte da oggi (con le nuove modifiche)
-                            dati_impegno['data_evento'] = data_db
-                            dati_impegno['data_fine_periodo'] = None # Riapre il periodo al futuro
-                            res_imp = supabase.table('impegni').insert(dati_impegno).execute()
-                            id_op = res_imp.data[0]['id']
+                            # ATTENZIONE: Se per caso "ieri" precede la data_evento originale, allora stiamo modificando 
+                            # dal primo giorno. In tal caso, sovrascriviamo l'originale invece di spezzare.
+                            dt_evento_orig = datetime.strptime(impegno_esistente['data_evento'], "%Y-%m-%d")
+                            if ieri < dt_evento_orig:
+                                dati_impegno['data_evento'] = data_db # Ripartiamo da oggi
+                                supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
+                                supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
+                                id_op = impegno_esistente['id']
+                            else:
+                                supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
+                                # 2. Crea la NUOVA serie che riparte da oggi
+                                dati_impegno['data_evento'] = data_db # La nuova serie nasce oggi
+                                dati_impegno['data_fine_periodo'] = None 
+                                dati_impegno['date_escluse'] = None # Ripuliamo le esclusioni storiche
+                                res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                                id_op = res_imp.data[0]['id']
                             
                         else:
-                            # Caso "Tutta la serie" o "Evento Singolo"
-                            if not is_p_db:
+                            # Caso "Tutta la serie" o Modifica di un Evento Singolo
+                            
+                            # Se modifichiamo TUTTA LA SERIE, non dobbiamo spostare la data_evento originale 
+                            # altrimenti sfalsiamo l'inizio storico! Lasciamo intatta la data_evento originale del DB.
+                            if is_p_db:
+                                dati_impegno['data_evento'] = impegno_esistente['data_evento']
+                            else:
                                 dati_impegno['data_evento'] = data_db
+                                
                             supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                             supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                             id_op = impegno_esistente['id']
                     else:
                         dati_impegno["data_evento"] = data_db
+                        dati_impegno['date_escluse'] = None
                         res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                         id_op = res_imp.data[0]['id']
 
