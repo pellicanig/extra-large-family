@@ -486,7 +486,7 @@ def crea_calendario(page: ft.Page):
                             colonna_indicatori.controls.append(
                                 ft.Container(
                                     content=ft.Text(f"+ {eventi_nascosti} altri", size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                                    alignment=ft.Alignment(0, 0), padding=ft.padding.only(top=1)
+                                    alignment=ft.Alignment(0, 0), padding=2
                                 )
                             )
 
