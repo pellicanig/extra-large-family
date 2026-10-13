@@ -511,21 +511,19 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 "note": txt_note.value.strip() if txt_note.value else None
             }
 
-            if switch_periodico.value != switch_on_iniziale:
-                if switch_periodico.value == True:
-                    dati_impegno['is_periodico'] = True
-                    dati_impegno['data_fine_periodo'] = None
-                else:
-                    if impegno_esistente and is_p_db:
-                        dati_impegno['is_periodico'] = True
-                        dati_impegno['data_fine_periodo'] = data_selezionata.strftime("%Y-%m-%d")
-                    else:
-                        dati_impegno['is_periodico'] = False
-                        dati_impegno['data_fine_periodo'] = None
+            # ⚡ GESTIONE SALVATAGGIO GIORNI MULTIPLI E PERIODICITA' ⚡
+            if switch_periodico.value:
+                str_giorni = ",".join(map(str, sorted(list(selezionati_giorni))))
+                dati_impegno['giorni_periodici'] = str_giorni
+                dati_impegno['is_periodico'] = True
             else:
-                if not impegno_esistente:
-                    dati_impegno['is_periodico'] = switch_periodico.value
-                    dati_impegno['data_fine_periodo'] = None
+                dati_impegno['giorni_periodici'] = None
+                dati_impegno['is_periodico'] = False
+
+            if impegno_esistente and is_p_db:
+                dati_impegno['data_fine_periodo'] = impegno_esistente.get('data_fine_periodo')
+            else:
+                dati_impegno['data_fine_periodo'] = None
 
             try:
                 # Controllo preventivo sovrapposizioni basato su ID relazionali
@@ -539,7 +537,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     if impegno_esistente and str(ev['id']) == str(impegno_esistente['id']):
                         continue
                     
-                    # ⚡ TRUCCO "TUTTO IL GIORNO": 00:00 - 23:59 ⚡
                     o_i = ev.get('ora_inizio') or "00:00"
                     o_f = ev.get('ora_fine') or "23:59"
                     
@@ -567,6 +564,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 esito_conflitto = mappa_conflitti.get(id_test_corrente)
                 
                 def esegui_scrittura_db():
+                    from datetime import timedelta
                     if impegno_esistente:
                         if is_p_db and dd_modifica_periodico.value == "Solo questa data":
                             data_sel_str = data_selezionata.strftime("%Y-%m-%d")
@@ -576,9 +574,24 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                             dati_impegno['data_evento'] = data_db
                             dati_impegno['is_periodico'] = False
                             dati_impegno['data_fine_periodo'] = None
+                            dati_impegno['giorni_periodici'] = None
                             res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                             id_op = res_imp.data[0]['id']
+                            
+                        elif is_p_db and dd_modifica_periodico.value == "Questo e i successivi":
+                            # ⚡ STORICO CRISTALLIZZATO: Fermiamo la vecchia serie a ieri ⚡
+                            ieri = data_selezionata - timedelta(days=1)
+                            ieri_str = ieri.strftime("%Y-%m-%d")
+                            supabase.table('impegni').update({'data_fine_periodo': ieri_str}).eq('id', impegno_esistente['id']).execute()
+                            
+                            # E creiamo una NUOVA serie che parte da oggi (con le nuove modifiche)
+                            dati_impegno['data_evento'] = data_db
+                            dati_impegno['data_fine_periodo'] = None # Riapre il periodo al futuro
+                            res_imp = supabase.table('impegni').insert(dati_impegno).execute()
+                            id_op = res_imp.data[0]['id']
+                            
                         else:
+                            # Caso "Tutta la serie" o "Evento Singolo"
                             if not is_p_db:
                                 dati_impegno['data_evento'] = data_db
                             supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
