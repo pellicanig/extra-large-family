@@ -290,16 +290,22 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         )
 
         def aggiorna_ui_periodico(e=None):
-            # Logica ferrea: se scelgo "Solo questa data", sparisce la gestione dei giorni.
+            # Se l'utente sceglie "Solo questa data", disattiva e nasconde i giorni
             if dd_modifica_periodico.value == "Solo questa data":
                 switch_periodico.visible = False
                 riga_giorni.visible = False
                 txt_avviso_periodico.visible = False
             else:
+                # Se sceglie "Questo e i successivi" o "Tutta la serie", mostra lo switch e i giorni
                 switch_periodico.visible = True
                 riga_giorni.visible = switch_periodico.value
                 txt_avviso_periodico.visible = not switch_periodico.value
-            page.update()
+            
+            # Forza l'aggiornamento grafico del form a schermo
+            try:
+                page.update()
+            except:
+                pass
 
         dd_modifica_periodico = ft.Dropdown(
             label="Applica modifiche a:",
@@ -312,8 +318,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             dense=True,
             visible=(impegno_esistente is not None and is_p_db)
         )
+        
+        # Assegnazione sicura dell'evento di cambio opzione
         dd_modifica_periodico.on_change = aggiorna_ui_periodico
-
         switch_periodico.on_change = aggiorna_ui_periodico
 
         # Inizializzazione all'apertura del form
