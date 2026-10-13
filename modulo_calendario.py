@@ -287,6 +287,20 @@ def crea_calendario(page: ft.Page):
         # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
         # =======================================================
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
+            # Gestione colori assegnatari, gradiente e contrasto del testo
+            colori_assegnatari = [f.get('colore') for f_id in assegnatari_ids for f in lista_famiglia if f['id'] == f_id and f.get('colore')]
+            
+            card_bgcolor = colori_assegnatari[0] if len(colori_assegnatari) == 1 else ft.Colors.WHITE
+            card_gradient = ft.LinearGradient(
+                begin=ft.alignment.center_left,
+                end=ft.alignment.center_right,
+                colors=colori_assegnatari
+            ) if len(colori_assegnatari) > 1 else None
+
+            ha_colore = len(colori_assegnatari) > 0
+            colore_testo_prin = ft.Colors.WHITE if ha_colore else ft.Colors.BLACK
+            colore_testo_sec = ft.Colors.WHITE70 if ha_colore else ft.Colors.GREY_700
+            
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
             ora_f = imp.get('ora_fine')
