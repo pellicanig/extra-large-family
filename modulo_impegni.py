@@ -49,11 +49,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             liberi = [p for p in PALETTE_COLORI if p['hex'] not in occupati]
             return liberi if liberi else PALETTE_COLORI
 
-        # ⚡ FIX FONDAMENTALE: Ricaviamo la VERA data dell'evento cliccato ⚡
         data_istanza = data_selezionata
         if impegno_esistente and impegno_esistente.get('data_evento'):
-            try:
-                data_istanza = datetime.strptime(impegno_esistente['data_evento'], "%Y-%m-%d")
+            try: data_istanza = datetime.strptime(impegno_esistente['data_evento'], "%Y-%m-%d")
             except: pass
             
         data_istanza_str = data_istanza.strftime("%Y-%m-%d")
@@ -237,6 +235,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
         )
 
+        # ⚡ FIX: AGGIORNAMENTO MIRATO DELL'INTERFACCIA ⚡
         def aggiorna_ui_periodico(e=None):
             if dd_modifica_periodico.value == "Solo questa data":
                 switch_periodico.visible = False
@@ -246,13 +245,23 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 switch_periodico.visible = True
                 riga_giorni.visible = switch_periodico.value
                 txt_avviso_periodico.visible = not switch_periodico.value
-            try: page.update()
+            
+            # Forza l'aggiornamento visivo dei componenti nascosti
+            try:
+                switch_periodico.update()
+                riga_giorni.update()
+                txt_avviso_periodico.update()
             except: pass
 
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
             if impegno_esistente and is_p_db: txt_avviso_periodico.visible = not switch_periodico.value
-            page.update()
+            
+            # Forza l'aggiornamento visivo dei componenti nascosti
+            try:
+                riga_giorni.update()
+                txt_avviso_periodico.update()
+            except: pass
 
         switch_periodico.on_change = cambia_stato_periodico
         dd_modifica_periodico.on_change = aggiorna_ui_periodico
