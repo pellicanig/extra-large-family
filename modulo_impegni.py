@@ -310,9 +310,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ],
             value="Solo questa data",
             dense=True,
-            visible=(impegno_esistente is not None and is_p_db),
-            on_change=aggiorna_ui_periodico
+            visible=(impegno_esistente is not None and is_p_db)
         )
+        dd_modifica_periodico.on_change = aggiorna_ui_periodico
 
         switch_periodico.on_change = aggiorna_ui_periodico
 
