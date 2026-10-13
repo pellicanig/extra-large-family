@@ -305,13 +305,27 @@ def crea_calendario(page: ft.Page):
             imp['assegnatari_ids'] = assegnatari_ids
 
             icona_conflitto = None
-            if vista == "Giorno" and livello_sovrapposizione:
+            if vista in ["Giorno", "Settimana"] and livello_sovrapposizione:
                 if livello_sovrapposizione == 'lieve':
                     icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
                 elif livello_sovrapposizione == 'media':
                     icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
                 elif livello_sovrapposizione == 'grave':
                     icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
+
+            # RIGA ASSEGNATARI (Sempre generata per Giorno e Settimana)
+            riga_assegnatari = ft.Row(spacing=3, wrap=True)
+            if vista in ["Giorno", "Settimana"]:
+                if len(assegnatari_ids) > 0:
+                    for i, f_id in enumerate(assegnatari_ids):
+                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                        if fam_match:
+                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
+                            col_testo = ft.Colors.WHITE if vista == "Settimana" else fam_match.get('colore', ft.Colors.BLUE_900)
+                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=col_testo, weight=ft.FontWeight.BOLD))
+                else:
+                    col_testo = ft.Colors.WHITE if vista == "Settimana" else ft.Colors.BLUE_900
+                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=col_testo, italic=True))
 
             if vista == "Mese":
                 scala = 0.3
@@ -323,34 +337,30 @@ def crea_calendario(page: ft.Page):
                 border_card = None
                 
             elif vista == "Settimana":
-                scala = 0.8
-                min_height = 30
+                scala = 1.8 # Aumentata per far spazio a tutti gli elementi
+                min_height = 80
                 padding_card = 4
                 border_radius_card = 4
-                content_col = ft.Column([
-                    ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''}", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)], spacing=2),
-                    ft.Text(titolo, size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)
-                ], spacing=0, alignment=ft.MainAxisAlignment.START)
+                
+                elementi_settimana = [
+                    ft.Row([ft.Text(orario, size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)], spacing=2),
+                    ft.Text(titolo + icona_periodico, size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    riga_assegnatari
+                ]
+                if note:
+                    elementi_settimana.append(ft.Text(note, size=9, color=ft.Colors.WHITE70, no_wrap=False))
+                    
+                content_col = ft.Column(elementi_settimana, spacing=2, alignment=ft.MainAxisAlignment.START)
                 bgcolor_card = cat_colore
                 border_card = None
                 
             else: # Giorno
-                scala = 1.5
-                min_height = 80 
+                scala = 3.5 # Aumentata proporzionalmente
+                min_height = 120 
                 padding_card = 5  
                 border_radius_card = 8
-                riga_assegnatari = ft.Row(spacing=3, wrap=True)
-                if len(assegnatari_ids) > 0:
-                    for i, f_id in enumerate(assegnatari_ids):
-                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
-                        if fam_match:
-                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=11, color=fam_match.get('colore', ft.Colors.BLUE_900), weight=ft.FontWeight.BOLD))
-                else:
-                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=11, color=ft.Colors.BLUE_900, italic=True))
 
                 pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=10)
-                
                 elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
                 if icona_conflitto:
                     elementi_intestazione.append(icona_conflitto)
@@ -361,35 +371,34 @@ def crea_calendario(page: ft.Page):
                     ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari,
                     ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
-                ], spacing=3, scroll=ft.ScrollMode.AUTO)
+                ], spacing=3) 
+                
                 bgcolor_card = ft.Colors.WHITE
                 border_card = ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
 
             spazio_vuoto = offset_minuti * scala
             altezza_card = max(durata_minuti * scala, min_height)
 
-            card_container = ft.Container(
-                content=content_col,
-                bgcolor=bgcolor_card,
-                padding=padding_card,
-                border_radius=border_radius_card,
-                border=border_card,
-                ink=True,
-                height=altezza_card,
-                on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
-            )
+            if vista == "Mese":
+                card_container = ft.Container(
+                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
+                    border_radius=border_radius_card, border=border_card, height=altezza_card
+                )
+            else:
+                card_container = ft.Container(
+                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
+                    border_radius=border_radius_card, border=border_card, ink=True, height=altezza_card,
+                    on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
+                )
 
             if spazio_vuoto > 0:
                 card_container.width = float('inf')
                 wrapper = ft.Column([ft.Container(height=spazio_vuoto), card_container], spacing=0)
-                if espandi:
-                    wrapper.expand = 1
+                if espandi: wrapper.expand = 1
                 return wrapper
             else:
-                if espandi:
-                    card_container.expand = 1
-                else:
-                    card_container.width = float('inf')
+                if espandi: card_container.expand = 1
+                else: card_container.width = float('inf')
                 return card_container
 
 
@@ -438,7 +447,7 @@ def crea_calendario(page: ft.Page):
                         
                         riga_cerchio = ft.Row([cerchio, icona_header] if icona_header else [cerchio], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
 
-                        colonna_indicatori = ft.Column(spacing=1, expand=True, scroll=ft.ScrollMode.AUTO)
+                        colonna_indicatori = ft.Column(spacing=1, expand=True)
                         
                         conteggio = 0
                         for gruppo in gruppi_oggi:
@@ -562,7 +571,7 @@ def crea_calendario(page: ft.Page):
                             intestazione, ft.Divider(height=1, color="#E0E0E0"), 
                             ft.Container(content=colonna_indicatori, padding=2, expand=True)
                         ]), 
-                        expand=1, height=300, border=bordo_standard(), data=gc, on_click=vai_a_giorno
+                        expand=1, height=800, border=bordo_standard(), data=gc, on_click=vai_a_giorno
                     )
                 )
 
