@@ -191,6 +191,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
+        # ⚡ L'INTERFACCIA DELLA PERIODICITA' ORA E' SEMPRE VISIBILE (TUA LOGICA!) ⚡
         switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
 
         def toggle_giorno(e, indice_giorno):
@@ -218,11 +219,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 )
             )
 
-        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER)
+        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
 
         txt_avviso_periodico = ft.Text(
             value=f"🛑 Periodicità interrotta a partire dal {data_visualizzata_iniziale}",
-            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True
+            color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, italic=True,
+            visible=(is_p_db and not switch_on_iniziale)
         )
 
         dd_modifica_periodico = ft.Dropdown(
@@ -235,42 +237,14 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
         )
 
-        # ⚡ LOGICA DI VISIBILITA' PULITA E DIRETTA ⚡
-        def aggiorna_ui_periodico(e=None):
-            if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                switch_periodico.visible = False
-                riga_giorni.visible = False
-                txt_avviso_periodico.visible = False
-            else:
-                switch_periodico.visible = True
-                riga_giorni.visible = switch_periodico.value
-                txt_avviso_periodico.visible = not switch_periodico.value if is_p_db else False
-                
-            try: page.update()
-            except: pass
-
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
-            if is_p_db and dd_modifica_periodico.value != "Solo questa data":
+            if is_p_db:
                 txt_avviso_periodico.visible = not switch_periodico.value
-            else:
-                txt_avviso_periodico.visible = False
-                
             try: page.update()
             except: pass
 
-        dd_modifica_periodico.on_change = aggiorna_ui_periodico
         switch_periodico.on_change = cambia_stato_periodico
-        
-        # ⚡ IMPOSTIAMO LA VISIBILITÀ INIZIALE CORRETTA ⚡
-        if is_p_db:
-            switch_periodico.visible = False
-            riga_giorni.visible = False
-            txt_avviso_periodico.visible = False
-        else:
-            switch_periodico.visible = True
-            riga_giorni.visible = switch_on_iniziale
-            txt_avviso_periodico.visible = False
 
         dlg_impegno = None
         dlg_categoria = None
@@ -461,13 +435,18 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 "note": txt_note.value.strip() if txt_note.value else None
             }
 
-            if switch_periodico.value:
-                str_giorni = ",".join(map(str, sorted(list(selezionati_giorni))))
-                dati_impegno['giorni_periodici'] = str_giorni
-                dati_impegno['is_periodico'] = True
-            else:
+            # ⚡ LA LETTURA DEI DATI SEGUE LA TUA LOGICA: SE SOLO QUESTO EVENTO -> NIENTE PERIODICITA' ⚡
+            if is_p_db and dd_modifica_periodico.value == "Solo questa data":
                 dati_impegno['giorni_periodici'] = None
                 dati_impegno['is_periodico'] = False
+            else:
+                if switch_periodico.value:
+                    str_giorni = ",".join(map(str, sorted(list(selezionati_giorni))))
+                    dati_impegno['giorni_periodici'] = str_giorni
+                    dati_impegno['is_periodico'] = True
+                else:
+                    dati_impegno['giorni_periodici'] = None
+                    dati_impegno['is_periodico'] = False
 
             if impegno_esistente and is_p_db:
                 dati_impegno['data_fine_periodo'] = impegno_esistente.get('data_fine_periodo')
@@ -705,7 +684,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         if is_p_db: 
             colonna_contenuto.append(dd_modifica_periodico)
             
-        # ⚡ INSERIMENTO FISSO DEGLI ELEMENTI (NESSUN CONTENITORE CHE SI SVUOTA) ⚡
+        # ⚡ ORA I CONTROLLI SONO FISSATI E SEMPRE VISIBILI ⚡
         colonna_contenuto.append(switch_periodico)
         colonna_contenuto.append(riga_giorni)
         colonna_contenuto.append(txt_avviso_periodico)
