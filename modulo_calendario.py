@@ -286,6 +286,9 @@ def crea_calendario(page: ft.Page):
         # =======================================================
         # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
         # =======================================================
+        # =======================================================
+        # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
+        # =======================================================
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
@@ -310,7 +313,28 @@ def crea_calendario(page: ft.Page):
                 elif livello_sovrapposizione == 'media': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
                 elif livello_sovrapposizione == 'grave': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
-            # RIGA ASSEGNATARI COLORATA (Per Giorno e Settimana)
+            # --- NUOVA LOGICA COLORI ---
+            colori_assegnatari = []
+            for f_id in assegnatari_ids:
+                fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                if fam_match and fam_match.get('colore'):
+                    colori_assegnatari.append(fam_match['colore'])
+
+            sfondo_card = None
+            gradiente_card = None
+            colore_testo = ft.Colors.WHITE
+
+            if len(colori_assegnatari) == 0:
+                sfondo_card = "#ECEFF1" # Grigio se nessuno è assegnato
+                colore_testo = ft.Colors.BLACK87
+            elif len(colori_assegnatari) == 1:
+                sfondo_card = colori_assegnatari[0] # Tinta unita
+            else:
+                gradiente_card = ft.LinearGradient(
+                    begin=ft.alignment.top_left, end=ft.alignment.bottom_right, colors=colori_assegnatari
+                ) # Gradiente per multipli assegnatari
+
+            # RIGA ASSEGNATARI (Sempre con testo a contrasto)
             riga_assegnatari = ft.Row(spacing=3, wrap=True)
             if vista in ["Giorno", "Settimana"]:
                 if len(assegnatari_ids) > 0:
@@ -318,80 +342,61 @@ def crea_calendario(page: ft.Page):
                         fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
                         if fam_match:
                             nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            col_testo = fam_match.get('colore', ft.Colors.BLUE_900)
-                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=col_testo, weight=ft.FontWeight.BOLD))
+                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=10 if vista=="Settimana" else 11, color=colore_testo, weight=ft.FontWeight.BOLD))
                 else:
-                    col_testo = ft.Colors.BLUE_900
-                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=col_testo, italic=True))
+                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=10 if vista=="Settimana" else 11, color=colore_testo, italic=True))
 
+            # BORDO CATEGORIA (A sinistra)
+            border_card = ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), right=ft.BorderSide(1, "#E0E0E0"))
+
+            # --- CALCOLO PROPORZIONI ---
             if vista == "Mese":
-                scala = 0.3
-                min_height = 20
-                padding_card = 2
-                border_radius_card = 2
-                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
-                bgcolor_card = cat_colore
-                border_card = None
+                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
+                altezza_card = 20 
+                spazio_vuoto = 0  # FIX MESE: Niente sfalsamento orario per non strabordare
                 
             elif vista == "Settimana":
-                scala = 1.8 # Aumentato per non dover scorrere
-                min_height = 80
-                padding_card = 4
-                border_radius_card = 4
-                
-                # Grafica chiara come nel Giorno
-                pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=8)
-                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_testo, size=8), ft.Text(cat_nome + icona_periodico, size=9, weight=ft.FontWeight.BOLD, color=colore_testo)]
                 if icona_conflitto: elementi_intestazione.append(icona_conflitto)
 
                 elementi_settimana = [
                     ft.Row(elementi_intestazione, spacing=3, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=10, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                    ft.Text(titolo, size=11, color=ft.Colors.BLACK, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    ft.Text(orario, size=10, color=colore_testo, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=11, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari
                 ]
                 if note:
-                    elementi_settimana.append(ft.Text(note, size=9, color=ft.Colors.GREY_600, no_wrap=False))
+                    elementi_settimana.append(ft.Text(note, size=9, color=colore_testo, no_wrap=False))
                     
                 content_col = ft.Column(elementi_settimana, spacing=2, alignment=ft.MainAxisAlignment.START)
-                bgcolor_card = ft.Colors.WHITE
-                border_card = ft.Border(left=ft.BorderSide(4, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
+                altezza_card = max(durata_minuti * 1.8, 80)
+                spazio_vuoto = offset_minuti * 1.8
                 
             else: # Giorno
-                scala = 3.5 
-                min_height = 120 
-                padding_card = 5  
-                border_radius_card = 8
-
-                pallino_categoria = ft.Icon(ft.Icons.CIRCLE, color=cat_colore, size=10)
-                elementi_intestazione = [pallino_categoria, ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=cat_colore)]
+                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_testo, size=10), ft.Text(cat_nome + icona_periodico, size=11, weight=ft.FontWeight.BOLD, color=colore_testo)]
                 if icona_conflitto:
                     elementi_intestazione.append(icona_conflitto)
 
                 content_col = ft.Column([
                     ft.Row(elementi_intestazione, spacing=5, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=13, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD),
-                    ft.Text(titolo, size=16, weight=ft.FontWeight.BOLD, no_wrap=False),
+                    ft.Text(orario, size=13, color=colore_testo, weight=ft.FontWeight.BOLD),
+                    ft.Text(titolo, size=16, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari,
-                    ft.Text(note, size=12, color=ft.Colors.GREY_600) if note else ft.Container()
+                    ft.Text(note, size=12, color=colore_testo) if note else ft.Container()
                 ], spacing=3) 
                 
-                bgcolor_card = ft.Colors.WHITE
-                border_card = ft.Border(left=ft.BorderSide(5, cat_colore), top=ft.BorderSide(1, "#EEEEEE"), bottom=ft.BorderSide(1, "#EEEEEE"), right=ft.BorderSide(1, "#EEEEEE"))
-
-            spazio_vuoto = offset_minuti * scala
-            altezza_card = max(durata_minuti * scala, min_height)
+                altezza_card = max(durata_minuti * 3.5, 120)
+                spazio_vuoto = offset_minuti * 3.5
 
             if vista == "Mese":
-                # NIENTE ON_CLICK QUI: impedisce di cliccare sul singolo evento
                 card_container = ft.Container(
-                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
-                    border_radius=border_radius_card, border=border_card, height=altezza_card
+                    content=content_col, bgcolor=sfondo_card, gradient=gradiente_card, padding=2,
+                    border_radius=2, border=border_card, height=altezza_card
                 )
             else:
                 card_container = ft.Container(
-                    content=content_col, bgcolor=bgcolor_card, padding=padding_card,
-                    border_radius=border_radius_card, border=border_card, ink=True, height=altezza_card,
+                    content=content_col, bgcolor=sfondo_card, gradient=gradiente_card, padding=5 if vista=="Giorno" else 4,
+                    border_radius=8 if vista=="Giorno" else 4, border=border_card, ink=True, height=altezza_card,
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
                 )
 
@@ -452,35 +457,25 @@ def crea_calendario(page: ft.Page):
                         riga_cerchio = ft.Row([cerchio, icona_header] if icona_header else [cerchio], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
 
                         # NO SCROLL
-                        colonna_indicatori = ft.Column(spacing=1)
+                        colonna_indicatori = ft.Column(spacing=1, expand=True)
                         
                         gruppi_mostrati = 0
                         eventi_mostrati = 0
                         for gruppo in gruppi_oggi:
-                            if gruppi_mostrati >= 2: break # Mostra al massimo 2 righe di eventi
+                            if gruppi_mostrati >= 2: break # Mostra massimo 2 righe nel mese
                             
                             if len(gruppo) == 1:
-                                inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
-                                fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
-                                se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
-                                durata = max((fine + se_notte) - inizio, 30)
-                                colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Mese", espandi=False, offset_minuti=0, durata_minuti=durata))
+                                colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Mese", espandi=False))
                             else:
                                 riga_ind = ft.Row(spacing=1, vertical_alignment=ft.CrossAxisAlignment.START)
-                                minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
                                 for ev in gruppo:
-                                    inizio = calcola_minuti(ev.get('ora_inizio'))
-                                    fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
-                                    se_notte = 1440 if (fine <= inizio and ev.get('ora_fine')) else 0
-                                    durata = max((fine + se_notte) - inizio, 30)
-                                    offset = inizio - minuti_minimi
-                                    riga_ind.controls.append(crea_card(ev, vista="Mese", espandi=True, offset_minuti=offset, durata_minuti=durata))
+                                    riga_ind.controls.append(crea_card(ev, vista="Mese", espandi=True))
                                 colonna_indicatori.controls.append(riga_ind)
                                 
                             eventi_mostrati += len(gruppo)
                             gruppi_mostrati += 1
                         
-                        # ETICHETTA "+ N altri"
+                        # CONTEGGIO ESATTO DEGLI EVENTI RIMANENTI E NASCOSTI
                         eventi_nascosti = len(eventi_oggi) - eventi_mostrati
                         if eventi_nascosti > 0:
                             colonna_indicatori.controls.append(
