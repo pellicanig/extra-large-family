@@ -797,6 +797,19 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Divider(height=1, color="#E0E0E0")
         ]
         
+        # Se l'impegno è periodico, aggiungiamo la tendina di scelta della modifica
+        if is_p_db:
+            colonna_contenuto.append(dd_modifica_periodico)
+            
+        # Aggiungiamo sempre lo switch della periodicità, i pallini dei giorni, l'avviso e le note
+        colonna_contenuto.extend([
+            switch_periodico, 
+            riga_giorni, 
+            txt_avviso_periodico, 
+            txt_note, 
+            txt_errore_form
+        ])
+        
         if is_p_db:
             colonna_contenuto.append(dd_modifica_periodico)
             
