@@ -191,6 +191,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
+        # Creazione dei componenti SENZA property visible
         switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
 
         def toggle_giorno(e, indice_giorno):
@@ -235,44 +236,36 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             value="Solo questa data", dense=True, visible=(impegno_esistente is not None and is_p_db)
         )
 
-        # ⚡ CONTENITORE DINAMICO ANIMATO PER I CAMPI PERIODICITÀ ⚡
-        periodico_container = ft.Column([
-            switch_periodico,
-            riga_giorni,
-            txt_avviso_periodico
-        ], spacing=5, animate_size=300)
+        # ⚡ CONTENITORE DINAMICO: SI RIEMPIE E SI SVUOTA ⚡
+        periodico_container = ft.Column(spacing=5)
 
         def aggiorna_visibilita(e=None):
-            # Se siamo su "Solo questa data" nascondiamo l'intero blocco
-            if is_p_db and dd_modifica_periodico.value == "Solo questa data":
-                periodico_container.visible = False
-            else:
-                periodico_container.visible = True
-                riga_giorni.visible = switch_periodico.value
-                
-                # L'avviso appare solo se stavamo modificando un evento periodico e abbiamo spento l'interruttore
-                if is_p_db and not switch_periodico.value:
-                    txt_avviso_periodico.visible = True
-                else:
-                    txt_avviso_periodico.visible = False
-                    
-            try: periodico_container.update()
-            except: pass
+            # Svuota fisicamente il contenitore
+            periodico_container.controls.clear()
 
-        def cambia_stato_periodico(e):
-            riga_giorni.visible = switch_periodico.value
-            if is_p_db and not switch_periodico.value:
-                txt_avviso_periodico.visible = True
+            if is_p_db and dd_modifica_periodico.value == "Solo questa data":
+                # Se "Solo questa data", il container rimane vuoto (nessuno switch, nessun avviso)
+                pass
             else:
-                txt_avviso_periodico.visible = False
+                # Appende lo switch
+                periodico_container.controls.append(switch_periodico)
                 
-            try: periodico_container.update()
+                if switch_periodico.value:
+                    # Se lo switch è ON, appende i pallini dei giorni
+                    periodico_container.controls.append(riga_giorni)
+                else:
+                    # Se lo switch è OFF e stavamo modificando un evento periodico, appende l'avviso
+                    if is_p_db:
+                        periodico_container.controls.append(txt_avviso_periodico)
+
+            # page.update() forza il ricalcolo dell'altezza nel popup
+            try: page.update()
             except: pass
 
         dd_modifica_periodico.on_change = aggiorna_visibilita
-        switch_periodico.on_change = cambia_stato_periodico
-        
-        # Forza l'impostazione corretta della visibilità all'avvio del form
+        switch_periodico.on_change = aggiorna_visibilita
+
+        # Inizializzazione pulita
         aggiorna_visibilita()
 
         dlg_impegno = None
