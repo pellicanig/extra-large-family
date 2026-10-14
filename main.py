@@ -69,6 +69,27 @@ def main(page: ft.Page):
         # Calcolo data odierna in italiano
         oggi = datetime.now()
         data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
+
+        # ⚡ CONTENITORI E SWITCH IMPEGNI / MENU ⚡
+        vista_impegni_box = ft.Container(content=modulo_calendario.crea_calendario(page), visible=True, expand=True)
+        vista_menu_box = ft.Container(content=modulo_menu.crea_calendario_menu(page), visible=False, expand=True)
+
+        def cambia_modalita_home(ev):
+            is_menu = switch_modalita.value
+            vista_impegni_box.visible = not is_menu
+            vista_menu_box.visible = is_menu
+            lbl_impegni.weight = ft.FontWeight.NORMAL if is_menu else ft.FontWeight.BOLD
+            lbl_menu.weight = ft.FontWeight.BOLD if is_menu else ft.FontWeight.NORMAL
+            page.update()
+
+        lbl_impegni = ft.Text("📅 IMPEGNI", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
+        switch_modalita = ft.Switch(value=False, on_change=cambia_modalita_home)
+        lbl_menu = ft.Text("🍽️ MENU", size=13, weight=ft.FontWeight.NORMAL, color=ft.Colors.BLUE_900)
+
+        barra_switch = ft.Container(
+            content=ft.Row([lbl_impegni, switch_modalita, lbl_menu], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+            bgcolor="#EEF2F6", padding=4
+        )
         
         page.views.append(
             ft.View(
@@ -84,7 +105,6 @@ def main(page: ft.Page):
                             spacing=0,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER
                         ), 
-                        # Corretto: 'Colors' con la C maiuscola
                         bgcolor=ft.Colors.BLUE_900,
                         color=ft.Colors.WHITE,
                         center_title=True,
@@ -100,7 +120,9 @@ def main(page: ft.Page):
                             )
                         ]
                     ),
-                    modulo_calendario.crea_calendario(page)
+                    barra_switch,
+                    vista_impegni_box,
+                    vista_menu_box
                 ],
                 padding=0 
             )
