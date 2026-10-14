@@ -80,6 +80,12 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             elif data_fine_db > data_istanza_str:
                 switch_on_iniziale = True
 
+        val_ev_db = impegno_esistente.get('is_evidenziato') if impegno_esistente else None
+        if val_ev_db is None:
+            evidenziato_iniziale = not is_p_db
+        else:
+            evidenziato_iniziale = True if str(val_ev_db).lower() in ['true', '1', 't', 'y', 'yes'] else False
+
         txt_titolo = ft.TextField(label="Titolo Impegno", hint_text="Scrivi qui...", value=titolo_iniziale, text_size=13)
         
         def formatta_data_input(e):
@@ -218,9 +224,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             )
 
         riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
+        switch_evidenziato = ft.Switch(label="Evidenziato", value=evidenziato_iniziale)
 
         def cambia_stato_periodico(e):
             riga_giorni.visible = switch_periodico.value
+            switch_evidenziato.value = not switch_periodico.value
             try: page.update()
             except: pass
 
@@ -414,7 +422,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 "ora_inizio": ora_inizio_db,
                 "ora_fine": ora_fine_db,
                 "id_categoria": dd_categoria.value,
-                "note": txt_note.value.strip() if txt_note.value else None
+                "note": txt_note.value.strip() if txt_note.value else None,
+                "is_evidenziato": switch_evidenziato.value
             }
 
             # Se modifichiamo un evento GIA' periodico, apriamo il popup per chiedere come applicare
@@ -652,6 +661,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Divider(height=1, color="#E0E0E0"),
             switch_periodico,
             riga_giorni,
+            switch_evidenziato,
             txt_note,
             txt_errore_form
         ]
