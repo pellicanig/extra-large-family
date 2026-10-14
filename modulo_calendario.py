@@ -59,6 +59,24 @@ def crea_calendario(page: ft.Page):
     def bordo_personalizzato(colore):
         return ft.Border(top=ft.BorderSide(2, colore), bottom=ft.BorderSide(2, colore), left=ft.BorderSide(2, colore), right=ft.BorderSide(2, colore))
 
+    def bordo_evidenziato_blu():
+        return ft.Border(
+            top=ft.BorderSide(2.5, "#64B5F6"),    # Blu chiaro (Alto)
+            left=ft.BorderSide(2.5, "#2196F3"),   # Blu medio (Sinistra)
+            right=ft.BorderSide(2.5, "#1565C0"),  # Blu intenso (Destra)
+            bottom=ft.BorderSide(2.5, "#0D47A1")  # Blu scuro (Basso)
+        )
+
+    def ha_eventi_evidenziati(lista_ev):
+        for ev in lista_ev:
+            val_p = ev.get('is_periodico')
+            is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
+            val_ev = ev.get('is_evidenziato')
+            is_ev = (not is_p) if val_ev is None else (True if str(val_ev).lower() in ['true', '1', 't', 'y', 'yes'] else False)
+            if is_ev:
+                return True
+        return False
+
     layer_mese = ft.Column(spacing=0, visible=True)
     layer_settimana = ft.Column(spacing=0, visible=False)
     layer_giorno = ft.Column(spacing=0, visible=False)
@@ -524,7 +542,7 @@ def crea_calendario(page: ft.Page):
                                     ft.Container(content=colonna_indicatori, expand=True)
                                 ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=2),
                                 # ALTEZZA FISSA A 90. IL CLICK APRE LA VISTA GIORNO.
-                                expand=1, height=90, border=bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
+                                expand=1, height=90, border=bordo_evidenziato_blu() if ha_eventi_evidenziati(eventi_oggi) else bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
                             )
                         )
                 griglia.controls.append(riga)
@@ -617,7 +635,7 @@ def crea_calendario(page: ft.Page):
                         intestazione, ft.Divider(height=1, color="#E0E0E0"), 
                         ft.Container(content=colonna_indicatori, padding=2, expand=True)
                     ]), 
-                    expand=1, height=400, border=bordo_standard(), data=gc, on_click=vai_a_giorno
+                    expand=1, height=400, border=bordo_evidenziato_blu() if ha_eventi_evidenziati(eventi_oggi) else bordo_standard(), data=gc, on_click=vai_a_giorno
                 )
 
                 # Distribuisce i giorni sulle due righe
