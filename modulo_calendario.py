@@ -320,10 +320,14 @@ def crea_calendario(page: ft.Page):
 
             # --- LOGICA COLORI (EVIDENZIATO vs SFONDO CHIARO) ---
             colori_assegnatari = []
-            for f_id in assegnatari_ids:
-                fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
-                if fam_match and fam_match.get('colore'):
-                    colori_assegnatari.append(fam_match['colore'])
+            if len(assegnatari_ids) > 0:
+                for f_id in assegnatari_ids:
+                    fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                    if fam_match and fam_match.get('colore'):
+                        colori_assegnatari.append(fam_match['colore'])
+            else:
+                # Tutta la famiglia: raccoglie i colori di tutti i componenti
+                colori_assegnatari = [f['colore'] for f in lista_famiglia if f.get('colore')]
 
             sfondo_card = None
             gradiente_card = None
