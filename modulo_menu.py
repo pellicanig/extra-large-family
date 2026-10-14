@@ -1096,7 +1096,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime):
         "Solo giorno sel.",
         "Tutto il mese"
     ]
-     riga_bottoni_filtro = ft.Row(wrap=True, spacing=4, run_spacing=4)
+    riga_bottoni_filtro = ft.Row(wrap=True, spacing=4, run_spacing=4)
 
     def cambia_filtro_spesa(nuova_scelta):
         stato_filtro["scelta"] = nuova_scelta
