@@ -39,17 +39,18 @@ def connetti_e_sveglia_supabase():
 
 connetti_e_sveglia_supabase()
 
-# ⚡ CUSTODE SILENZIOSO: TIENE SVEGLIO SUPABASE E AIUTA UPTIME ROBOT ⚡
+# ⚡ CUSTODE SILENZIOSO: PING OGNI 4 MINUTI CON ANTI-CACHE PER NON FAR SPEGNERE RENDER ⚡
 def custode_keep_alive():
     while True:
-        time.sleep(600) # Ogni 10 minuti
+        time.sleep(240) # Ogni 4 minuti (sotto la soglia di 15 min di Render)
         try:
             connetti_e_sveglia_supabase()
         except Exception:
             pass
         try:
             if RENDER_URL:
-                req = urllib.request.Request(RENDER_URL, headers={'User-Agent': 'ELF-KeepAlive'})
+                url_ping = f"{RENDER_URL.rstrip('/')}/?ping={int(time.time())}"
+                req = urllib.request.Request(url_ping, headers={'User-Agent': 'ELF-KeepAlive', 'Cache-Control': 'no-cache'})
                 urllib.request.urlopen(req, timeout=10)
         except Exception:
             pass
@@ -77,16 +78,25 @@ def main(page: ft.Page):
         )
         return # Ferma l'esecuzione dell'app qui, non carica il calendario
 
-    # ⚡ MAGIA MULTI-PLAYER: L'ANTENNA RICEVENTE GLOBALE ⚡
+    # ⚡ SINCRONIZZAZIONE SELETTIVA (NON RICARICA IMPEGNI SE MODIFICHI IL MENU) ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
+        elif messaggio == "aggiorna_menu":
             if hasattr(page, "aggiorna_vista_menu") and callable(page.aggiorna_vista_menu):
                 page.aggiorna_vista_menu()
 
-    # Iscriviamo questo specifico dispositivo al canale radio di Flet
     page.pubsub.subscribe(ricevi_broadcast)
+
+    # ⚡ GESTIONE RITORNO DALLO STANDBY SU SMARTPHONE ⚡
+    def al_ritorno_in_app(e):
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    page.on_connect = al_ritorno_in_app
 
     def naviga(route_string):
         page.route = route_string
@@ -99,12 +109,16 @@ def main(page: ft.Page):
         oggi = datetime.now()
         data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
 
-        # ⚡ CONTENITORI E SWITCH IMPEGNI / MENU ⚡
+        # ⚡ CARICA SUBITO IMPEGNI, E CARICA IL MENU SOLO AL PRIMO SWITCH (AVVIO ISTANTANEO) ⚡
         vista_impegni_box = ft.Container(content=modulo_calendario.crea_calendario(page), visible=True, expand=True)
-        vista_menu_box = ft.Container(content=modulo_menu.crea_calendario_menu(page), visible=False, expand=True)
+        vista_menu_box = ft.Container(content=None, visible=False, expand=True)
+        menu_inizializzato = [False]
 
         def cambia_modalita_home(ev):
             is_menu = switch_modalita.value
+            if is_menu and not menu_inizializzato[0]:
+                vista_menu_box.content = modulo_menu.crea_calendario_menu(page)
+                menu_inizializzato[0] = True
             vista_impegni_box.visible = not is_menu
             vista_menu_box.visible = is_menu
             lbl_impegni.weight = ft.FontWeight.NORMAL if is_menu else ft.FontWeight.BOLD
