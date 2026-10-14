@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
+import modulo_menu
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -50,9 +51,10 @@ def main(page: ft.Page):
     # ⚡ MAGIA MULTI-PLAYER: L'ANTENNA RICEVENTE GLOBALE ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
-            # Se la pagina ha una vista attiva configurata per aggiornarsi, la esegue in background
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
+            if hasattr(page, "aggiorna_vista_menu") and callable(page.aggiorna_vista_menu):
+                page.aggiorna_vista_menu()
 
     # Iscriviamo questo specifico dispositivo al canale radio di Flet
     page.pubsub.subscribe(ricevi_broadcast)
