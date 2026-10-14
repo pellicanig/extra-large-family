@@ -1,5 +1,8 @@
 import flet as ft
 import os
+import threading
+import time
+import urllib.request
 from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
@@ -12,20 +15,46 @@ load_dotenv()
 # Il .strip() rimuove eventuali spazi vuoti invisibili copiati per sbaglio su Render
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://extra-large-family.onrender.com").strip()
 
 supabase = None
 messaggio_errore = ""
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    messaggio_errore = "ERRORE: Variabili SUPABASE_URL o SUPABASE_KEY mancanti su Render."
-else:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        # Test di connessione reale: proviamo a leggere 1 riga
-        supabase.table('famiglia').select('id').limit(1).execute()
-    except Exception as e:
-        supabase = None
-        messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
+def connetti_e_sveglia_supabase():
+    global supabase, messaggio_errore
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        messaggio_errore = "ERRORE: Variabili SUPABASE_URL o SUPABASE_KEY mancanti su Render."
+        return False
+    for tentativo in range(3):
+        try:
+            if supabase is None:
+                supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            supabase.table('famiglia').select('id').limit(1).execute()
+            messaggio_errore = ""
+            return True
+        except Exception as e:
+            messaggio_errore = f"ERRORE DI CONNESSIONE SUPABASE: {str(e)}"
+            time.sleep(2)
+    return False
+
+connetti_e_sveglia_supabase()
+
+# ⚡ CUSTODE SILENZIOSO: TIENE SVEGLIO SUPABASE E AIUTA UPTIME ROBOT ⚡
+def custode_keep_alive():
+    while True:
+        time.sleep(600) # Ogni 10 minuti
+        try:
+            connetti_e_sveglia_supabase()
+        except Exception:
+            pass
+        try:
+            if RENDER_URL:
+                req = urllib.request.Request(RENDER_URL, headers={'User-Agent': 'ELF-KeepAlive'})
+                urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            pass
+
+threading.Thread(target=custode_keep_alive, daemon=True).start()
 
 # Array per tradurre il mese in italiano
 MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
