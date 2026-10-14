@@ -485,7 +485,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
         txt_ing = ft.TextField(label="Cerca o scrivi ingrediente...", dense=True, text_size=12, expand=True)
         txt_qta = ft.TextField(label="Quantità", value="1", dense=True, text_size=12, expand=1)
         dd_unita = ft.Dropdown(
-            label="Unità", value="pz", dense=True, expand=1, content_padding=5,
+            value="pz", dense=True, expand=1, content_padding=ft.Padding(10, 0, 10, 0),
             options=[ft.dropdown.Option(u) for u in UNITA_MISURA]
         )
         riga_suggerimenti = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
