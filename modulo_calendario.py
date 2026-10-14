@@ -283,9 +283,7 @@ def crea_calendario(page: ft.Page):
             except Exception as e:
                 print("Errore caricamento impegni:", e)
 
-        # =======================================================
-        # COSTRUTTORE UNIVERSALE DELLE CARD (SCALABILE E SENZA MARGINI)
-        # =======================================================
+       
         # =======================================================
         # COSTRUTTORE UNIVERSALE DELLE CARD (COMPATTO IN ALTEZZA)
         # =======================================================
@@ -304,6 +302,13 @@ def crea_calendario(page: ft.Page):
             is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
             icona_periodico = " 🔄" if is_p else ""
 
+            # STATO EVIDENZIATO (Default: Singoli = True, Periodici = False)
+            val_ev = imp.get('is_evidenziato')
+            if val_ev is None:
+                is_evidenziato = not is_p
+            else:
+                is_evidenziato = True if str(val_ev).lower() in ['true', '1', 't', 'y', 'yes'] else False
+
             assegnatari_ids = [f['id_familiare'] for f in imp.get('impegni_familiari', [])] if imp.get('impegni_familiari') else []
             imp['assegnatari_ids'] = assegnatari_ids
 
@@ -313,7 +318,7 @@ def crea_calendario(page: ft.Page):
                 elif livello_sovrapposizione == 'media': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
                 elif livello_sovrapposizione == 'grave': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
-            # --- LOGICA COLORI ---
+            # --- LOGICA COLORI (EVIDENZIATO vs SFONDO CHIARO) ---
             colori_assegnatari = []
             for f_id in assegnatari_ids:
                 fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
@@ -322,74 +327,91 @@ def crea_calendario(page: ft.Page):
 
             sfondo_card = None
             gradiente_card = None
-            colore_testo = ft.Colors.WHITE
 
-            if len(colori_assegnatari) == 0:
-                sfondo_card = "#ECEFF1" 
-                colore_testo = ft.Colors.BLACK 
-            elif len(colori_assegnatari) == 1:
-                sfondo_card = colori_assegnatari[0] 
-            else:
-                gradiente_card = ft.LinearGradient(
-                    begin=ft.Alignment(-1.0, -1.0), 
-                    end=ft.Alignment(1.0, 1.0), 
-                    colors=colori_assegnatari
-                )
-
-            # RIGA ASSEGNATARI
-            riga_assegnatari = ft.Row(spacing=2, wrap=True)
-            if vista in ["Giorno", "Settimana"]:
-                if len(assegnatari_ids) > 0:
-                    for i, f_id in enumerate(assegnatari_ids):
-                        fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
-                        if fam_match:
-                            nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
-                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=9 if vista=="Settimana" else 10, color=colore_testo, weight=ft.FontWeight.BOLD))
+            if is_evidenziato:
+                colore_testo = ft.Colors.WHITE
+                if len(colori_assegnatari) == 0:
+                    sfondo_card = "#ECEFF1" 
+                    colore_testo = ft.Colors.BLACK 
+                elif len(colori_assegnatari) == 1:
+                    sfondo_card = colori_assegnatari[0] 
                 else:
-                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=9 if vista=="Settimana" else 10, color=colore_testo, italic=True))
+                    gradiente_card = ft.LinearGradient(
+                        begin=ft.Alignment(-1.0, -1.0), 
+                        end=ft.Alignment(1.0, 1.0), 
+                        colors=colori_assegnatari
+                    )
+                colore_cat_header = colore_testo
+                colore_orario = colore_testo
+                colore_note = colore_testo
+            else:
+                sfondo_card = ft.Colors.WHITE
+                gradiente_card = None
+                colore_testo = ft.Colors.BLACK
+                colore_cat_header = cat_colore
+                colore_orario = ft.Colors.GREY_700
+                colore_note = ft.Colors.GREY_600
 
-            border_card = ft.Border(left=ft.BorderSide(4 if vista=="Settimana" else 5, cat_colore), top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), right=ft.BorderSide(1, "#E0E0E0"))
+            # RIGA ASSEGNATARI (Per Giorno, Settimana e Mese)
+            riga_assegnatari = ft.Row(spacing=2, wrap=True)
+            elementi_mese_assegnatari = []
+
+            if len(assegnatari_ids) > 0:
+                for i, f_id in enumerate(assegnatari_ids):
+                    fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                    if fam_match:
+                        nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
+                        col_asg = colore_testo if is_evidenziato else fam_match.get('colore', ft.Colors.BLUE_900)
+                        if vista in ["Giorno", "Settimana"]:
+                            riga_assegnatari.controls.append(ft.Text(nome_testo, size=9 if vista=="Settimana" else 10, color=col_asg, weight=ft.FontWeight.BOLD))
+                        else:
+                            elementi_mese_assegnatari.append(ft.Text(nome_testo, size=7, color=col_asg, weight=ft.FontWeight.BOLD, no_wrap=True))
+            else:
+                col_asg = colore_testo if is_evidenziato else ft.Colors.BLUE_900
+                if vista in ["Giorno", "Settimana"]:
+                    riga_assegnatari.controls.append(ft.Text("Tutta la famiglia", size=9 if vista=="Settimana" else 10, color=col_asg, italic=True))
+                else:
+                    elementi_mese_assegnatari.append(ft.Text("Tutti", size=7, color=col_asg, italic=True, no_wrap=True))
+
+            border_card = ft.Border(left=ft.BorderSide(4 if vista in ["Mese", "Settimana"] else 5, cat_colore), top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), right=ft.BorderSide(1, "#E0E0E0"))
 
             # --- ALTEZZE, SPAZIATURE E TESTI COMPATTATI ---
             if vista == "Mese":
-                content_col = ft.Row([ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=True)], spacing=2, alignment=ft.MainAxisAlignment.START)
+                testo_base_mese = ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=True)
+                content_col = ft.Row([testo_base_mese] + elementi_mese_assegnatari, spacing=3, alignment=ft.MainAxisAlignment.START)
                 altezza_card = 20 
                 spazio_vuoto = 0 
                 
             elif vista == "Settimana":
-                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_testo, size=7), ft.Text(cat_nome + icona_periodico, size=8, weight=ft.FontWeight.BOLD, color=colore_testo)]
+                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_cat_header, size=7), ft.Text(cat_nome + icona_periodico, size=8, weight=ft.FontWeight.BOLD, color=colore_cat_header)]
                 if icona_conflitto: elementi_intestazione.append(icona_conflitto)
 
                 elementi_settimana = [
                     ft.Row(elementi_intestazione, spacing=3, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=9, color=colore_testo, weight=ft.FontWeight.BOLD),
+                    ft.Text(orario, size=9, color=colore_orario, weight=ft.FontWeight.BOLD),
                     ft.Text(titolo, size=10, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari
                 ]
                 if note:
-                    elementi_settimana.append(ft.Text(note, size=8, color=colore_testo, no_wrap=False))
+                    elementi_settimana.append(ft.Text(note, size=8, color=colore_note, no_wrap=False))
                     
-                # ⚡ SPACING=1 per azzerare l'aria tra le righe di testo
                 content_col = ft.Column(elementi_settimana, spacing=1, alignment=ft.MainAxisAlignment.START)
-                
-                # ⚡ SCALA a 0.9 e ALTEZZA MINIMA a 65 (Molto più compatta)
                 altezza_card = max(durata_minuti * 0.9, 65)
                 spazio_vuoto = offset_minuti * 0.9
                 
             else: # Giorno
-                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_testo, size=9), ft.Text(cat_nome + icona_periodico, size=10, weight=ft.FontWeight.BOLD, color=colore_testo)]
+                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_cat_header, size=9), ft.Text(cat_nome + icona_periodico, size=10, weight=ft.FontWeight.BOLD, color=colore_cat_header)]
                 if icona_conflitto:
                     elementi_intestazione.append(icona_conflitto)
 
                 content_col = ft.Column([
                     ft.Row(elementi_intestazione, spacing=4, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=11, color=colore_testo, weight=ft.FontWeight.BOLD),
+                    ft.Text(orario, size=11, color=colore_orario, weight=ft.FontWeight.BOLD),
                     ft.Text(titolo, size=14, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=False),
                     riga_assegnatari,
-                    ft.Text(note, size=10, color=colore_testo) if note else ft.Container()
-                ], spacing=1) # ⚡ SPACING=1
+                    ft.Text(note, size=10, color=colore_note) if note else ft.Container()
+                ], spacing=1)
                 
-                # ⚡ SCALA a 1.3 e ALTEZZA MINIMA a 75
                 altezza_card = max(durata_minuti * 1.3, 75)
                 spazio_vuoto = offset_minuti * 1.3
 
@@ -401,7 +423,7 @@ def crea_calendario(page: ft.Page):
             else:
                 card_container = ft.Container(
                     content=content_col, bgcolor=sfondo_card, gradient=gradiente_card, 
-                    padding=4 if vista=="Giorno" else 3, # ⚡ PADDING RIDOTTO PER GUADAGNARE SPAZIO
+                    padding=4 if vista=="Giorno" else 3,
                     border_radius=6 if vista=="Giorno" else 4, border=border_card, ink=True, height=altezza_card,
                     on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
                 )
