@@ -16,8 +16,18 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
+_thread_local_db = threading.local()
+
+class _ThreadSafeSupabase:
+    def table(self, nome_tabella: str):
+        cli = getattr(_thread_local_db, "client", None)
+        if cli is None:
+            cli = create_client(SUPABASE_URL, SUPABASE_KEY)
+            _thread_local_db.client = cli
+        return cli.table(nome_tabella)
+
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    supabase = _ThreadSafeSupabase() if (SUPABASE_URL and SUPABASE_KEY) else None
 except Exception as e:
     supabase = None
     print(f"Errore connessione Supabase in modulo_ricette: {e}")
