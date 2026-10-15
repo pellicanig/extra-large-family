@@ -305,7 +305,7 @@ def crea_selettore_unita(page: ft.Page, valore_iniziale="pz", width=72, height=3
 
 
 # ==========================================================
-# GESTIONE SICURA ANAGRAFICA (ANTI-CRASH DUPLICATI 23505)
+# GESTIONE SICURA ANAGRAFICA (SEMPRE ALLINEATA CON SUPABASE)
 # ==========================================================
 def assicura_cache_anagrafica(forza_ricarica=False):
     if not supabase:
@@ -317,35 +317,40 @@ def assicura_cache_anagrafica(forza_ricarica=False):
         if forza_ricarica or CACHE_ANAGRAFICA["ricette"] is None:
             res_ric = supabase.table("ricette").select("*").limit(5000).order("nome").execute()
             CACHE_ANAGRAFICA["ricette"] = res_ric.data if res_ric.data else []
+            ids_validi = {str(r["id"]) for r in CACHE_ANAGRAFICA["ricette"] if r.get("id")}
+            CACHE_ANAGRAFICA["conteggio_ing_ricette"] = {
+                k: v for k, v in CACHE_ANAGRAFICA["conteggio_ing_ricette"].items() if k in ids_validi
+            }
     except Exception as ex:
         print("Errore caricamento cache anagrafica:", ex)
     return CACHE_ANAGRAFICA["ingredienti"] or [], CACHE_ANAGRAFICA["ricette"] or []
 
 
-def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bool = False):
+def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bool = False, ignora_cache: bool = False):
     nome_pulito = re.sub(r"\s+", " ", (nome_raw or "").strip()).capitalize()
     if not nome_pulito:
         return None
-    lista_ing, _ = assicura_cache_anagrafica(forza_ricarica=False)
+    lista_ing, _ = assicura_cache_anagrafica(forza_ricarica=ignora_cache)
     unita_clean = str(unita_scelta or "g").replace("|DET", "").strip()
     unita_db = f"{unita_clean}|DET" if is_detersivo else unita_clean
 
-    esistente = next((i for i in lista_ing if i["nome"].strip().lower() == nome_pulito.lower()), None)
-    if esistente:
-        if is_detersivo and not esistente.get("is_detersivo"):
-            esistente["is_detersivo"] = True
-            CACHE_ANAGRAFICA["ids_detersivi"].add(esistente["id"])
-            try:
-                supabase.table("ingredienti").update({"unita_default": unita_db}).eq("id", esistente["id"]).execute()
-            except Exception:
-                pass
-        return esistente["id"]
+    if not ignora_cache:
+        esistente = next((i for i in lista_ing if i["nome"].strip().lower() == nome_pulito.lower()), None)
+        if esistente:
+            if is_detersivo and not esistente.get("is_detersivo"):
+                esistente["is_detersivo"] = True
+                CACHE_ANAGRAFICA["ids_detersivi"].add(esistente["id"])
+                try:
+                    supabase.table("ingredienti").update({"unita_default": unita_db}).eq("id", esistente["id"]).execute()
+                except Exception:
+                    pass
+            return esistente["id"]
 
     try:
         res_db = supabase.table("ingredienti").select("*").ilike("nome", nome_pulito).limit(1).execute()
         if res_db.data:
             trovato = normalizza_ingrediente_record(res_db.data[0])
-            lista_ing.append(trovato)
+            CACHE_ANAGRAFICA["ingredienti"] = [x for x in lista_ing if x["nome"].strip().lower() != nome_pulito.lower()] + [trovato]
             return trovato["id"]
     except Exception:
         pass
@@ -353,7 +358,7 @@ def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bo
     try:
         res_ins = supabase.table("ingredienti").insert({"nome": nome_pulito, "unita_default": unita_db}).execute()
         nuovo = normalizza_ingrediente_record(res_ins.data[0])
-        lista_ing.append(nuovo)
+        CACHE_ANAGRAFICA["ingredienti"] = [x for x in lista_ing if x["nome"].strip().lower() != nome_pulito.lower()] + [nuovo]
         return nuovo["id"]
     except Exception:
         res_retry = supabase.table("ingredienti").select("*").ilike("nome", nome_pulito).limit(1).execute()
@@ -364,33 +369,39 @@ def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bo
     return None
 
 
-def ottieni_o_crea_ricetta_sicura(nome_raw: str, portata: str = "Primo"):
+def ottieni_o_crea_ricetta_sicura(nome_raw: str, portata: str = "Primo", ignora_cache: bool = False):
     nome_pulito = re.sub(r"\s+", " ", (nome_raw or "").strip()).capitalize()
-    _, lista_ric = assicura_cache_anagrafica(forza_ricarica=False)
-    esistente = next((r for r in lista_ric if r["nome"].strip().lower() == nome_pulito.lower()), None)
-    if esistente:
-        return esistente
+    _, lista_ric = assicura_cache_anagrafica(forza_ricarica=ignora_cache)
+
+    if not ignora_cache:
+        esistente = next((r for r in lista_ric if r["nome"].strip().lower() == nome_pulito.lower()), None)
+        if esistente:
+            return esistente
+
     try:
         res_db = supabase.table("ricette").select("*").ilike("nome", nome_pulito).limit(1).execute()
         if res_db.data:
-            lista_ric.append(res_db.data[0])
-            return res_db.data[0]
+            trovata = res_db.data[0]
+            CACHE_ANAGRAFICA["ricette"] = [r for r in lista_ric if r["nome"].strip().lower() != nome_pulito.lower()] + [trovata]
+            return trovata
     except Exception:
         pass
+
     try:
         res_new = supabase.table("ricette").insert({
             "nome": nome_pulito,
             "portata_default": codifica_meta_portata(portata, 8)
         }).execute()
         nuova = res_new.data[0]
-        lista_ric.append(nuova)
+        CACHE_ANAGRAFICA["ricette"] = [r for r in lista_ric if r["nome"].strip().lower() != nome_pulito.lower()] + [nuova]
         CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(nuova["id"])] = 0
         return nuova
     except Exception:
         res_retry = supabase.table("ricette").select("*").ilike("nome", nome_pulito).limit(1).execute()
         if res_retry.data:
-            lista_ric.append(res_retry.data[0])
-            return res_retry.data[0]
+            trovata = res_retry.data[0]
+            CACHE_ANAGRAFICA["ricette"] = [r for r in lista_ric if r["nome"].strip().lower() != nome_pulito.lower()] + [trovata]
+            return trovata
     return None
 
 
@@ -440,7 +451,27 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
 
     supabase.table("ricette_ingredienti").delete().eq("id_ricetta", id_ricetta).execute()
     if righe_ri_bulk:
-        supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
+        try:
+            supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
+        except Exception:
+            # Se un ingrediente era stato cancellato da Supabase, forza ricreazione sul DB
+            righe_ri_bulk.clear()
+            ids_ing_usati.clear()
+            for it in lista_items:
+                nome_i = (it.get("nome") or "").strip()
+                unita_i = it.get("unita") or "g"
+                id_ing = ottieni_o_crea_ing_sicuro(nome_i, unita_i, is_detersivo=False, ignora_cache=True)
+                if id_ing and id_ing not in ids_ing_usati:
+                    ids_ing_usati.add(id_ing)
+                    righe_ri_bulk.append({
+                        "id_ricetta": id_ricetta,
+                        "id_ingrediente": id_ing,
+                        "quantita": float(it.get("quantita") or 0),
+                        "unita_misura": unita_i
+                    })
+            if righe_ri_bulk:
+                supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
+
     CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_ri_bulk)
     return len(righe_ri_bulk)
 
@@ -646,7 +677,6 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     query_pulita = re.sub(r"(?i)\b(il|la|lo|è|gia|già|pronto|pronta|comprato|comprata)\b", " ", query_pulita)
     query_pulita = re.sub(r"\s+", " ", query_pulita).strip() or query_ricerca.strip()
 
-    # Espansione sinonimi per trovare subito le ricette semplici italiane
     queries_da_provare = [query_pulita]
     if "pizza di patate" in query_pulita.lower() or "tortino di patate" in query_pulita.lower():
         queries_da_provare.append("gateau di patate")
@@ -988,8 +1018,10 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
     def assicura_id_ricetta_reale():
         id_curr = stato_popup["id_ricetta"]
         if is_valid_uuid(id_curr):
-            return id_curr
-        ric_creata = ottieni_o_crea_ricetta_sicura(stato_popup["nome_ricetta"], portata)
+            res_chk = supabase.table("ricette").select("id").eq("id", id_curr).limit(1).execute()
+            if res_chk.data:
+                return id_curr
+        ric_creata = ottieni_o_crea_ricetta_sicura(stato_popup["nome_ricetta"], portata, ignora_cache=True)
         vero_id = str(ric_creata["id"])
         stato_popup["id_ricetta"] = vero_id
         return vero_id
@@ -1057,7 +1089,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     t = (txt_nuovo_i.value or "").strip().lower()
                     riga_sugg.controls.clear()
                     if t:
-                        matches = [i for i in lista_ingredienti if not i.get("is_detersivo") and t in i["nome"].lower()][:6]
+                        matches = [i for i in (CACHE_ANAGRAFICA.get("ingredienti") or []) if not i.get("is_detersivo") and t in i["nome"].lower()][:6]
                         for m in matches:
                             riga_sugg.controls.append(
                                 ft.Container(
@@ -1091,9 +1123,15 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                                 if gia_es.data:
                                     supabase.table("ricette_ingredienti").update({"quantita": q_v, "unita_misura": u_v}).eq("id", gia_es.data[0]["id"]).execute()
                                 else:
-                                    supabase.table("ricette_ingredienti").insert({
-                                        "id_ricetta": id_ric, "id_ingrediente": id_i, "quantita": q_v, "unita_misura": u_v
-                                    }).execute()
+                                    try:
+                                        supabase.table("ricette_ingredienti").insert({
+                                            "id_ricetta": id_ric, "id_ingrediente": id_i, "quantita": q_v, "unita_misura": u_v
+                                        }).execute()
+                                    except Exception:
+                                        id_i_fresh = ottieni_o_crea_ing_sicuro(n_val, u_v, is_detersivo=False, ignora_cache=True)
+                                        supabase.table("ricette_ingredienti").insert({
+                                            "id_ricetta": id_ric, "id_ingrediente": id_i_fresh, "quantita": q_v, "unita_misura": u_v
+                                        }).execute()
                                 stato_popup["mostra_web"] = False
                                 CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = CACHE_ANAGRAFICA["conteggio_ing_ricette"].get(str(id_ric), 0) + 1
                                 if on_close_refresh:
@@ -1235,7 +1273,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                                 content=ft.Column([
                                     ft.Row([
                                         ft.Text(f"▪ {nome_i}", size=12, weight=ft.FontWeight.BOLD, expand=True),
-                                        ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14, on_click=lambda e, item=ing_info: apri_popup_rinomina_ingrediente(page, item, lista_ingredienti, ricarica_ingredienti_ricetta)),
+                                        ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14, on_click=lambda e, item=ing_info: apri_popup_rinomina_ingrediente(page, item, CACHE_ANAGRAFICA.get("ingredienti") or [], ricarica_ingredienti_ricetta)),
                                         ft.IconButton(icon=ft.Icons.CLOSE, icon_color=ft.Colors.RED_700, icon_size=15, on_click=elim_ing_ri)
                                     ], spacing=2),
                                     ft.Row([
@@ -1432,7 +1470,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
 
 # ==========================================================
-# POPUP INSERIMENTO LAMPO PIATTO UNICO (CHIUSURA 0ms + STATO GRIGIO -> GIALLO/VERDE)
+# POPUP INSERIMENTO LAMPO PIATTO UNICO (AUTO-RIPARAZIONE SE CANCELLATO DA SUPABASE)
 # ==========================================================
 def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime, categoria: str, subcategoria: str, voci_giorno_attuali: list, on_optimistic_add, on_done_callback):
     if not supabase:
@@ -1480,19 +1518,31 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
         if on_optimistic_add:
             on_optimistic_add(voce_ottimistica)
 
-        # 3. AGGIORNA IL DB IN BACKGROUND E PASSA DA GRIGIO A GIALLO/VERDE
+        # 3. SALVA SU SUPABASE E AUTO-RIPARA SE LA RICETTA ERA STATA CANCELLATA DAL DB
         def worker():
             try:
                 ric_reale = match_db if match_db else ottieni_o_crea_ricetta_sicura(nome_pulito, subcategoria)
                 if not ric_reale:
-                    return
+                    ric_reale = ottieni_o_crea_ricetta_sicura(nome_pulito, subcategoria, ignora_cache=True)
                 id_ric = ric_reale["id"]
-                res_ins = supabase.table("menu_giornalieri").insert({
-                    "data_menu": data_str,
-                    "categoria": categoria,
-                    "subcategoria": subcategoria,
-                    "id_ricetta": id_ric
-                }).execute()
+
+                try:
+                    res_ins = supabase.table("menu_giornalieri").insert({
+                        "data_menu": data_str,
+                        "categoria": categoria,
+                        "subcategoria": subcategoria,
+                        "id_ricetta": id_ric
+                    }).execute()
+                except Exception:
+                    # L'ID in cache era stato cancellato da Supabase! Ricrea subito sul DB e riprova
+                    ric_reale = ottieni_o_crea_ricetta_sicura(nome_pulito, subcategoria, ignora_cache=True)
+                    id_ric = ric_reale["id"]
+                    res_ins = supabase.table("menu_giornalieri").insert({
+                        "data_menu": data_str,
+                        "categoria": categoria,
+                        "subcategoria": subcategoria,
+                        "id_ricetta": id_ric
+                    }).execute()
 
                 voce_ottimistica["id_ricetta"] = id_ric
                 voce_ottimistica["ricette"] = ric_reale
@@ -1501,10 +1551,12 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
                     voce_ottimistica["id"] = res_ins.data[0]["id"]
 
                 aggiorna_conteggio_ricette_visibili([id_ric])
-                if on_done_callback:
-                    on_done_callback()
             except Exception as ex:
                 print("Errore inserimento piatto unico:", ex)
+                voce_ottimistica["in_salvataggio"] = False
+            finally:
+                if on_done_callback:
+                    on_done_callback()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1512,7 +1564,7 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
         t = (txt_piatto.value or "").strip().lower()
         riga_sugg.controls.clear()
         if t:
-            matches = [r for r in lista_ricette if t in r["nome"].lower()][:8]
+            matches = [r for r in (CACHE_ANAGRAFICA.get("ricette") or []) if t in r["nome"].lower()][:8]
             for m in matches:
                 ha_ing = ricetta_ha_ingredienti(m["id"])
                 riga_sugg.controls.append(
@@ -1678,21 +1730,35 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
                 if modo_scelto == "Ricetta":
                     ric_obj = ottieni_o_crea_ricetta_sicura(nome_v, "Dolci")
                     if ric_obj:
-                        supabase.table("menu_giornalieri").insert({
-                            "data_menu": data_str, "categoria": categoria, "subcategoria": "Dolci", "id_ricetta": ric_obj["id"]
-                        }).execute()
+                        try:
+                            supabase.table("menu_giornalieri").insert({
+                                "data_menu": data_str, "categoria": categoria, "subcategoria": "Dolci", "id_ricetta": ric_obj["id"]
+                            }).execute()
+                        except Exception:
+                            ric_obj = ottieni_o_crea_ricetta_sicura(nome_v, "Dolci", ignora_cache=True)
+                            supabase.table("menu_giornalieri").insert({
+                                "data_menu": data_str, "categoria": categoria, "subcategoria": "Dolci", "id_ricetta": ric_obj["id"]
+                            }).execute()
                         aggiorna_conteggio_ricette_visibili([ric_obj["id"]])
                 else:
                     id_i = ottieni_o_crea_ing_sicuro(nome_v, u_val, is_detersivo=is_categoria_detersivi)
                     if id_i:
-                        supabase.table("menu_giornalieri").insert({
-                            "data_menu": data_str, "categoria": categoria, "subcategoria": None,
-                            "id_ingrediente": id_i, "quantita": q_val, "unita_misura": u_val
-                        }).execute()
-                if on_done_callback:
-                    on_done_callback()
+                        try:
+                            supabase.table("menu_giornalieri").insert({
+                                "data_menu": data_str, "categoria": categoria, "subcategoria": None,
+                                "id_ingrediente": id_i, "quantita": q_val, "unita_misura": u_val
+                            }).execute()
+                        except Exception:
+                            id_i = ottieni_o_crea_ing_sicuro(nome_v, u_val, is_detersivo=is_categoria_detersivi, ignora_cache=True)
+                            supabase.table("menu_giornalieri").insert({
+                                "data_menu": data_str, "categoria": categoria, "subcategoria": None,
+                                "id_ingrediente": id_i, "quantita": q_val, "unita_misura": u_val
+                            }).execute()
             except Exception as ex:
                 print("Errore salvataggio voce:", ex)
+            finally:
+                if on_done_callback:
+                    on_done_callback()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1775,7 +1841,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
     def carica_dati_giorno_db(inizializza_aperture=False):
         nonlocal lista_ingredienti, lista_ricette, menu_del_giorno, mappa_ricette_ing
-        lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=False)
+        lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=True)
         res_menu = supabase.table("menu_giornalieri").select(
             "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
         ).eq("data_menu", data_str).execute()
@@ -1925,7 +1991,6 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             ings_associati = mappa_ricette_ing.get(id_ric, [])
             ha_i = len(ings_associati) > 0
 
-            # Lista espansa degli ingredienti direttamente visibile anche in Modalità Completa!
             col_ing_espansi = ft.Column(spacing=4)
             for ri in ings_associati:
                 ing_info = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
@@ -2004,7 +2069,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                 return
             esegui_azione_db("⏳ Creazione...", lambda: supabase.table("menu_giornalieri").insert({
                 "data_menu": data_str, "categoria": categoria, "subcategoria": subcategoria or "Dolci",
-                "id_ricetta": ottieni_o_crea_ricetta_sicura(n_r, subcategoria or "Dolci")["id"]
+                "id_ricetta": ottieni_o_crea_ricetta_sicura(n_r, subcategoria or "Dolci", ignora_cache=True)["id"]
             }).execute())
 
         return ft.Column([
@@ -2300,7 +2365,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
 
 
 # ==========================================================
-# CALENDARIO DEI MENU (CON STATO GRIGIO TEMPORANEO E VARIE BIVALENTE)
+# CALENDARIO DEI MENU (SINCRONIZZAZIONE CACHE AUTOMATICA + VARIE BIVALENTE)
 # ==========================================================
 def crea_calendario_menu(page: ft.Page):
     stato = {"data": datetime.now(), "vista": "Mese", "semplificata": False}
@@ -2704,7 +2769,8 @@ def crea_calendario_menu(page: ft.Page):
             dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
             if supabase:
                 try:
-                    assicura_cache_anagrafica(forza_ricarica=False)
+                    # ⚡ FORZA SEMPRE IL RIALLINEAMENTO CON SUPABASE IN BACKGROUND ⚡
+                    assicura_cache_anagrafica(forza_ricarica=True)
                     data_rif = data.replace(day=1)
                     inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
                     fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
@@ -2761,3 +2827,4 @@ def crea_calendario_menu(page: ft.Page):
         content=ft.Column([header, area_dinamica, ft.Divider(height=10, color="#EEEEEE"), btn_fai_la_spesa], spacing=10, scroll=ft.ScrollMode.AUTO),
         padding=5, expand=True
     )
+    
