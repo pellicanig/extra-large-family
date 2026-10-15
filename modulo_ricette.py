@@ -16,14 +16,19 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-_thread_local_db = threading.local()
+_CLIENT_POOL = []
+_POOL_LOCK = threading.Lock()
 
 class _ThreadSafeSupabase:
     def table(self, nome_tabella: str):
-        cli = getattr(_thread_local_db, "client", None)
-        if cli is None:
-            cli = create_client(SUPABASE_URL, SUPABASE_KEY)
-            _thread_local_db.client = cli
+        with _POOL_LOCK:
+            if not _CLIENT_POOL:
+                for _ in range(3):
+                    c = create_client(SUPABASE_URL, SUPABASE_KEY)
+                    _ = c.postgrest
+                    _CLIENT_POOL.append(c)
+            cli = _CLIENT_POOL.pop(0)
+            _CLIENT_POOL.append(cli)
         return cli.table(nome_tabella)
 
 try:
@@ -1149,15 +1154,12 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             riga_top_meta.append(
                 ft.Column([
                     ft.Text(f"👥 Dosi attuali calibrate per {porzioni_attuali} persone", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
-                    ft.Container(
-                        content=ft.Row([
-                            ft.Icon(ft.Icons.OPEN_IN_NEW, size=13, color=ft.Colors.WHITE),
-                            ft.Text("🔗 Apri preparazione sul sito della ricetta", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
-                        ], spacing=4, tight=True),
-                        bgcolor=ft.Colors.BLUE_700, padding=ft.Padding(8, 4, 8, 4), border_radius=6,
-                        url=url_prep_attivo
+                    ft.TextButton(
+                        "🔗 Apri preparazione sul sito della ricetta",
+                        url=url_prep_attivo,
+                        style=ft.ButtonStyle(padding=0)
                     )
-                ], spacing=4, expand=True)
+                ], spacing=2, expand=True)
             )
 
             box_p_pers = crea_box_quantita(str(porzioni_attuali), width=84, height=32, text_size=12, mostra_prefisso=True, prefisso_custom="Pers.:")
@@ -1263,11 +1265,12 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             ings_s = scala_ingredienti_candidato(cand, p_t)
 
             def applica_cand(e):
-                # Aggiorna SUBITO il popup in 0 ms mostrando gli ingredienti, la foto e il link preparazione!
+                # Aggiorna SUBITO il popup in 0 ms chiudendo l'anteprima e mostrando ingredienti, foto e link preparazione!
                 stato_popup["porzioni"] = p_t
                 stato_popup["url_fonte"] = cand.get("url_fonte", "")
                 stato_popup["foto_url"] = cand.get("foto_url", "")
                 stato_popup["modificato"] = True
+                stato_popup["risultati_web"] = []
                 stato_popup["righe_ri"] = [
                     {
                         "id": f"temp_ri_{i}_{int(time.time()*1000)}",
@@ -1297,6 +1300,19 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             riga_f = []
             if cand.get("foto_url"):
                 riga_f.append(ft.Image(src=cand["foto_url"], width=64, height=64, border_radius=8))
+
+            col_t = [
+                ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                ft.Text(f"Fonte: {cand['sito']} (dosi per {p_t} pers.)", size=10, color=ft.Colors.GREY_700),
+                ft.TextButton(
+                    "🔗 Apri ricetta / preparazione in una nuova scheda",
+                    url=url_f,
+                    style=ft.ButtonStyle(padding=0)
+                )
+            ]
+            if cand.get("preparazione_breve"):
+                col_t.append(ft.Text(f"👩‍🍳 {cand['preparazione_breve']}", size=10, italic=True, color=ft.Colors.BLUE_GREY_800))
+            riga_f.append(ft.Column(col_t, spacing=2, expand=True))
 
             col_t = [
                 ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
