@@ -94,28 +94,33 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
     def carica_dati_giorno_db(inizializza_aperture=False):
         nonlocal lista_ingredienti, lista_ricette, menu_del_giorno, mappa_ricette_ing
-        lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=false)
-        res_menu = supabase.table("menu_giornalieri").select(
-            "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
-        ).eq("data_menu", data_str).execute()
-        menu_del_giorno = res_menu.data if res_menu.data else []
-        ids_ricette_giorno = [m["id_ricetta"] for m in menu_del_giorno if is_valid_uuid(m.get("id_ricetta"))]
-        mappa_ricette_ing.clear()
-        if ids_ricette_giorno:
-            res_ri = supabase.table("ricette_ingredienti").select(
-                "*, ingredienti(id, nome, unita_default)"
-            ).in_("id_ricetta", ids_ricette_giorno).execute()
-            for riga in (res_ri.data or []):
-                rid = riga["id_ricetta"]
-                mappa_ricette_ing.setdefault(rid, []).append(riga)
-            for rid in ids_ricette_giorno:
-                CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(rid)] = len(mappa_ricette_ing.get(rid, []))
-        if inizializza_aperture:
-            for m in menu_del_giorno:
-                if m["categoria"] in SUPERCATEGORIE:
-                    cat_aperte.add(m["categoria"])
-                if m.get("subcategoria"):
-                    sub_aperte.add((m["categoria"], m["subcategoria"]))
+        try:
+            lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=False)
+            res_menu = supabase.table("menu_giornalieri").select(
+                "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
+            ).eq("data_menu", data_str).execute()
+            menu_del_giorno = res_menu.data if res_menu.data else []
+
+            ids_ricette_giorno = [m["id_ricetta"] for m in menu_del_giorno if is_valid_uuid(m.get("id_ricetta"))]
+            mappa_ricette_ing.clear()
+            if ids_ricette_giorno:
+                res_ri = supabase.table("ricette_ingredienti").select(
+                    "*, ingredienti(id, nome, unita_default)"
+                ).in_("id_ricetta", ids_ricette_giorno).execute()
+                for riga in (res_ri.data or []):
+                    rid = riga["id_ricetta"]
+                    mappa_ricette_ing.setdefault(rid, []).append(riga)
+                for rid in ids_ricette_giorno:
+                    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(rid)] = len(mappa_ricette_ing.get(rid, []))
+
+            if inizializza_aperture:
+                for m in menu_del_giorno:
+                    if m["categoria"] in SUPERCATEGORIE:
+                        cat_aperte.add(m["categoria"])
+                    if m.get("subcategoria"):
+                        sub_aperte.add((m["categoria"], m["subcategoria"]))
+        except Exception as ex:
+            print("Errore carica_dati_giorno_db:", ex)
 
     def esegui_azione_db(testo_loading, funzione_db, ricarica_giorno=True):
         mostra_loading(testo_loading)
@@ -403,9 +408,13 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
         page.update()
 
     def avvio():
-        carica_dati_giorno_db(inizializza_aperture=True)
-        disegna_form_da_memoria()
-        nascondi_loading()
+        try:
+            carica_dati_giorno_db(inizializza_aperture=True)
+            disegna_form_da_memoria()
+        except Exception as ex:
+            print("Errore avvio form giorno:", ex)
+        finally:
+            nascondi_loading()
 
     threading.Thread(target=avvio, daemon=True).start()
 
