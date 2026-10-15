@@ -409,6 +409,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
     def avvio():
         try:
+            disegna_form_da_memoria()
             carica_dati_giorno_db(inizializza_aperture=True)
             disegna_form_da_memoria()
         except Exception as ex:
