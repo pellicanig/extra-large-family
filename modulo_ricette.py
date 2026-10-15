@@ -534,7 +534,7 @@ Rispondi SOLO in JSON:
             with urllib.request.urlopen(req, timeout=7) as resp:
                 risp_json = json.loads(resp.read().decode("utf-8", errors="ignore"))
             dati_ai = json.loads(risp_json["candidates"][0]["content"]["parts"][0]["text"])
-            ings_ validi = []
+            ings_validi = []
             for item in dati_ai.get("ingredienti_base", []):
                 u = item.get("unita", "g")
                 if u not in UNITA_MISURA:
@@ -627,7 +627,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
             info = estrai_info_complete_da_pagina_ricetta(html_r, link)
             if info and info.get("raw_ings"):
                 ings = [analizza_stringa_ingrediente_web_base(rs) for rs in info["raw_ings"]]
-                ings_ validi = [x for x in ings if x]
+                ings_validi = [x for x in ings if x]
                 if ings_validi:
                     risultati_trovati.append({
                         "titolo": info["titolo"],
