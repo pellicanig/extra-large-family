@@ -812,41 +812,62 @@ def crea_calendario_menu(page: ft.Page):
             pass
 
         def worker_calendario():
-            dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
-            if supabase:
-                try:
-                    assicura_cache_anagrafica(forza_ricarica=false)
-                    data_rif = data.replace(day=1)
-                    inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
-                    fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
-                    primo_mese_corr = data.replace(day=1).strftime("%Y-%m-%d")
-                    ultimo_mese_corr = data.replace(day=calendar.monthrange(data.year, data.month)[1]).strftime("%Y-%m-%d")
+            if not supabase:
+                badge_loading_cal.visible = False
+                disegna_vista_da_ram()
+                return
 
-                    res = supabase.table("menu_giornalieri").select("*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)").gte("data_menu", inizio_f).lte("data_menu", fine_f).execute()
-                    ids_ric_vis = set()
-                    for riga in (res.data or []):
-                        cat_r, d_str = riga.get("categoria"), riga["data_menu"]
-                        if is_valid_uuid(riga.get("id_ricetta")):
-                            ids_ric_vis.add(riga["id_ricetta"])
-                        if cat_r == "Dispensa" and primo_mese_corr <= d_str <= ultimo_mese_corr:
-                            voci_dispensa_mese.append(riga)
-                        elif cat_r == "Detersivi" and primo_mese_corr <= d_str <= ultimo_mese_corr:
-                            if riga.get("id_ingrediente"):
-                                CACHE_ANAGRAFICA["ids_detersivi"].add(riga["id_ingrediente"])
-                            voci_detersivi_mese.append(riga)
-                        elif cat_r not in ["Dispensa", "Detersivi"]:
-                            dizionario_menu.setdefault(d_str, []).append(riga)
+            try:
+                assicura_cache_anagrafica(forza_ricarica=False)
+                data_rif = data.replace(day=1)
+                inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
+                fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
+                primo_mese_corr = data.replace(day=1).strftime("%Y-%m-%d")
+                ultimo_mese_corr = data.replace(day=calendar.monthrange(data.year, data.month)[1]).strftime("%Y-%m-%d")
 
-                    if ids_ric_vis:
-                        aggiorna_conteggio_ricette_visibili(list(ids_ric_vis))
-                except Exception as ex:
-                    print("Errore caricamento menu:", ex)
+                res = supabase.table("menu_giornalieri").select(
+                    "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
+                ).gte("data_menu", inizio_f).lte("data_menu", fine_f).execute()
 
-            ram_menu["dizionario_menu"] = dizionario_menu
-            ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
-            ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
-            badge_loading_cal.visible = False
-            disegna_vista_da_ram()
+                dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
+                ids_ric_vis = set()
+
+                for riga in (res.data or []):
+                    cat_r, d_str = riga.get("categoria"), riga["data_menu"]
+                    if is_valid_uuid(riga.get("id_ricetta")):
+                        ids_ric_vis.add(riga["id_ricetta"])
+                    if cat_r == "Dispensa" and primo_mese_corr <= d_str <= ultimo_mese_corr:
+                        voci_dispensa_mese.append(riga)
+                    elif cat_r == "Detersivi" and primo_mese_corr <= d_str <= ultimo_mese_corr:
+                        if riga.get("id_ingrediente"):
+                            CACHE_ANAGRAFICA["ids_detersivi"].add(riga["id_ingrediente"])
+                        voci_detersivi_mese.append(riga)
+                    elif cat_r not in ["Dispensa", "Detersivi"]:
+                        dizionario_menu.setdefault(d_str, []).append(riga)
+
+                # Preserva eventuali piatti appena inseriti che sono ancora in fase di salvataggio
+                for d_k, lista_old in ram_menu["dizionario_menu"].items():
+                    for item_old in lista_old:
+                        if item_old.get("in_salvataggio"):
+                            nome_old = (item_old.get("ricette") or {}).get("nome", "").lower()
+                            gia_su_db = any(
+                                (x.get("ricette") or {}).get("nome", "").lower() == nome_old
+                                for x in dizionario_menu.get(d_k, [])
+                            )
+                            if not gia_su_db:
+                                dizionario_menu.setdefault(d_k, []).append(item_old)
+
+                if ids_ric_vis:
+                    aggiorna_conteggio_ricette_visibili(list(ids_ric_vis))
+
+                ram_menu["dizionario_menu"] = dizionario_menu
+                ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
+                ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
+            except Exception as ex:
+                print("Errore caricamento menu:", ex)
+            finally:
+                badge_loading_cal.visible = False
+                disegna_vista_da_ram()
 
         threading.Thread(target=worker_calendario, daemon=True).start()
 
