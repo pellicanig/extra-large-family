@@ -596,7 +596,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
             req = urllib.request.Request(u_search, headers=headers)
             with urllib.request.urlopen(req, timeout=6) as resp:
                 html_s = html.unescape(resp.read().decode("utf-8", errors="ignore"))
-                html_s = urllib.parse.unquote(html_s)
+            html_s = urllib.parse.unquote(html_s)
             trovati = (
                 re.findall(r'https://ricette\.giallozafferano\.it/[a-zA-Z0-9\-_]+\.html', html_s) +
                 re.findall(r'https://www\.cucchiaio\.it/ricetta/[a-zA-Z0-9\-_]+/?', html_s) +
