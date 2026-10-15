@@ -40,10 +40,42 @@ COLORI_PASTI = {
     "Detersivi": "#546E7A"
 }
 
+# Catalogo suggerimenti base per Detersivi e Casa (completamente separato dal vitto)
+CATALOGO_DETERSIVI_BASE = [
+    ("Detersivo lavatrice", "l"),
+    ("Detersivo piatti", "l"),
+    ("Pastiglie lavastoviglie", "pz"),
+    ("Ammorbidente", "l"),
+    ("Candeggina", "l"),
+    ("Sgrassatore", "pz"),
+    ("Detergente pavimenti", "l"),
+    ("Detergente bagno / anticalcare", "pz"),
+    ("Detergente vetri / multiuso", "pz"),
+    ("Carta igienica", "pz"),
+    ("Carta assorbente / Scottex", "pz"),
+    ("Tovaglioli di carta", "pz"),
+    ("Sacchetti spazzatura", "pz"),
+    ("Sacchetti umido", "pz"),
+    ("Spugne cucina", "pz"),
+    ("Panni microfibra", "pz"),
+    ("Sapone liquido mani", "pz"),
+    ("Bagnoschiuma", "pz"),
+    ("Shampoo", "pz"),
+    ("Dentifricio", "pz"),
+    ("Pellicola trasparente", "pz"),
+    ("Carta forno", "pz"),
+    ("Carta alluminio", "pz"),
+    ("Sale lavastoviglie", "kg"),
+    ("Brillantante lavastoviglie", "ml"),
+]
+PAROLE_CHIAVE_DETERSIVI = {x[0].lower() for x in CATALOGO_DETERSIVI_BASE}
+
+# ⚡ CACHE GLOBALE IN RAM PER RISPOSTA ISTANTANEA E ZERO FREEZE ⚡
 CACHE_ANAGRAFICA = {
     "ingredienti": None,
     "ricette": None,
-    "conteggio_ing_ricette": None
+    "conteggio_ing_ricette": None,
+    "ids_detersivi": set()
 }
 
 
@@ -65,6 +97,15 @@ def chiudi_dialog_sicuro(page: ft.Page, dlg: ft.AlertDialog):
     except AttributeError:
         dlg.open = False
         page.update()
+
+
+def apri_url_esterno(page: ft.Page, url: str):
+    if not url:
+        return
+    try:
+        page.launch_url(url)
+    except Exception as ex:
+        print("Errore apertura URL:", ex)
 
 
 def parse_qta(val_str):
@@ -101,9 +142,92 @@ def aggiorna_flag_preso_db(id_riga_menu, valore_bool):
 
 
 # ==========================================================
+# GESTIONE METADATI RICETTA (PORTATA, PERSONE, LINK SITO, FOTO)
+# ==========================================================
+def estrai_meta_ricetta(ric_obj: dict):
+    if not ric_obj:
+        return {"portata": "Primo", "porzioni": 8, "url_fonte": "", "foto_url": ""}
+    raw_portata = str(ric_obj.get("portata_default") or "Primo")
+    parti = raw_portata.split("||")
+    portata = parti[0] if parti[0] in SUB_CON_RICETTA else "Primo"
+    porzioni = 8
+    if len(parti) > 1 and parti[1].strip().isdigit():
+        p_val = int(parti[1].strip())
+        if p_val >= 1:
+            porzioni = p_val
+    url_fonte = parti[2].strip() if len(parti) > 2 else ""
+    foto_url = parti[3].strip() if len(parti) > 3 else ""
+
+    if ric_obj.get("porzioni"):
+        try:
+            porzioni = int(ric_obj["porzioni"])
+        except Exception:
+            pass
+    if ric_obj.get("url_fonte"):
+        url_fonte = str(ric_obj["url_fonte"])
+    if ric_obj.get("foto_url"):
+        foto_url = str(ric_obj["foto_url"])
+
+    return {
+        "portata": portata,
+        "porzioni": porzioni,
+        "url_fonte": url_fonte,
+        "foto_url": foto_url
+    }
+
+
+def codifica_meta_portata(portata: str, porzioni: int, url_fonte: str = "", foto_url: str = ""):
+    p_clean = portata if portata in SUB_CON_RICETTA else "Primo"
+    num_p = max(1, int(porzioni or 8))
+    u_clean = (url_fonte or "").replace("||", "").strip()
+    f_clean = (foto_url or "").replace("||", "").strip()
+    return f"{p_clean}||{num_p}||{u_clean}||{f_clean}"
+
+
+def salva_meta_ricetta_db(id_ricetta: str, portata: str, porzioni: int, url_fonte: str = "", foto_url: str = "", nuovo_nome: str = None):
+    val_codificato = codifica_meta_portata(portata, porzioni, url_fonte, foto_url)
+    payload = {"portata_default": val_codificato}
+    if nuovo_nome:
+        payload["nome"] = nuovo_nome
+    supabase.table("ricette").update(payload).eq("id", id_ricetta).execute()
+    # Aggiorna anche in cache RAM
+    if CACHE_ANAGRAFICA["ricette"]:
+        for r in CACHE_ANAGRAFICA["ricette"]:
+            if str(r.get("id")) == str(id_ricetta):
+                r["portata_default"] = val_codificato
+                if nuovo_nome:
+                    r["nome"] = nuovo_nome
+                break
+
+
+# ==========================================================
+# GESTIONE DISTINZIONE VITTO vs DETERSIVI
+# ==========================================================
+def normalizza_ingrediente_record(ing_raw: dict):
+    u_raw = str(ing_raw.get("unita_default") or "g")
+    is_det = False
+    if "|DET" in u_raw:
+        is_det = True
+        u_clean = u_raw.replace("|DET", "").strip() or "pz"
+    else:
+        u_clean = u_raw.strip() or "g"
+
+    nome_low = str(ing_raw.get("nome") or "").strip().lower()
+    if nome_low in PAROLE_CHIAVE_DETERSIVI or ing_raw.get("id") in CACHE_ANAGRAFICA["ids_detersivi"]:
+        is_det = True
+
+    copia = dict(ing_raw)
+    copia["unita_default"] = u_clean if u_clean in UNITA_MISURA else "pz"
+    copia["is_detersivo"] = is_det
+    if is_det and copia.get("id"):
+        CACHE_ANAGRAFICA["ids_detersivi"].add(copia["id"])
+    return copia
+
+
+# ==========================================================
 # COMPONENTI GEMELLI: QUANTITÀ E UNITÀ CON STESSA ALTEZZA AL PIXEL
 # ==========================================================
-def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mostra_prefisso=True, expand=False):
+def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mostra_prefisso=True, expand=False, prefisso_custom="Q.tà:"):
     tf = ft.TextField(
         value=str(valore_iniziale),
         border=ft.InputBorder.NONE,
@@ -115,7 +239,7 @@ def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mo
     )
     controlli_riga = []
     if mostra_prefisso:
-        controlli_riga.append(ft.Text("Q.tà:", size=10, color=ft.Colors.GREY_700))
+        controlli_riga.append(ft.Text(prefisso_custom, size=10, color=ft.Colors.GREY_700))
     controlli_riga.append(tf)
 
     box = ft.Container(
@@ -137,7 +261,8 @@ def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mo
 
 
 def crea_selettore_unita(page: ft.Page, valore_iniziale="pz", width=72, height=34, text_size=12):
-    val_corrente = valore_iniziale if valore_iniziale in UNITA_MISURA else "g"
+    val_pulito = str(valore_iniziale or "g").replace("|DET", "").strip()
+    val_corrente = val_pulito if val_pulito in UNITA_MISURA else "g"
     stato_u = {"value": val_corrente}
     lbl_val = ft.Text(val_corrente, size=text_size, color=ft.Colors.BLACK, weight=ft.FontWeight.BOLD, no_wrap=True)
 
@@ -175,9 +300,10 @@ def crea_selettore_unita(page: ft.Page, valore_iniziale="pz", width=72, height=3
     menu_btn.get_value = lambda: stato_u["value"]
 
     def set_value(nuovo_v):
-        if nuovo_v in UNITA_MISURA:
-            stato_u["value"] = nuovo_v
-            lbl_val.value = nuovo_v
+        v_clean = str(nuovo_v or "").replace("|DET", "").strip()
+        if v_clean in UNITA_MISURA:
+            stato_u["value"] = v_clean
+            lbl_val.value = v_clean
 
     menu_btn.set_value = set_value
     return menu_btn
@@ -186,21 +312,24 @@ def crea_selettore_unita(page: ft.Page, valore_iniziale="pz", width=72, height=3
 def assicura_cache_anagrafica(forza_ricarica=False):
     if not supabase:
         return [], []
-    if forza_ricarica or CACHE_ANAGRAFICA["ingredienti"] is None:
-        res_ing = supabase.table("ingredienti").select("*").order("nome").execute()
-        CACHE_ANAGRAFICA["ingredienti"] = res_ing.data if res_ing.data else []
-    if forza_ricarica or CACHE_ANAGRAFICA["ricette"] is None:
-        res_ric = supabase.table("ricette").select("*").order("nome").execute()
-        CACHE_ANAGRAFICA["ricette"] = res_ric.data if res_ric.data else []
-    if forza_ricarica or CACHE_ANAGRAFICA["conteggio_ing_ricette"] is None:
-        res_ri = supabase.table("ricette_ingredienti").select("id_ricetta").execute()
-        conteggi = {}
-        for r in (res_ri.data or []):
-            rid = r.get("id_ricetta")
-            if rid:
-                conteggi[rid] = conteggi.get(rid, 0) + 1
-        CACHE_ANAGRAFICA["conteggio_ing_ricette"] = conteggi
-    return CACHE_ANAGRAFICA["ingredienti"], CACHE_ANAGRAFICA["ricette"]
+    try:
+        if forza_ricarica or CACHE_ANAGRAFICA["ingredienti"] is None:
+            res_ing = supabase.table("ingredienti").select("*").order("nome").execute()
+            CACHE_ANAGRAFICA["ingredienti"] = [normalizza_ingrediente_record(x) for x in (res_ing.data or [])]
+        if forza_ricarica or CACHE_ANAGRAFICA["ricette"] is None:
+            res_ric = supabase.table("ricette").select("*").order("nome").execute()
+            CACHE_ANAGRAFICA["ricette"] = res_ric.data if res_ric.data else []
+        if forza_ricarica or CACHE_ANAGRAFICA["conteggio_ing_ricette"] is None:
+            res_ri = supabase.table("ricette_ingredienti").select("id_ricetta").execute()
+            conteggi = {}
+            for r in (res_ri.data or []):
+                rid = r.get("id_ricetta")
+                if rid:
+                    conteggi[rid] = conteggi.get(rid, 0) + 1
+            CACHE_ANAGRAFICA["conteggio_ing_ricette"] = conteggi
+    except Exception as ex:
+        print("Errore caricamento cache anagrafica:", ex)
+    return CACHE_ANAGRAFICA["ingredienti"] or [], CACHE_ANAGRAFICA["ricette"] or []
 
 
 def ricetta_ha_ingredienti(id_ricetta):
@@ -211,7 +340,7 @@ def ricetta_ha_ingredienti(id_ricetta):
 
 
 # ==========================================================
-# MOTORE DI RICERCA RICETTE SU INTERNET + RICALCOLO QUANTITÀ
+# MOTORE DI RICERCA RICETTE SU INTERNET (CON FOTO, LINK E RICALCOLO PERSONE)
 # ==========================================================
 def analizza_stringa_ingrediente_web(testo_raw, fattore_scala):
     testo = html.unescape(str(testo_raw or "")).strip()
@@ -236,7 +365,7 @@ def analizza_stringa_ingrediente_web(testo_raw, fattore_scala):
         (r"\b(cucchiai|cucchiaio|cucchiaini|cucchiaino)\b", "cucchiai"),
         (r"\b(fette|fetta)\b", "fette"),
         (r"\b(tazze|tazza|bicchieri|bicchiere)\b", "tazze"),
-        (r"\b(spicchi|spicchio|pz|pezzi|pezzo|bustina|bustine|rametto|rametti|foglie|foglia)\b", "pz"),
+        (r"\b(spicchi|spicchio|pz|pezzi|pezzo|bustina|bustine|rametto|rametti|foglie|foglia|uova|uovo)\b", "pz"),
     ]
 
     match_num = re.search(r"(\d+[.,]\d+|\d+\s*/\s*\d+|\d+)", testo)
@@ -260,7 +389,8 @@ def analizza_stringa_ingrediente_web(testo_raw, fattore_scala):
     for pattern, u_std in mappa_unita:
         if re.search(pattern, testo_senza_num, flags=re.IGNORECASE):
             unita_trovata = u_std
-            testo_senza_num = re.sub(pattern, " ", testo_senza_num, count=1, flags=re.IGNORECASE).strip()
+            if not re.search(r"\b(uova|uovo)\b", testo_senza_num, flags=re.IGNORECASE):
+                testo_senza_num = re.sub(pattern, " ", testo_senza_num, count=1, flags=re.IGNORECASE).strip()
             break
 
     nome_finale = re.sub(r"\s+", " ", testo_senza_num).strip(" ,.-:/")
@@ -289,7 +419,19 @@ def analizza_stringa_ingrediente_web(testo_raw, fattore_scala):
     }
 
 
-def estrai_recipe_da_jsonld(html_page):
+def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
+    foto_og = ""
+    m_og_img = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_page, flags=re.IGNORECASE)
+    if not m_og_img:
+        m_og_img = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html_page, flags=re.IGNORECASE)
+    if m_og_img:
+        foto_og = m_og_img.group(1).strip()
+
+    titolo_og = ""
+    m_og_tit = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html_page, flags=re.IGNORECASE)
+    if m_og_tit:
+        titolo_og = html.unescape(m_og_tit.group(1)).strip()
+
     blocchi = re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_page, flags=re.DOTALL | re.IGNORECASE)
     for b in blocchi:
         try:
@@ -318,18 +460,39 @@ def estrai_recipe_da_jsonld(html_page):
                             p_val = int(m_y.group(1))
                             if 1 <= p_val <= 30:
                                 porzioni_base = p_val
-                    return porzioni_base, item.get("recipeIngredient", [])
+
+                    titolo_ric = html.unescape(str(item.get("name") or titolo_og or "Ricetta")).strip()
+                    img_val = item.get("image")
+                    foto_ric = foto_og
+                    if isinstance(img_val, str) and img_val.startswith("http"):
+                        foto_ric = img_val
+                    elif isinstance(img_val, list) and img_val:
+                        primo_img = img_val[0]
+                        if isinstance(primo_img, str) and primo_img.startswith("http"):
+                            foto_ric = primo_img
+                        elif isinstance(primo_img, dict) and primo_img.get("url"):
+                            foto_ric = primo_img["url"]
+                    elif isinstance(img_val, dict) and img_val.get("url"):
+                        foto_ric = img_val["url"]
+
+                    return {
+                        "titolo": titolo_ric,
+                        "porzioni_base": porzioni_base,
+                        "raw_ings": item.get("recipeIngredient", []),
+                        "foto_url": foto_ric,
+                        "url_fonte": url_pagina
+                    }
         except Exception:
             continue
-    return None, None
+    return None
 
 
-def cerca_ricetta_su_internet(nome_piatto: str, num_persone: int):
+def cerca_ricette_su_internet_dettagliate(query_ricerca: str, num_persone: int):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "it-IT,it;q=0.9"
     }
-    q_enc = urllib.parse.quote_plus(nome_piatto.strip())
+    q_enc = urllib.parse.quote_plus(query_ricerca.strip())
     urls_ricerca = [
         f"https://www.giallozafferano.it/ricerca-ricette/{q_enc}/",
         f"https://www.cucchiaio.it/ricerca.html?q={q_enc}"
@@ -346,33 +509,45 @@ def cerca_ricetta_su_internet(nome_piatto: str, num_persone: int):
             for lk in (trovati_gz + trovati_ca):
                 if lk not in links_ricette:
                     links_ricette.append(lk)
-            if links_ricette:
-                break
         except Exception:
             continue
 
-    for link in links_ricette[:3]:
+    risultati_trovati = []
+    for link in links_ricette[:4]:
         try:
             req_r = urllib.request.Request(link, headers=headers)
             with urllib.request.urlopen(req_r, timeout=8) as resp_r:
                 html_r = resp_r.read().decode("utf-8", errors="ignore")
-            porzioni_base, raw_ings = estrai_recipe_da_jsonld(html_r)
-            if raw_ings:
-                fattore = float(num_persone) / float(porzioni_base or 4)
-                risultati = []
+            info = estrai_info_complete_da_pagina_ricetta(html_r, link)
+            if info and info.get("raw_ings"):
+                porzioni_base = info["porzioni_base"] or 4
+                fattore = float(num_persone) / float(porzioni_base)
+                ings_scalati = []
                 nomi_visti = set()
-                for r_str in raw_ings:
+                for r_str in info["raw_ings"]:
                     parsed = analizza_stringa_ingrediente_web(r_str, fattore)
                     if parsed and parsed["nome"].lower() not in nomi_visti:
                         nomi_visti.add(parsed["nome"].lower())
-                        risultati.append(parsed)
-                if risultati:
-                    return risultati, f"Ricetta trovata online (calibrata da {porzioni_base} a {num_persone} persone)"
+                        ings_scalati.append(parsed)
+                if ings_scalati:
+                    sito_nome = "GialloZafferano" if "giallozafferano" in link else "Cucchiaio d'Argento"
+                    risultati_trovati.append({
+                        "titolo": info["titolo"],
+                        "sito": sito_nome,
+                        "url_fonte": link,
+                        "foto_url": info["foto_url"],
+                        "porzioni_base": porzioni_base,
+                        "porzioni_target": num_persone,
+                        "ingredienti": ings_scalati
+                    })
         except Exception:
             continue
 
-    # Fallback intelligente se il piatto ha un nome casalingo non indicizzato
-    low_p = nome_piatto.lower()
+    if risultati_trovati:
+        return risultati_trovati
+
+    # Fallback se la connessione al sito esterno non restituisce JSON-LD
+    low_p = query_ricerca.lower()
     f = float(num_persone) / 8.0
     fallback = []
     if any(k in low_p for k in ["pasta", "spaghetti", "rigatoni", "penne", "fusilli", "orecchiette", "lasagne", "risotto", "riso"]):
@@ -380,18 +555,54 @@ def cerca_ricetta_su_internet(nome_piatto: str, num_persone: int):
         fallback.append({"nome": base_principale, "quantita": round(640 * f), "unita": "g"})
         fallback.append({"nome": "Olio extravergine d'oliva", "quantita": max(1, round(4 * f)), "unita": "cucchiai"})
         fallback.append({"nome": "Sale", "quantita": 0, "unita": "q.b."})
-    elif any(k in low_p for k in ["pollo", "carne", "arrosto", "polpette", "bistecca", "scaloppine", "spezzatino", "cotolett"]):
-        fallback.append({"nome": nome_piatto.strip().capitalize(), "quantita": round(1200 * f), "unita": "g"})
-        fallback.append({"nome": "Contorno / Patate", "quantita": round(800 * f), "unita": "g"})
-        fallback.append({"nome": "Olio extravergine d'oliva", "quantita": max(1, round(3 * f)), "unita": "cucchiai"})
-    elif any(k in low_p for k in ["pesce", "merluzzo", "orata", "spigola", "salmone", "tonno", "calamari", "gamberi"]):
-        fallback.append({"nome": nome_piatto.strip().capitalize(), "quantita": round(1200 * f), "unita": "g"})
-        fallback.append({"nome": "Olio extravergine d'oliva", "quantita": max(1, round(3 * f)), "unita": "cucchiai"})
     else:
-        fallback.append({"nome": nome_piatto.strip().capitalize(), "quantita": round(800 * f), "unita": "g"})
+        fallback.append({"nome": query_ricerca.strip().capitalize(), "quantita": round(800 * f), "unita": "g"})
+        fallback.append({"nome": "Olio extravergine d'oliva", "quantita": max(1, round(3 * f)), "unita": "cucchiai"})
         fallback.append({"nome": "Sale", "quantita": 0, "unita": "q.b."})
 
-    return fallback, f"Impostata base per {num_persone} persone (personalizzabile)"
+    url_ricerca_manuale = f"https://www.giallozafferano.it/ricerca-ricette/{q_enc}/"
+    return [{
+        "titolo": f"{query_ricerca.strip().capitalize()} (Base personalizzabile)",
+        "sito": "Ricerca Web",
+        "url_fonte": url_ricerca_manuale,
+        "foto_url": "",
+        "porzioni_base": 8,
+        "porzioni_target": num_persone,
+        "ingredienti": fallback
+    }]
+
+
+# ==========================================================
+# FUNZIONE DI RICALIBRAZIONE PROPORZIONALE INGREDIENTI PER N PERSONE
+# ==========================================================
+def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuove_persone: int, meta_attuale: dict):
+    vecchie_p = max(1, int(vecchie_persone or 8))
+    nuove_p = max(1, int(nuove_persone or 8))
+    fattore = float(nuove_p) / float(vecchie_p)
+
+    res_ri = supabase.table("ricette_ingredienti").select("*").eq("id_ricetta", id_ricetta).execute()
+    righe = res_ri.data if res_ri.data else []
+
+    for r in righe:
+        q_attuale = float(r.get("quantita") or 0)
+        unita = r.get("unita_misura") or "g"
+        if q_attuale > 0 and unita != "q.b.":
+            nuova_q = q_attuale * fattore
+            if unita in ["g", "ml"] and nuova_q >= 20:
+                nuova_q = round(nuova_q / 5.0) * 5.0
+            elif unita == "pz":
+                nuova_q = round(nuova_q, 1)
+            else:
+                nuova_q = round(nuova_q, 2)
+            supabase.table("ricette_ingredienti").update({"quantita": nuova_q}).eq("id", r["id"]).execute()
+
+    salva_meta_ricetta_db(
+        id_ricetta,
+        meta_attuale.get("portata", "Primo"),
+        nuove_p,
+        meta_attuale.get("url_fonte", ""),
+        meta_attuale.get("foto_url", "")
+    )
 
 
 # ==========================================================
@@ -408,9 +619,12 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
     )
     txt_err = ft.Text("", color=ft.Colors.RED_700, size=11, visible=False)
     spinner_mod = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.Colors.ORANGE_800, visible=False)
+    in_salvataggio = [False]
     dlg_mod = None
 
     def salva_mod(e):
+        if in_salvataggio[0]:
+            return
         nuovo_nome = (txt_nome.value or "").strip().capitalize()
         if not nuovo_nome:
             txt_err.value = "⚠️ Inserisci un nome valido."
@@ -418,12 +632,16 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
             page.update()
             return
 
+        in_salvataggio[0] = True
         spinner_mod.visible = True
         page.update()
 
         def lavoro():
             try:
                 unita_scelta = sel_unita.get_value()
+                is_det = bool(ing_obj.get("is_detersivo"))
+                unita_db = f"{unita_scelta}|DET" if is_det else unita_scelta
+
                 conflitto = next(
                     (i for i in lista_ingredienti if i["nome"].lower() == nuovo_nome.lower() and str(i["id"]) != str(ing_obj["id"])),
                     None
@@ -435,7 +653,7 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
                 else:
                     supabase.table("ingredienti").update({
                         "nome": nuovo_nome,
-                        "unita_default": unita_scelta
+                        "unita_default": unita_db
                     }).eq("id", ing_obj["id"]).execute()
 
                 assicura_cache_anagrafica(forza_ricarica=True)
@@ -443,6 +661,7 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
                 if on_done_callback:
                     on_done_callback()
             except Exception as ex:
+                in_salvataggio[0] = False
                 spinner_mod.visible = False
                 txt_err.value = f"⚠️ Errore: {ex}"
                 txt_err.visible = True
@@ -479,8 +698,11 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
 # POPUP MODIFICA O ELIMINAZIONE INTERA RICETTA DAL DATABASE
 # ==========================================================
 def apri_popup_gestione_ricetta(page: ft.Page, id_ricetta: str, nome_attuale: str, portata_attuale: str, on_done_callback):
+    ric_cache = next((r for r in (CACHE_ANAGRAFICA["ricette"] or []) if str(r.get("id")) == str(id_ricetta)), None)
+    meta = estrai_meta_ricetta(ric_cache or {"portata_default": portata_attuale})
+
     txt_nome_ric = ft.TextField(label="Nome Ricetta", value=nome_attuale, dense=True, text_size=13)
-    stato_portata = {"val": portata_attuale if portata_attuale in SUB_CON_RICETTA else "Primo"}
+    stato_portata = {"val": meta["portata"]}
     lbl_portata = ft.Text(stato_portata["val"], size=12, weight=ft.FontWeight.BOLD)
 
     def cambia_port(p_scelta):
@@ -499,29 +721,37 @@ def apri_popup_gestione_ricetta(page: ft.Page, id_ricetta: str, nome_attuale: st
 
     txt_err = ft.Text("", color=ft.Colors.RED_700, size=11, visible=False)
     spinner_ric = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.Colors.BLUE_900, visible=False)
+    in_op = [False]
     dlg_ric = None
 
     def salva_ricetta_db(e):
+        if in_op[0]:
+            return
         nuovo_n = (txt_nome_ric.value or "").strip().capitalize()
         if not nuovo_n:
             txt_err.value = "⚠️ Il nome della ricetta è obbligatorio."
             txt_err.visible = True
             page.update()
             return
+        in_op[0] = True
         spinner_ric.visible = True
         page.update()
 
         def lavoro():
             try:
-                supabase.table("ricette").update({
-                    "nome": nuovo_n,
-                    "portata_default": stato_portata["val"]
-                }).eq("id", id_ricetta).execute()
-                assicura_cache_anagrafica(forza_ricarica=True)
+                salva_meta_ricetta_db(
+                    id_ricetta,
+                    stato_portata["val"],
+                    meta["porzioni"],
+                    meta["url_fonte"],
+                    meta["foto_url"],
+                    nuovo_nome=nuovo_n
+                )
                 chiudi_dialog_sicuro(page, dlg_ric)
                 if on_done_callback:
                     on_done_callback()
             except Exception as ex:
+                in_op[0] = False
                 spinner_ric.visible = False
                 txt_err.value = f"⚠️ Errore: {ex}"
                 txt_err.visible = True
@@ -530,17 +760,22 @@ def apri_popup_gestione_ricetta(page: ft.Page, id_ricetta: str, nome_attuale: st
         threading.Thread(target=lavoro, daemon=True).start()
 
     def elimina_ricetta_definitivamente(e):
+        if in_op[0]:
+            return
+        in_op[0] = True
         spinner_ric.visible = True
         page.update()
 
         def lavoro():
             try:
                 supabase.table("ricette").delete().eq("id", id_ricetta).execute()
-                assicura_cache_anagrafica(forza_ricarica=True)
+                if CACHE_ANAGRAFICA["ricette"]:
+                    CACHE_ANAGRAFICA["ricette"] = [r for r in CACHE_ANAGRAFICA["ricette"] if str(r.get("id")) != str(id_ricetta)]
                 chiudi_dialog_sicuro(page, dlg_ric)
                 if on_done_callback:
                     on_done_callback()
             except Exception as ex:
+                in_op[0] = False
                 spinner_ric.visible = False
                 txt_err.value = f"⚠️ Errore eliminazione: {ex}"
                 txt_err.visible = True
@@ -580,13 +815,13 @@ def apri_popup_gestione_ricetta(page: ft.Page, id_ricetta: str, nome_attuale: st
 
 
 # ==========================================================
-# POPUP SCHEDA SINGOLA RICETTA + RICERCA INTERNET AUTOMATICA
+# POPUP SCHEDA RICETTA COMPLETA (RICALIBRA PERSONE + RICERCA WEB AFFINABILE + FOTO + LINK)
 # ==========================================================
 def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, id_ricetta: str, nome_ricetta: str, portata: str, on_close_refresh):
     if not supabase:
         return
 
-    lista_ingredienti, _ = assicura_cache_anagrafica(forza_ricarica=False)
+    lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=False)
     spinner_det = ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=ft.Colors.WHITE)
     lbl_det_status = ft.Text("Caricamento ricetta...", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
     banner_det = ft.Container(
@@ -594,8 +829,13 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
         bgcolor=ft.Colors.ORANGE_800, padding=6, border_radius=6, visible=True
     )
 
+    txt_titolo_header = ft.Text(f"🍲 {nome_ricetta}", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900, expand=True)
     col_corpo = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
     modificato = [False]
+    mostra_pannello_web = [False]
+    risultati_web_correnti = []
+    indice_risultato_web = [0]
+    query_web_custom = [nome_ricetta]
     dlg_det = None
 
     def chiudi_det(e=None):
@@ -604,6 +844,8 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             on_close_refresh()
 
     def togli_dal_menu_giorno(e):
+        if not id_voce_menu:
+            return
         lbl_det_status.value = "Rimozione piatto dal giorno..."
         banner_det.visible = True
         page.update()
@@ -618,24 +860,32 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
         threading.Thread(target=w, daemon=True).start()
 
+    azioni_header = [
+        txt_titolo_header,
+        ft.IconButton(
+            icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=18,
+            tooltip="Rinomina o Elimina dal DB",
+            on_click=lambda e: apri_popup_gestione_ricetta(
+                page, id_ricetta, nome_ricetta, portata,
+                lambda: (modificato.__setitem__(0, True), ricarica_ingredienti_ricetta())
+            )
+        )
+    ]
+    if id_voce_menu:
+        azioni_header.append(
+            ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_700, icon_size=18,
+                tooltip="Togli piatto da questo giorno",
+                on_click=togli_dal_menu_giorno
+            )
+        )
+
     dlg_det = ft.AlertDialog(
         title=ft.Column([
-            ft.Row([
-                ft.Text(f"🍲 {nome_ricetta}", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900, expand=True),
-                ft.IconButton(
-                    icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=18,
-                    tooltip="Rinomina o Elimina dal DB",
-                    on_click=lambda e: apri_popup_gestione_ricetta(page, id_ricetta, nome_ricetta, portata, lambda: (modificato.__setitem__(0, True), ricarica_ingredienti_ricetta()))
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_700, icon_size=18,
-                    tooltip="Togli piatto da questo giorno",
-                    on_click=togli_dal_menu_giorno
-                )
-            ], spacing=2),
+            ft.Row(azioni_header, spacing=2),
             banner_det
         ], spacing=4, tight=True),
-        content=ft.Container(content=col_corpo, width=350, height=440),
+        content=ft.Container(content=col_corpo, width=365, height=500),
         actions=[
             ft.Container(
                 content=ft.Text("Chiudi", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
@@ -644,7 +894,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
         ],
         shape=ft.RoundedRectangleBorder(radius=10),
         content_padding=10,
-        inset_padding=ft.Padding(10, 15, 10, 15)
+        inset_padding=ft.Padding(8, 12, 8, 12)
     )
 
     apri_dialog_sicuro(page, dlg_det)
@@ -658,17 +908,25 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             "nome": nome_pulito,
             "unita_default": unita_scelta or "g"
         }).execute()
-        nuovo = res.data[0]
+        nuovo = normalizza_ingrediente_record(res.data[0])
         lista_ingredienti.append(nuovo)
         return nuovo["id"]
 
     def ricarica_ingredienti_ricetta(msg_extra=None):
         banner_det.visible = True
-        lbl_det_status.value = "Lettura ingredienti..."
+        lbl_det_status.value = "Lettura ricetta e quantità..."
         page.update()
 
         def worker():
             try:
+                res_ric_db = supabase.table("ricette").select("*").eq("id", id_ricetta).execute()
+                ric_corrente = res_ric_db.data[0] if res_ric_db.data else {"id": id_ricetta, "nome": nome_ricetta, "portata_default": portata}
+                meta = estrai_meta_ricetta(ric_corrente)
+                porzioni_attuali = meta["porzioni"]
+                url_fonte_attuale = meta["url_fonte"]
+                foto_url_attuale = meta["foto_url"]
+                txt_titolo_header.value = f"🍲 {ric_corrente.get('nome', nome_ricetta)}"
+
                 res_ri = supabase.table("ricette_ingredienti").select(
                     "*, ingredienti(id, nome, unita_default)"
                 ).eq("id_ricetta", id_ricetta).execute()
@@ -676,6 +934,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 if CACHE_ANAGRAFICA["conteggio_ing_ricette"] is not None:
                     CACHE_ANAGRAFICA["conteggio_ing_ricette"][id_ricetta] = len(righe_ri)
+
+                if not righe_ri:
+                    mostra_pannello_web[0] = True
 
                 col_corpo.controls.clear()
 
@@ -687,69 +948,270 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                         )
                     )
 
-                # SE LA RICETTA NON HA INGREDIENTI NEL DB -> BLOCCO RICERCA SU INTERNET CON SCELTA PERSONE
-                if not righe_ri:
-                    box_persone = crea_box_quantita(valore_iniziale="8", width=85, height=34, text_size=13, mostra_prefisso=False)
+                # ---------------------------------------------------------
+                # 1. CARD INFO RICETTA: FOTO + LINK PREPARAZIONE + NUMERO PERSONE E RICALIBRAZIONE
+                # ---------------------------------------------------------
+                riga_info_top = []
+                if foto_url_attuale:
+                    riga_info_top.append(
+                        ft.Image(src=foto_url_attuale, width=64, height=64, border_radius=8)
+                    )
 
-                    def avvia_ricerca_web(ev):
-                        num_p = int(max(1, parse_qta(box_persone.textfield.value) or 8))
+                col_link_e_tit = [
+                    ft.Text(
+                        f"👥 Dosi attuali calibrate per: {porzioni_attuali} {'persona' if porzioni_attuali == 1 else 'persone'}",
+                        size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900
+                    )
+                ]
+                if url_fonte_attuale:
+                    col_link_e_tit.append(
+                        ft.Container(
+                            content=ft.Row([
+                                ft.Icon(ft.Icons.OPEN_IN_NEW, size=14, color=ft.Colors.WHITE),
+                                ft.Text("🔗 Vedi preparazione sul sito originale", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
+                            ], spacing=4, tight=True),
+                            bgcolor=ft.Colors.BLUE_700, padding=ft.Padding(8, 4, 8, 4), border_radius=6,
+                            url=url_fonte_attuale,
+                            on_click=lambda e, u=url_fonte_attuale: apri_url_esterno(page, u)
+                        )
+                    )
+                else:
+                    col_link_e_tit.append(
+                        ft.Text("Nessun link web associato (usa 'Cerca su Internet' per collegarlo)", size=10, color=ft.Colors.GREY_600, italic=True)
+                    )
+
+                riga_info_top.append(ft.Column(col_link_e_tit, spacing=4, expand=True))
+
+                # Controllo per ricalibrare al volo le quantità al cambio del numero di persone
+                box_nuove_persone = crea_box_quantita(
+                    valore_iniziale=str(porzioni_attuali),
+                    width=88, height=32, text_size=12,
+                    mostra_prefisso=True, prefisso_custom="Pers.:"
+                )
+
+                def applica_ricalibrazione_persone(e):
+                    nuove_p = int(max(1, parse_qta(box_nuove_persone.textfield.value) or porzioni_attuali))
+                    banner_det.visible = True
+                    lbl_det_status.value = f"⚖️ Ricalcolo proporzionale da {porzioni_attuali} a {nuove_p} persone..."
+                    page.update()
+
+                    def w_ric():
+                        try:
+                            ricalibra_ingredienti_ricetta_db(id_ricetta, porzioni_attuali, nuove_p, meta)
+                            modificato[0] = True
+                            ricarica_ingredienti_ricetta(msg_extra=f"Quantità riproporzionate da {porzioni_attuali} a {nuove_p} persone!")
+                        except Exception as ex:
+                            print("Errore ricalibrazione:", ex)
+                            banner_det.visible = False
+                            page.update()
+
+                    threading.Thread(target=w_ric, daemon=True).start()
+
+                def toggle_web_panel(e):
+                    mostra_pannello_web[0] = not mostra_pannello_web[0]
+                    ricarica_ingredienti_ricetta()
+
+                col_corpo.controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row(riga_info_top, spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Divider(height=4, color="#CFD8DC"),
+                            ft.Row([
+                                box_nuove_persone,
+                                ft.Container(
+                                    content=ft.Text("⚖️ Ricalibra Dosi", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                    bgcolor=ft.Colors.TEAL_700, height=32, padding=ft.Padding(10, 0, 10, 0),
+                                    alignment=ft.Alignment(0, 0), border_radius=5,
+                                    on_click=applica_ricalibrazione_persone
+                                ),
+                                ft.Container(
+                                    content=ft.Text("🌐 Cerca sul Web", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                    bgcolor=ft.Colors.ORANGE_800, height=32, padding=ft.Padding(10, 0, 10, 0),
+                                    alignment=ft.Alignment(0, 0), border_radius=5,
+                                    on_click=toggle_web_panel
+                                )
+                            ], spacing=5, alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                        ], spacing=6),
+                        bgcolor="#ECEFF1", padding=8, border_radius=8, border=bordo_campo_uniforme("#B0BEC5")
+                    )
+                )
+
+                # ---------------------------------------------------------
+                # 2. PANNELLO RICERCA SU INTERNET CON AFFINAMENTO TITOLO + ANTEPRIMA FOTO/LINK
+                # ---------------------------------------------------------
+                if mostra_pannello_web[0]:
+                    tf_query_web = ft.TextField(
+                        label="Affina ricerca su internet (es. 'Riso in brodo di pollo')",
+                        value=query_web_custom[0],
+                        dense=True, text_size=12, expand=True
+                    )
+                    box_persone_web = crea_box_quantita(
+                        valore_iniziale=str(porzioni_attuali),
+                        width=90, height=34, text_size=12,
+                        mostra_prefisso=True, prefisso_custom="Pers.:"
+                    )
+
+                    def lancia_ricerca_internet(e=None):
+                        q_str = (tf_query_web.value or "").strip()
+                        if not q_str:
+                            return
+                        query_web_custom[0] = q_str
+                        num_p_target = int(max(1, parse_qta(box_persone_web.textfield.value) or porzioni_attuali))
                         banner_det.visible = True
-                        lbl_det_status.value = f"🌐 Ricerca '{nome_ricetta}' per {num_p} persone..."
+                        lbl_det_status.value = f"🌐 Ricerca '{q_str}' per {num_p_target} persone..."
                         page.update()
 
-                        def worker_web():
+                        def w_search():
                             try:
-                                trovati, info_msg = cerca_ricetta_su_internet(nome_ricetta, num_p)
-                                for item_w in trovati:
-                                    id_i = ottieni_o_crea_ing(item_w["nome"], item_w["unita"])
-                                    supabase.table("ricette_ingredienti").insert({
-                                        "id_ricetta": id_ricetta,
-                                        "id_ingrediente": id_i,
-                                        "quantita": item_w["quantita"],
-                                        "unita_misura": item_w["unita"]
-                                    }).execute()
-                                assicura_cache_anagrafica(forza_ricarica=True)
-                                modificato[0] = True
-                                ricarica_ingredienti_ricetta(msg_extra=info_msg)
+                                trovati = cerca_ricette_su_internet_dettagliate(q_str, num_p_target)
+                                risultati_web_correnti.clear()
+                                risultati_web_correnti.extend(trovati)
+                                indice_risultato_web[0] = 0
+                                ricarica_ingredienti_ricetta()
                             except Exception as ex:
                                 print("Errore ricerca web:", ex)
                                 banner_det.visible = False
                                 page.update()
 
-                        threading.Thread(target=worker_web, daemon=True).start()
+                        threading.Thread(target=w_search, daemon=True).start()
+
+                    elementi_pannello_web = [
+                        ft.Row([
+                            ft.Icon(ft.Icons.TRAVEL_EXPLORE, color=ft.Colors.ORANGE_900, size=18),
+                            ft.Text("Ricerca / Rimodula Ricetta da Internet", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900, expand=True)
+                        ], spacing=4),
+                        ft.Text("Se gli ingredienti non corrispondono, precisa il nome del piatto qui sotto e premi Cerca:", size=10, color=ft.Colors.GREY_800),
+                        tf_query_web,
+                        ft.Row([
+                            box_persone_web,
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.SEARCH, color=ft.Colors.WHITE, size=16),
+                                    ft.Text("CERCA RICETTA", color=ft.Colors.WHITE, size=11, weight=ft.FontWeight.BOLD)
+                                ], alignment=ft.MainAxisAlignment.CENTER, spacing=4),
+                                bgcolor=ft.Colors.ORANGE_800, height=34, expand=True, border_radius=6,
+                                on_click=lancia_ricerca_internet
+                            )
+                        ], spacing=6)
+                    ]
+
+                    # Se abbiamo già dei risultati di ricerca, mostra l'anteprima con FOTO, TITOLO, LINK e bottone APPLICA
+                    if risultati_web_correnti:
+                        idx = min(indice_risultato_web[0], len(risultati_web_correnti) - 1)
+                        cand = risultati_web_correnti[idx]
+                        p_target = cand["porzioni_target"]
+
+                        def cambia_candidato(delta):
+                            indice_risultato_web[0] = (indice_risultato_web[0] + delta) % len(risultati_web_correnti)
+                            ricarica_ingredienti_ricetta()
+
+                        def importa_candidato_scelto(e, c_scelto=cand):
+                            banner_det.visible = True
+                            lbl_det_status.value = f"Salvataggio ingredienti per {c_scelto['porzioni_target']} persone..."
+                            page.update()
+
+                            def w_imp():
+                                try:
+                                    # Sostituisce gli ingredienti precedenti con quelli della ricetta scelta
+                                    supabase.table("ricette_ingredienti").delete().eq("id_ricetta", id_ricetta).execute()
+                                    for item_w in c_scelto["ingredienti"]:
+                                        id_i = ottieni_o_crea_ing(item_w["nome"], item_w["unita"])
+                                        supabase.table("ricette_ingredienti").insert({
+                                            "id_ricetta": id_ricetta,
+                                            "id_ingrediente": id_i,
+                                            "quantita": item_w["quantita"],
+                                            "unita_misura": item_w["unita"]
+                                        }).execute()
+
+                                    salva_meta_ricetta_db(
+                                        id_ricetta,
+                                        meta["portata"],
+                                        c_scelto["porzioni_target"],
+                                        c_scelto.get("url_fonte", ""),
+                                        c_scelto.get("foto_url", "")
+                                    )
+                                    if CACHE_ANAGRAFICA["conteggio_ing_ricette"] is not None:
+                                        CACHE_ANAGRAFICA["conteggio_ing_ricette"][id_ricetta] = len(c_scelto["ingredienti"])
+                                    modificato[0] = True
+                                    mostra_pannello_web[0] = False
+                                    ricarica_ingredienti_ricetta(
+                                        msg_extra=f"Importata '{c_scelto['titolo']}' calibrata per {c_scelto['porzioni_target']} persone!"
+                                    )
+                                except Exception as ex:
+                                    print("Errore importazione ricetta:", ex)
+                                    banner_det.visible = False
+                                    page.update()
+
+                            threading.Thread(target=w_imp, daemon=True).start()
+
+                        anteprima_ings_str = ", ".join([
+                            f"{x['nome']} ({formatta_numero(x['quantita'])} {x['unita']})" if x["unita"] != "q.b." else f"{x['nome']} (q.b.)"
+                            for x in cand["ingredienti"][:8]
+                        ])
+                        if len(cand["ingredienti"]) > 8:
+                            anteprima_ings_str += f" ... (+{len(cand['ingredienti']) - 8} altri)"
+
+                        riga_foto_cand = []
+                        if cand.get("foto_url"):
+                            riga_foto_cand.append(
+                                ft.Image(src=cand["foto_url"], width=75, height=75, border_radius=8)
+                            )
+                        riga_foto_cand.append(
+                            ft.Column([
+                                ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                                ft.Text(f"Fonte: {cand['sito']} (dosi ricalcolate da {cand['porzioni_base']} a {p_target} pers.)", size=10, color=ft.Colors.GREY_700),
+                                ft.Container(
+                                    content=ft.Text("🔗 Apri link preparazione sul sito", size=10, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD),
+                                    url=cand.get("url_fonte", ""),
+                                    on_click=lambda e, u=cand.get("url_fonte", ""): apri_url_esterno(page, u)
+                                )
+                            ], spacing=2, expand=True)
+                        )
+
+                        nav_risultati = []
+                        if len(risultati_web_correnti) > 1:
+                            nav_risultati.append(
+                                ft.Row([
+                                    ft.TextButton("◀ Ricetta prec.", on_click=lambda e: cambia_candidato(-1)),
+                                    ft.Text(f"Risultato {idx + 1} di {len(risultati_web_correnti)}", size=10, weight=ft.FontWeight.BOLD),
+                                    ft.TextButton(" Altra ricetta ▶", on_click=lambda e: cambia_candidato(1))
+                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                            )
+
+                        elementi_pannello_web.append(
+                            ft.Container(
+                                content=ft.Column([
+                                    *nav_risultati,
+                                    ft.Row(riga_foto_cand, spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    ft.Text(f"Ingredienti per {p_target} persone: {anteprima_ings_str}", size=10, color=ft.Colors.GREY_800),
+                                    ft.Container(
+                                        content=ft.Text(f"✅ APPLICA QUESTA RICETTA ({p_target} PERSONE)", color=ft.Colors.WHITE, size=11, weight=ft.FontWeight.BOLD),
+                                        bgcolor=ft.Colors.GREEN_700, padding=8, border_radius=6, alignment=ft.Alignment(0, 0),
+                                        on_click=importa_candidato_scelto
+                                    )
+                                ], spacing=5),
+                                bgcolor=ft.Colors.WHITE, padding=8, border_radius=6, border=bordo_campo_uniforme(ft.Colors.GREEN_700)
+                            )
+                        )
 
                     col_corpo.controls.append(
                         ft.Container(
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, color=ft.Colors.RED_700, size=20),
-                                    ft.Text("Ricetta non ancora compilata nel DB!", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.RED_700, expand=True)
-                                ], spacing=6),
-                                ft.Text("Indica per quante persone vuoi rapportare le dosi e avvia la compilazione automatica da internet:", size=11, color=ft.Colors.GREY_800),
-                                ft.Row([
-                                    ft.Text("Numero persone:", size=12, weight=ft.FontWeight.BOLD),
-                                    box_persone
-                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                                ft.Container(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.TRAVEL_EXPLORE, color=ft.Colors.WHITE, size=18),
-                                        ft.Text("CERCA SU INTERNET E COMPILA", color=ft.Colors.WHITE, size=11, weight=ft.FontWeight.BOLD)
-                                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
-                                    bgcolor=ft.Colors.ORANGE_800, padding=10, border_radius=6,
-                                    on_click=avvia_ricerca_web
-                                )
-                            ], spacing=8),
-                            bgcolor="#FFF8E1", padding=10, border_radius=8,
-                            border=bordo_campo_uniforme("#E53935", 1.5)
+                            content=ft.Column(elementi_pannello_web, spacing=6),
+                            bgcolor="#FFF8E1", padding=8, border_radius=8,
+                            border=bordo_campo_uniforme("#FB8C00", 1.5)
                         )
                     )
-                else:
+
+                # ---------------------------------------------------------
+                # 3. ELENCO INGREDIENTI ASSOCIATI (ALTEZZE GEMELLE 32PX)
+                # ---------------------------------------------------------
+                if righe_ri:
                     col_corpo.controls.append(
-                        ft.Text("Ingredienti associati alla ricetta:", size=11, color=ft.Colors.GREY_700, italic=True)
+                        ft.Text(f"Ingredienti attuali (per {porzioni_attuali} persone):", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD)
                     )
 
                 for ri in righe_ri:
-                    ing_info = ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"}
+                    ing_info = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
                     nome_i = ing_info.get("nome", "Ingrediente")
                     qta_init = formatta_numero(ri.get("quantita") or 0)
                     unita_init = ri.get("unita_misura") or "g"
@@ -791,7 +1253,10 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                                     ft.Text(f"▪ {nome_i}", size=12, weight=ft.FontWeight.BOLD, expand=True),
                                     ft.IconButton(
                                         icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14,
-                                        on_click=lambda e, item=ing_info: apri_popup_rinomina_ingrediente(page, item, lista_ingredienti, lambda: (modificato.__setitem__(0, True), ricarica_ingredienti_ricetta()))
+                                        on_click=lambda e, item=ing_info: apri_popup_rinomina_ingrediente(
+                                            page, item, lista_ingredienti,
+                                            lambda: (modificato.__setitem__(0, True), ricarica_ingredienti_ricetta())
+                                        )
                                     ),
                                     ft.IconButton(icon=ft.Icons.CLOSE, icon_color=ft.Colors.RED_700, icon_size=15, on_click=elim_ing_ri)
                                 ], spacing=2),
@@ -809,7 +1274,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                         )
                     )
 
-                # Aggiunta manuale nuovo ingrediente
+                # Aggiunta manuale nuovo ingrediente (SOLO INGREDIENTI ALIMENTARI)
                 col_corpo.controls.append(ft.Divider(height=6, color="#BBDEFB"))
                 txt_nuovo_i = ft.TextField(label="Aggiungi ingrediente manualmente...", dense=True, text_size=11, expand=True)
                 box_nuova_q = crea_box_quantita(valore_iniziale="100", height=34, text_size=11, mostra_prefisso=True, expand=True)
@@ -827,7 +1292,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     t = (txt_nuovo_i.value or "").strip().lower()
                     riga_sugg.controls.clear()
                     if t:
-                        matches = [i for i in lista_ingredienti if t in i["nome"].lower()][:6]
+                        matches = [i for i in lista_ingredienti if not i.get("is_detersivo") and t in i["nome"].lower()][:6]
                         for m in matches:
                             riga_sugg.controls.append(
                                 ft.Container(
@@ -893,9 +1358,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
 
 # ==========================================================
-# POPUP INSERIMENTO RAPIDO PIATTO UNICO (PRANZO / CENA)
+# POPUP INSERIMENTO LAMPO PIATTO UNICO (ANTI-DOPPIO INSERIMENTO + 0 LATENZA)
 # ==========================================================
-def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime, categoria: str, subcategoria: str, on_done_callback):
+def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime, categoria: str, subcategoria: str, voci_giorno_attuali: list, on_optimistic_add, on_done_callback):
     if not supabase:
         return
 
@@ -904,52 +1369,80 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
 
     txt_piatto = ft.TextField(
         label=f"Scrivi o cerca piatto unico ({categoria})",
-        hint_text="Anche se non è nel DB...",
+        hint_text="Inserimento rapido...",
         dense=True, text_size=13, autofocus=True
     )
     riga_sugg = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
-    spinner_add = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.Colors.BLUE_900, visible=False)
+    salvataggio_in_corso = [False]
     dlg_add = None
 
     def salva_piatto_scelto(nome_scelto, id_ric_esistente=None):
+        if salvataggio_in_corso[0]:
+            return
         nome_pulito = (nome_scelto or "").strip().capitalize()
         if not nome_pulito:
             return
-        spinner_add.visible = True
-        page.update()
+        salvataggio_in_corso[0] = True
+
+        # Chiude SUBITO il popup (0 ms di attesa percepita)
+        chiudi_dialog_sicuro(page, dlg_add)
+
+        match_db = None
+        if id_ric_esistente:
+            match_db = next((r for r in lista_ricette if str(r["id"]) == str(id_ric_esistente)), None)
+        if not match_db:
+            match_db = next((r for r in lista_ricette if r["nome"].lower() == nome_pulito.lower()), None)
+
+        # Anti-duplicato immediato: verifica se il piatto è già presente in quello slot della giornata
+        gia_presente = any(
+            x.get("categoria") == categoria and
+            ((x.get("ricette") or {}).get("nome", "").lower() == nome_pulito.lower())
+            for x in voci_giorno_attuali
+        )
+        if gia_presente:
+            return
+
+        # Aggiornamento ottimistico immediato della UI prima ancora che il DB risponda
+        id_temp_ric = match_db["id"] if match_db else f"temp_{nome_pulito}"
+        voce_ottimistica = {
+            "id": f"temp_menu_{datetime.now().timestamp()}",
+            "data_menu": data_str,
+            "categoria": categoria,
+            "subcategoria": subcategoria,
+            "id_ricetta": id_temp_ric,
+            "ricette": match_db or {"id": id_temp_ric, "nome": nome_pulito, "portata_default": codifica_meta_portata(subcategoria, 8)}
+        }
+        if on_optimistic_add:
+            on_optimistic_add(voce_ottimistica)
 
         def worker():
             try:
-                id_ric = id_ric_esistente
+                id_ric = match_db["id"] if match_db else None
                 if not id_ric:
-                    match_db = next((r for r in lista_ricette if r["nome"].lower() == nome_pulito.lower()), None)
-                    if match_db:
-                        id_ric = match_db["id"]
-                    else:
-                        res_new = supabase.table("ricette").insert({
-                            "nome": nome_pulito,
-                            "portata_default": subcategoria
-                        }).execute()
-                        nuova_r = res_new.data[0]
-                        lista_ricette.append(nuova_r)
-                        id_ric = nuova_r["id"]
-                        if CACHE_ANAGRAFICA["conteggio_ing_ricette"] is not None:
-                            CACHE_ANAGRAFICA["conteggio_ing_ricette"][id_ric] = 0
+                    res_new = supabase.table("ricette").insert({
+                        "nome": nome_pulito,
+                        "portata_default": codifica_meta_portata(subcategoria, 8)
+                    }).execute()
+                    nuova_r = res_new.data[0]
+                    lista_ricette.append(nuova_r)
+                    id_ric = nuova_r["id"]
+                    if CACHE_ANAGRAFICA["conteggio_ing_ricette"] is not None:
+                        CACHE_ANAGRAFICA["conteggio_ing_ricette"][id_ric] = 0
 
-                supabase.table("menu_giornalieri").insert({
-                    "data_menu": data_str,
-                    "categoria": categoria,
-                    "subcategoria": subcategoria,
-                    "id_ricetta": id_ric
-                }).execute()
+                # Controllo anti-doppio inserimento anche lato DB
+                res_check = supabase.table("menu_giornalieri").select("id").eq("data_menu", data_str).eq("categoria", categoria).eq("id_ricetta", id_ric).execute()
+                if not res_check.data:
+                    supabase.table("menu_giornalieri").insert({
+                        "data_menu": data_str,
+                        "categoria": categoria,
+                        "subcategoria": subcategoria,
+                        "id_ricetta": id_ric
+                    }).execute()
 
-                chiudi_dialog_sicuro(page, dlg_add)
                 if on_done_callback:
                     on_done_callback()
             except Exception as ex:
                 print("Errore inserimento piatto unico:", ex)
-                spinner_add.visible = False
-                page.update()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -983,13 +1476,10 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
     txt_piatto.on_submit = lambda e: salva_piatto_scelto(txt_piatto.value)
 
     dlg_add = ft.AlertDialog(
-        title=ft.Row([
-            ft.Text(f"🍽️ {categoria} ({data_target.strftime('%d/%m')})", size=15, weight=ft.FontWeight.BOLD, expand=True),
-            spinner_add
-        ]),
+        title=ft.Text(f"🍽️ {categoria} ({data_target.strftime('%d/%m')})", size=15, weight=ft.FontWeight.BOLD),
         content=ft.Container(
             content=ft.Column([
-                ft.Text("Seleziona dal ricettario o scrivi liberamente un nuovo piatto (verrà evidenziato in giallo/rosso se da compilare):", size=11, color=ft.Colors.GREY_700),
+                ft.Text("Tocca un piatto suggerito o scrivi un piatto nuovo (inserimento istantaneo):", size=11, color=ft.Colors.GREY_700),
                 txt_piatto,
                 riga_sugg
             ], tight=True, spacing=8),
@@ -1008,24 +1498,30 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
 
 
 # ==========================================================
-# POPUP INSERIMENTO RAPIDO VOCE (VARIE / DISPENSA / DETERSIVI)
+# POPUP INSERIMENTO VOCE DIRETTA (CON FILTRO INTELLIGENTE DISPENSA vs DETERSIVI)
 # ==========================================================
 def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: str, titolo_box: str, on_done_callback):
     if not supabase:
         return
 
     lista_ingredienti, _ = assicura_cache_anagrafica(forza_ricarica=False)
-    txt_voce = ft.TextField(label=f"Aggiungi a {titolo_box}...", dense=True, text_size=12, autofocus=True)
+    is_categoria_detersivi = (categoria == "Detersivi")
+
+    txt_voce = ft.TextField(
+        label=f"Aggiungi a {titolo_box}...",
+        hint_text="Prodotto casa/pulizia..." if is_categoria_detersivi else "Ingrediente...",
+        dense=True, text_size=12, autofocus=True
+    )
     box_qta = crea_box_quantita(valore_iniziale="1", height=34, text_size=12, mostra_prefisso=True, expand=True)
     sel_uni = crea_selettore_unita(page, valore_iniziale="pz", width=74, height=34, text_size=12)
     riga_sugg = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
-    spinner_v = ft.ProgressRing(width=18, height=18, stroke_width=2, color=ft.Colors.BLUE_900, visible=False)
+    salvataggio_in_corso = [False]
     dlg_v = None
 
-    def sel_sugg(ing_s):
-        txt_voce.value = ing_s["nome"]
-        if ing_s.get("unita_default") in UNITA_MISURA:
-            sel_uni.set_value(ing_s["unita_default"])
+    def sel_sugg(nome_scelto, unita_scelta):
+        txt_voce.value = nome_scelto
+        if unita_scelta in UNITA_MISURA:
+            sel_uni.set_value(unita_scelta)
         riga_sugg.visible = False
         page.update()
 
@@ -1033,16 +1529,33 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
         t = (txt_voce.value or "").strip().lower()
         riga_sugg.controls.clear()
         if t:
-            matches = [i for i in lista_ingredienti if t in i["nome"].lower()][:8]
-            for m in matches:
+            proposte = []
+            nomi_gia = set()
+            if is_categoria_detersivi:
+                # ⚡ SOLO DETERSIVI E PRODOTTI CASA (ZERO RICETTE E ZERO INGREDIENTI ALIMENTARI!) ⚡
+                for i in lista_ingredienti:
+                    if i.get("is_detersivo") and t in i["nome"].lower():
+                        proposte.append((i["nome"], i.get("unita_default", "pz")))
+                        nomi_gia.add(i["nome"].lower())
+                for nome_cat, uni_cat in CATALOGO_DETERSIVI_BASE:
+                    if t in nome_cat.lower() and nome_cat.lower() not in nomi_gia:
+                        proposte.append((nome_cat, uni_cat))
+                        nomi_gia.add(nome_cat.lower())
+            else:
+                # ⚡ DISPENSA / VARIE ALIMENTARI: SOLO INGREDIENTI ALIMENTARI (ZERO RICETTE E ZERO DETERSIVI!) ⚡
+                for i in lista_ingredienti:
+                    if not i.get("is_detersivo") and t in i["nome"].lower():
+                        proposte.append((i["nome"], i.get("unita_default", "g")))
+
+            for n_p, u_p in proposte[:8]:
                 riga_sugg.controls.append(
                     ft.Container(
-                        content=ft.Text(f"🔍 {m['nome']}", size=11, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD),
+                        content=ft.Text(f"{'🧼' if is_categoria_detersivi else '🔍'} {n_p}", size=11, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD),
                         bgcolor=ft.Colors.BLUE_50, padding=ft.Padding(8, 4, 8, 4), border_radius=10,
-                        on_click=lambda ev, item=m: sel_sugg(item)
+                        on_click=lambda ev, np=n_p, up=u_p: sel_sugg(np, up)
                     )
                 )
-            riga_sugg.visible = len(matches) > 0
+            riga_sugg.visible = len(proposte) > 0
         else:
             riga_sugg.visible = False
         page.update()
@@ -1050,22 +1563,30 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
     txt_voce.on_change = filtra_v
 
     def salva_voce(e=None):
+        if salvataggio_in_corso[0]:
+            return
         nome_v = (txt_voce.value or "").strip().capitalize()
         if not nome_v:
             return
+        salvataggio_in_corso[0] = True
         q_val = parse_qta(box_qta.textfield.value)
         u_val = sel_uni.get_value()
-        spinner_v.visible = True
-        page.update()
+
+        chiudi_dialog_sicuro(page, dlg_v)
 
         def worker():
             try:
                 esistente = next((i for i in lista_ingredienti if i["nome"].lower() == nome_v.lower()), None)
+                unita_db = f"{u_val}|DET" if is_categoria_detersivi else u_val
                 if esistente:
                     id_i = esistente["id"]
+                    if is_categoria_detersivi and not esistente.get("is_detersivo"):
+                        esistente["is_detersivo"] = True
+                        CACHE_ANAGRAFICA["ids_detersivi"].add(id_i)
+                        supabase.table("ingredienti").update({"unita_default": unita_db}).eq("id", id_i).execute()
                 else:
-                    res_i = supabase.table("ingredienti").insert({"nome": nome_v, "unita_default": u_val}).execute()
-                    nuovo_i = res_i.data[0]
+                    res_i = supabase.table("ingredienti").insert({"nome": nome_v, "unita_default": unita_db}).execute()
+                    nuovo_i = normalizza_ingrediente_record(res_i.data[0])
                     lista_ingredienti.append(nuovo_i)
                     id_i = nuovo_i["id"]
 
@@ -1078,21 +1599,17 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
                     "unita_misura": u_val
                 }
                 supabase.table("menu_giornalieri").insert(record).execute()
-                chiudi_dialog_sicuro(page, dlg_v)
                 if on_done_callback:
                     on_done_callback()
             except Exception as ex:
                 print("Errore salvataggio voce:", ex)
-                spinner_v.visible = False
-                page.update()
 
         threading.Thread(target=worker, daemon=True).start()
 
+    txt_voce.on_submit = salva_voce
+
     dlg_v = ft.AlertDialog(
-        title=ft.Row([
-            ft.Text(f"➕ {titolo_box}", size=15, weight=ft.FontWeight.BOLD, expand=True),
-            spinner_v
-        ]),
+        title=ft.Text(f"➕ {titolo_box}", size=15, weight=ft.FontWeight.BOLD),
         content=ft.Container(
             content=ft.Column([
                 txt_voce,
@@ -1113,7 +1630,7 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
 
 
 # ==========================================================
-# FORM MENU DEL GIORNO COMPLETO (VELOCIZZATO + ALTEZZE GEMELLE)
+# FORM MENU DEL GIORNO COMPLETO (VELOCIZZATO + ALTEZZE GEMELLE + RICALIBRAZIONE)
 # ==========================================================
 def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_callback=None):
     if not supabase:
@@ -1170,7 +1687,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             banner_loading
         ], spacing=6, tight=True),
-        content=ft.Container(content=colonna_contenuto, width=350, height=480),
+        content=ft.Container(content=colonna_contenuto, width=355, height=490),
         actions=[
             ft.Container(
                 content=ft.Text("Chiudi", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
@@ -1228,7 +1745,8 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
             if inizializza_aperture:
                 for m in menu_del_giorno:
-                    cat_aperte.add(m["categoria"])
+                    if m["categoria"] in SUPERCATEGORIE:
+                        cat_aperte.add(m["categoria"])
                     if m.get("subcategoria"):
                         sub_aperte.add((m["categoria"], m["subcategoria"]))
         except Exception as ex:
@@ -1260,7 +1778,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             "nome": nome_pulito,
             "unita_default": unita_scelta or "g"
         }).execute()
-        nuovo = res.data[0]
+        nuovo = normalizza_ingrediente_record(res.data[0])
         lista_ingredienti.append(nuovo)
         return nuovo["id"]
 
@@ -1271,7 +1789,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             return esistente["id"]
         res = supabase.table("ricette").insert({
             "nome": nome_pulito,
-            "portata_default": portata
+            "portata_default": codifica_meta_portata(portata, 8)
         }).execute()
         nuova = res.data[0]
         lista_ricette.append(nuova)
@@ -1375,7 +1893,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
         lista_ui = ft.Column(spacing=4)
         for v in voci:
-            ing_obj = v.get("ingredienti") or {"id": v["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"}
+            ing_obj = normalizza_ingrediente_record(v.get("ingredienti") or {"id": v["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
             nome_ing = ing_obj.get("nome", "Ingrediente")
             qta = v.get("quantita") or 0
             qta_str = f"{formatta_numero(qta)} {v.get('unita_misura') or ''}".strip()
@@ -1420,7 +1938,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             testo = (txt_ing.value or "").strip().lower()
             riga_suggerimenti.controls.clear()
             if len(testo) >= 1:
-                matches = [i for i in lista_ingredienti if testo in i["nome"].lower()][:8]
+                matches = [i for i in lista_ingredienti if not i.get("is_detersivo") and testo in i["nome"].lower()][:8]
                 for m_ing in matches:
                     riga_suggerimenti.controls.append(
                         ft.Container(
@@ -1471,7 +1989,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
         return ft.Column([
             lista_ui,
             txt_ing,
-            riga_suggerimenti,
+            riga_sugg := riga_suggerimenti,
             ft.Row([box_qta, sel_unita, btn_add], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         ], spacing=6)
 
@@ -1487,12 +2005,16 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             ric_obj = v.get("ricette") or {}
             id_ric = v["id_ricetta"]
             nome_ric = ric_obj.get("nome", "Ricetta")
-            portata_ric = ric_obj.get("portata_default") or subcategoria
+            meta_r = estrai_meta_ricetta(ric_obj)
+            portata_ric = meta_r["portata"]
+            porzioni_ric = meta_r["porzioni"]
+            url_ric = meta_r["url_fonte"]
+            foto_ric = meta_r["foto_url"]
             ingredienti_associati = mappa_ricette_ing.get(id_ric, [])
 
             col_ing_ricetta = ft.Column(spacing=6)
             for ri in ingredienti_associati:
-                ing_info = ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"}
+                ing_info = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
                 nome_i = ing_info.get("nome", "Ingrediente")
                 qta_val = ri.get("quantita") or 0
                 qta_init = formatta_numero(qta_val)
@@ -1566,7 +2088,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                 testo = (tf_i.value or "").strip().lower()
                 r_sugg.controls.clear()
                 if len(testo) >= 1:
-                    matches = [i for i in lista_ingredienti if testo in i["nome"].lower()][:8]
+                    matches = [i for i in lista_ingredienti if not i.get("is_detersivo") and testo in i["nome"].lower()][:8]
                     for m_ing in matches:
                         r_sugg.controls.append(
                             ft.Container(
@@ -1620,15 +2142,44 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                 )
 
             ha_ing_ric = len(ingredienti_associati) > 0
-            header_ricetta_extra = []
-            if not ha_ing_ric:
-                header_ricetta_extra.append(
+
+            # Ricalibrazione persone e ricerca web sempre disponibili su ogni ricetta anche in modalità completa
+            box_pers_inline = crea_box_quantita(valore_iniziale=str(porzioni_ric), width=78, height=30, text_size=11, mostra_prefisso=True, prefisso_custom="Pers.:")
+
+            def ricalibra_inline(e, r_id=id_ric, old_p=porzioni_ric, b_p=box_pers_inline, m_curr=meta_r):
+                nuove_p = int(max(1, parse_qta(b_p.textfield.value) or old_p))
+                esegui_azione_db(
+                    f"⏳ Ricalcolo per {nuove_p} persone...",
+                    lambda: ricalibra_ingredienti_ricetta_db(r_id, old_p, nuove_p, m_curr)
+                )
+
+            riga_meta_controlli = [
+                ft.Text(f"👥 Per {porzioni_ric} pers.", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                box_pers_inline,
+                ft.Container(
+                    content=ft.Text("⚖️ Ricalibra", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                    bgcolor=ft.Colors.TEAL_700, height=30, padding=ft.Padding(8, 0, 8, 0),
+                    alignment=ft.Alignment(0, 0), border_radius=5, on_click=ricalibra_inline
+                ),
+                ft.Container(
+                    content=ft.Text("🌐 Web / Foto", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                    bgcolor=ft.Colors.ORANGE_800, height=30, padding=ft.Padding(8, 0, 8, 0),
+                    alignment=ft.Alignment(0, 0), border_radius=5,
+                    on_click=lambda e, v_id=v["id"], r_id=id_ric, r_n=nome_ric, r_p=portata_ric: apri_popup_dettaglio_ricetta_semplificata(
+                        page, v_id, r_id, r_n, r_p, lambda: esegui_azione_db("⏳ Aggiornamento...", lambda: None)
+                    )
+                )
+            ]
+
+            riga_link_foto = []
+            if foto_ric:
+                riga_link_foto.append(ft.Image(src=foto_ric, width=42, height=42, border_radius=6))
+            if url_ric:
+                riga_link_foto.append(
                     ft.Container(
-                        content=ft.Text("🌐 Compila da Web", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
-                        bgcolor=ft.Colors.ORANGE_800, padding=ft.Padding(6, 3, 6, 3), border_radius=6,
-                        on_click=lambda e, v_id=v["id"], r_id=id_ric, r_n=nome_ric, r_p=portata_ric: apri_popup_dettaglio_ricetta_semplificata(
-                            page, v_id, r_id, r_n, r_p, lambda: esegui_azione_db("⏳ Aggiornamento...", lambda: None)
-                        )
+                        content=ft.Text("🔗 Vedi preparazione sul sito originale", size=10, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD),
+                        url=url_ric,
+                        on_click=lambda e, u=url_ric: apri_url_esterno(page, u)
                     )
                 )
 
@@ -1637,11 +2188,11 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                     content=ft.Column([
                         ft.Row([
                             ft.Text(f"{'🍲' if ha_ing_ric else '⚠️'} {nome_ric}", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if ha_ing_ric else ft.Colors.RED_700, expand=True),
-                            *header_ricetta_extra,
                             ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=16, tooltip="Rinomina o Elimina Ricetta dal DB", on_click=gestisci_ricetta_db),
                             ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=ft.Colors.RED_700, icon_size=17, tooltip="Togli ricetta da questo giorno", on_click=rimuovi_ricetta_dal_giorno)
                         ], spacing=2),
-                        ft.Text("Ingredienti associati:", size=10, color=ft.Colors.GREY_700, italic=True),
+                        ft.Row(riga_link_foto, spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER) if riga_link_foto else ft.Container(),
+                        ft.Row(riga_meta_controlli, spacing=4, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         col_ing_ricetta,
                         ft.Divider(height=4, color="#BBDEFB"),
                         txt_nuovo_ing_r,
@@ -1670,7 +2221,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                 )
             )
 
-        txt_ricetta = ft.TextField(label=f"Cerca tra le 100+ ricette o scrivi nuova ({subcategoria})", dense=True, text_size=12, expand=True)
+        txt_ricetta = ft.TextField(label=f"Cerca tra le ricette o scrivi nuova ({subcategoria})", dense=True, text_size=12, expand=True)
         riga_sugg_ricette = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
 
         def assegna_ricetta_al_menu(id_ric_scelta):
@@ -1891,7 +2442,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                 ft.Divider(height=4, color="#E0E0E0"),
                 colonna_lista
             ], spacing=5),
-            width=350, height=490
+            width=355, height=490
         ),
         actions=[
             ft.Container(
@@ -1909,7 +2460,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
     page.update()
 
     def normalizza_qta_unita(qta, unita):
-        u = (unita or "pz").lower().strip()
+        u = str(unita or "pz").replace("|DET", "").lower().strip()
         q = float(qta or 0)
         if u == "kg":
             return q * 1000.0, "g"
@@ -1963,7 +2514,6 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
             inizio_str = dt_i.strftime("%Y-%m-%d")
             fine_str = dt_f.strftime("%Y-%m-%d")
 
-            # Intervallo mensile per includere sempre Dispensa e Detersivi del mese corrente
             primo_mese_str = data_riferimento.replace(day=1).strftime("%Y-%m-%d")
             ult_mese = calendar.monthrange(data_riferimento.year, data_riferimento.month)[1]
             fine_mese_str = data_riferimento.replace(day=ult_mese).strftime("%Y-%m-%d")
@@ -2000,6 +2550,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                         mappa_ri[rid].append(ri)
 
                 somme = {}
+                spuntati_sessione.clear()
                 for m in righe_valide:
                     cat = m.get("categoria")
                     is_preso_db = bool(m.get("preso"))
@@ -2137,7 +2688,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
 
 
 # ==========================================================
-# CALENDARIO DEI MENU (COMPLETA + INTERRUTTORE "SEMPLIFICATA" SU 3 RIGHE)
+# CALENDARIO DEI MENU (COMPLETA + SEMPLIFICATA CON DISPENSA E DETERSIVI A TUTTO SCHERMO)
 # ==========================================================
 def crea_calendario_menu(page: ft.Page):
     stato = {
@@ -2147,11 +2698,18 @@ def crea_calendario_menu(page: ft.Page):
     }
     oggi = datetime.now()
 
+    # Dati correnti in RAM per aggiornamenti ottimistici istantanei (0 latenza)
+    ram_menu = {
+        "dizionario_menu": {},
+        "voci_dispensa_mese": [],
+        "voci_detersivi_mese": []
+    }
+
     testo_header = ft.Text(size=15, weight=ft.FontWeight.BOLD)
     badge_loading_cal = ft.Container(
         content=ft.Row([
             ft.ProgressRing(width=14, height=14, stroke_width=2, color=ft.Colors.WHITE),
-            ft.Text("Caricamento...", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
+            ft.Text("Sincronizzazione...", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
         ], spacing=5, tight=True),
         bgcolor=ft.Colors.ORANGE_800,
         padding=ft.Padding(8, 3, 8, 3),
@@ -2169,6 +2727,8 @@ def crea_calendario_menu(page: ft.Page):
         lbl_semplificata.weight = ft.FontWeight.BOLD if stato["semplificata"] else ft.FontWeight.NORMAL
         lbl_semplificata.color = ft.Colors.ORANGE_900 if stato["semplificata"] else ft.Colors.BLUE_900
         box_bottoni_vista.visible = not stato["semplificata"]
+        # Ridisegna subito da RAM e poi sincronizza in background
+        disegna_vista_da_ram()
         aggiorna_calendario_menu()
 
     lbl_semplificata = ft.Text("⚡ Semplificata", size=12, weight=ft.FontWeight.NORMAL, color=ft.Colors.BLUE_900)
@@ -2197,6 +2757,7 @@ def crea_calendario_menu(page: ft.Page):
 
     def cambia_vista(nuova_vista):
         stato["vista"] = nuova_vista
+        disegna_vista_da_ram()
         aggiorna_calendario_menu()
 
     def nav_prec(e):
@@ -2229,13 +2790,13 @@ def crea_calendario_menu(page: ft.Page):
     # ---------------------------------------------------------
     def crea_card_giorno_semplificata(dt_giorno: datetime, indice_sett: int, voci_giorno: list):
         is_oggi = (dt_giorno.date() == oggi.date())
+        d_str_g = dt_giorno.strftime("%Y-%m-%d")
 
         # 1. PRANZO (associato a Pranzo -> Primo in modalità completa)
         voci_pranzo = [
             x for x in voci_giorno
-            if x.get("categoria") == "Pranzo" and x.get("id_ricetta") and (x.get("subcategoria") in ["Primo", None] or True)
+            if x.get("categoria") == "Pranzo" and x.get("id_ricetta")
         ]
-        # Dà priorità a Primo ma mostra anche eventuali altre ricette di Pranzo
         voci_pranzo.sort(key=lambda x: 0 if x.get("subcategoria") == "Primo" else 1)
 
         # 2. CENA (associata a Cena -> Secondo in modalità completa)
@@ -2251,23 +2812,31 @@ def crea_calendario_menu(page: ft.Page):
             if x.get("categoria") == "Varie" and x.get("id_ingrediente")
         ]
 
+        def aggiungi_ottimistico_giorno(nuova_voce):
+            if d_str_g not in ram_menu["dizionario_menu"]:
+                ram_menu["dizionario_menu"][d_str_g] = []
+            ram_menu["dizionario_menu"][d_str_g].append(nuova_voce)
+            disegna_vista_da_ram()
+
         def costruisci_badge_piatto(voce_m, colore_tema, portata_default):
             ric = voce_m.get("ricette") or {}
             id_ric = voce_m.get("id_ricetta")
             nome_r = ric.get("nome") or "Piatto"
-            port_r = ric.get("portata_default") or voce_m.get("subcategoria") or portata_default
+            meta_r = estrai_meta_ricetta(ric)
+            port_r = meta_r["portata"] or voce_m.get("subcategoria") or portata_default
+            porzioni_r = meta_r["porzioni"]
             compilata = ricetta_ha_ingredienti(id_ric)
 
-            # Semaforo: se non compilata nel DB -> Evidenziazione Gialla con bordo Rosso!
             sfondo = "#E8F5E9" if (compilata and colore_tema == "#4CAF50") else ("#E3F2FD" if compilata else "#FFF59D")
             col_bordo = colore_tema if compilata else "#D32F2F"
             col_testo = "#1B5E20" if (compilata and colore_tema == "#4CAF50") else ("#0D47A1" if compilata else "#B71C1C")
             pref_icon = "🍲 " if compilata else "⚠️ "
+            info_pers = f" ({porzioni_r}p)" if compilata else ""
 
             return ft.Container(
                 content=ft.Row([
                     ft.Text(
-                        f"{pref_icon}{nome_r}",
+                        f"{pref_icon}{nome_r}{info_pers}",
                         size=11, weight=ft.FontWeight.BOLD, color=col_testo,
                         no_wrap=False, expand=True
                     ),
@@ -2296,7 +2865,9 @@ def crea_calendario_menu(page: ft.Page):
                     ft.Container(
                         content=ft.Text("+ Piatto", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                         bgcolor="#4CAF50", padding=ft.Padding(6, 2, 6, 2), border_radius=8,
-                        on_click=lambda e, dt=dt_giorno: apri_popup_aggiungi_piatto_semplificato(page, dt, "Pranzo", "Primo", aggiorna_calendario_menu)
+                        on_click=lambda e, dt=dt_giorno, vg=voci_giorno: apri_popup_aggiungi_piatto_semplificato(
+                            page, dt, "Pranzo", "Primo", vg, aggiungi_ottimistico_giorno, aggiorna_calendario_menu
+                        )
                     )
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 col_piatti_pranzo
@@ -2319,7 +2890,9 @@ def crea_calendario_menu(page: ft.Page):
                     ft.Container(
                         content=ft.Text("+ Piatto", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                         bgcolor="#2196F3", padding=ft.Padding(6, 2, 6, 2), border_radius=8,
-                        on_click=lambda e, dt=dt_giorno: apri_popup_aggiungi_piatto_semplificato(page, dt, "Cena", "Secondo", aggiorna_calendario_menu)
+                        on_click=lambda e, dt=dt_giorno, vg=voci_giorno: apri_popup_aggiungi_piatto_semplificato(
+                            page, dt, "Cena", "Secondo", vg, aggiungi_ottimistico_giorno, aggiorna_calendario_menu
+                        )
                     )
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 col_piatti_cena
@@ -2337,8 +2910,10 @@ def crea_calendario_menu(page: ft.Page):
             q_str = f" ({formatta_numero(q_v)} {vv.get('unita_misura') or ''})" if q_v else ""
 
             def del_varie(e, id_v=vv["id"]):
-                supabase.table("menu_giornalieri").delete().eq("id", id_v).execute()
-                aggiorna_calendario_menu()
+                if d_str_g in ram_menu["dizionario_menu"]:
+                    ram_menu["dizionario_menu"][d_str_g] = [x for x in ram_menu["dizionario_menu"][d_str_g] if x.get("id") != id_v]
+                disegna_vista_da_ram()
+                threading.Thread(target=lambda: (supabase.table("menu_giornalieri").delete().eq("id", id_v).execute(), aggiorna_calendario_menu()), daemon=True).start()
 
             righe_varie_ui.append(
                 ft.Row([
@@ -2360,7 +2935,7 @@ def crea_calendario_menu(page: ft.Page):
                     ft.Container(
                         content=ft.Text("+ Varie", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                         bgcolor="#795548", padding=ft.Padding(6, 2, 6, 2), border_radius=8,
-                        on_click=lambda e, d_s=dt_giorno.strftime("%Y-%m-%d"): apri_popup_aggiungi_voce_diretta(page, d_s, "Varie", f"Varie {dt_giorno.strftime('%d/%m')}", aggiorna_calendario_menu)
+                        on_click=lambda e, d_s=d_str_g: apri_popup_aggiungi_voce_diretta(page, d_s, "Varie", f"Varie {dt_giorno.strftime('%d/%m')}", aggiorna_calendario_menu)
                     )
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ft.Column(righe_varie_ui, spacing=2)
@@ -2397,60 +2972,65 @@ def crea_calendario_menu(page: ft.Page):
         )
 
     # ---------------------------------------------------------
-    # COSTRUTTORE CASELLE MENSILI: DISPENSA & DETERSIVI E VARIE
+    # COSTRUTTORE CASELLE MENSILI A TUTTO SCHERMO: DISPENSA & DETERSIVI E VARIE
     # ---------------------------------------------------------
-    def crea_card_mensile_spuntabile(titolo: str, icona_em: str, categoria_db: str, colore_tema: str, voci_mese: list, data_rif_mese: datetime):
+    def crea_card_mensile_tutto_schermo(titolo: str, icona_em: str, categoria_db: str, colore_tema: str, voci_mese: list, data_rif_mese: datetime):
         primo_del_mese_str = data_rif_mese.replace(day=1).strftime("%Y-%m-%d")
         nome_mese = MESI[data_rif_mese.month]
 
-        lista_voci_ui = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO, height=195)
+        lista_voci_ui = ft.Column(spacing=4)
 
         if not voci_mese:
             lista_voci_ui.controls.append(
                 ft.Container(
-                    content=ft.Text(f"Nessun prodotto in {titolo} per {nome_mese}. Clicca '+ Aggiungi' in alto.", size=10, color=ft.Colors.GREY_600, italic=True),
-                    padding=10
+                    content=ft.Text(f"Nessun prodotto in {titolo} per {nome_mese}. Clicca '+ Aggiungi' a destra per inserire.", size=11, color=ft.Colors.GREY_600, italic=True),
+                    padding=8
                 )
             )
         else:
-            # Ordina: prima da prendere (preso=False), poi già presenti (preso=True)
             voci_ordinate = sorted(voci_mese, key=lambda x: (1 if x.get("preso") else 0, (x.get("ingredienti") or {}).get("nome", "")))
             for vm in voci_ordinate:
                 ing_o = vm.get("ingredienti") or {}
                 nome_p = ing_o.get("nome") or "Prodotto"
                 q_p = vm.get("quantita") or 0
-                q_str = f" ({formatta_numero(q_p)} {vm.get('unita_misura') or ''})" if q_p else ""
+                u_p = str(vm.get("unita_misura") or "").replace("|DET", "").strip()
+                q_str = f" ({formatta_numero(q_p)} {u_p})" if q_p else ""
                 is_preso = bool(vm.get("preso"))
 
-                def cambia_spunta_mese(e, id_riga=vm["id"]):
+                def cambia_spunta_mese(e, voce_ref=vm):
                     nuovo_v = bool(e.control.value)
-                    aggiorna_flag_preso_db(id_riga, nuovo_v)
-                    aggiorna_calendario_menu()
+                    voce_ref["preso"] = nuovo_v
+                    disegna_vista_da_ram()
+                    threading.Thread(target=lambda: aggiorna_flag_preso_db(voce_ref["id"], nuovo_v), daemon=True).start()
 
                 def elimina_voce_mese(e, id_riga=vm["id"]):
-                    supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute()
-                    aggiorna_calendario_menu()
+                    if categoria_db == "Dispensa":
+                        ram_menu["voci_dispensa_mese"] = [x for x in ram_menu["voci_dispensa_mese"] if x.get("id") != id_riga]
+                    else:
+                        ram_menu["voci_detersivi_mese"] = [x for x in ram_menu["voci_detersivi_mese"] if x.get("id") != id_riga]
+                    disegna_vista_da_ram()
+                    threading.Thread(target=lambda: (supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute(), aggiorna_calendario_menu()), daemon=True).start()
 
                 lista_voci_ui.controls.append(
                     ft.Container(
                         content=ft.Row([
                             ft.Checkbox(value=is_preso, on_change=cambia_spunta_mese),
                             ft.Text(
-                                f"{'✓ ' if is_preso else ''}{nome_p}{q_str}",
-                                size=11,
+                                f"{'✓ Presente: ' if is_preso else ''}{nome_p}{q_str}",
+                                size=12,
                                 weight=ft.FontWeight.NORMAL if is_preso else ft.FontWeight.BOLD,
                                 color=ft.Colors.GREY_600 if is_preso else ft.Colors.BLACK,
                                 italic=is_preso,
                                 expand=True
                             ),
                             ft.GestureDetector(
-                                content=ft.Icon(ft.Icons.CLOSE, size=14, color=ft.Colors.RED_700),
+                                content=ft.Icon(ft.Icons.CLOSE, size=16, color=ft.Colors.RED_700),
                                 on_tap=elimina_voce_mese
                             )
-                        ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                         bgcolor="#EEEEEE" if is_preso else ft.Colors.WHITE,
-                        padding=ft.Padding(4, 1, 6, 1),
-                        border_radius=5,
+                        padding=ft.Padding(6, 2, 10, 2),
+                        border_radius=6,
                         border=bordo_campo_uniforme("#E0E0E0" if is_preso else colore_tema)
                     )
                 )
@@ -2462,33 +3042,319 @@ def crea_calendario_menu(page: ft.Page):
             content=ft.Column([
                 ft.Container(
                     content=ft.Row([
-                        ft.Text(f"{icona_em} {titolo.upper()} ({nome_mese[:3].upper()})", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE, expand=True),
+                        ft.Text(f"{icona_em} {titolo.upper()} - MESE DI {nome_mese.upper()}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE, expand=True),
+                        ft.Text(f"Da prendere: {tot_da_prendere} | Presenti: {tot_presenti}   ", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                         ft.Container(
-                            content=ft.Text("+ Aggiungi", size=9, color=colore_tema, weight=ft.FontWeight.BOLD),
-                            bgcolor=ft.Colors.WHITE, padding=ft.Padding(6, 2, 6, 2), border_radius=8,
+                            content=ft.Text("+ Aggiungi", size=11, color=colore_tema, weight=ft.FontWeight.BOLD),
+                            bgcolor=ft.Colors.WHITE, padding=ft.Padding(10, 4, 10, 4), border_radius=8,
                             on_click=lambda e: apri_popup_aggiungi_voce_diretta(page, primo_del_mese_str, categoria_db, f"{titolo} ({nome_mese})", aggiorna_calendario_menu)
                         )
-                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                    bgcolor=colore_tema, padding=ft.Padding(8, 5, 8, 5), border_radius=6
-                ),
-                ft.Text(
-                    f"Da prendere: {tot_da_prendere}  |  Presenti: {tot_presenti}",
-                    size=10, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER, wrap=True),
+                    bgcolor=colore_tema, padding=ft.Padding(10, 6, 10, 6), border_radius=6
                 ),
                 lista_voci_ui
-            ], spacing=5),
-            expand=1,
+            ], spacing=6),
+            width=float("inf"),
             bgcolor="#F4F6F9",
-            padding=6,
+            padding=8,
             border_radius=8,
             border=bordo_campo_uniforme(colore_tema, 1.5)
         )
 
-    def aggiorna_calendario_menu():
+    # ---------------------------------------------------------
+    # DISEGNO ISTANTANEO DA RAM (0 MILLISECONDI DI ATTESA)
+    # ---------------------------------------------------------
+    def disegna_vista_da_ram():
         vista = stato["vista"]
         data = stato["data"]
         is_semplificata = stato["semplificata"]
 
+        btn_giorno.bgcolor = ft.Colors.BLUE_900 if vista == "Giorno" else ft.Colors.GREY_200
+        btn_giorno.content.color = ft.Colors.WHITE if vista == "Giorno" else ft.Colors.BLACK
+        btn_settimana.bgcolor = ft.Colors.BLUE_900 if vista == "Settimana" else ft.Colors.GREY_200
+        btn_settimana.content.color = ft.Colors.WHITE if vista == "Settimana" else ft.Colors.BLACK
+        btn_mese.bgcolor = ft.Colors.BLUE_900 if vista == "Mese" else ft.Colors.GREY_200
+        btn_mese.content.color = ft.Colors.WHITE if vista == "Mese" else ft.Colors.BLACK
+
+        layer_semplificata.visible = is_semplificata
+        layer_mese.visible = (not is_semplificata and vista == "Mese")
+        layer_settimana.visible = (not is_semplificata and vista == "Settimana")
+        layer_giorno.visible = (not is_semplificata and vista == "Giorno")
+
+        dizionario_menu = ram_menu["dizionario_menu"]
+        voci_dispensa_mese = ram_menu["voci_dispensa_mese"]
+        voci_detersivi_mese = ram_menu["voci_detersivi_mese"]
+
+        # ==========================================
+        # MODALITÀ SEMPLIFICATA:
+        # 3 RIGHE SETTIMANA + 2 RIGHE SEPARATE A TUTTO SCHERMO PER DISPENSA E DETERSIVI
+        # ==========================================
+        if is_semplificata:
+            lunedi = data - timedelta(days=data.weekday())
+            domenica = lunedi + timedelta(days=6)
+            testo_header.value = (
+                f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}"
+                if lunedi.month == domenica.month else
+                f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
+            )
+            layer_semplificata.controls.clear()
+
+            cards_giorni = []
+            for i in range(7):
+                gc = lunedi + timedelta(days=i)
+                d_str = gc.strftime("%Y-%m-%d")
+                cards_giorni.append(crea_card_giorno_semplificata(gc, i, dizionario_menu.get(d_str, [])))
+
+            # Riga 1: Lunedì, Martedì, Mercoledì
+            riga_1 = ft.Row([cards_giorni[0], cards_giorni[1], cards_giorni[2]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
+            # Riga 2: Giovedì, Venerdì, Sabato
+            riga_2 = ft.Row([cards_giorni[3], cards_giorni[4], cards_giorni[5]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
+            # Riga 3: Domenica
+            riga_3 = ft.Row([cards_giorni[6]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
+
+            # Riga 4 (A tutto schermo): DISPENSA (Mese)
+            riga_dispensa = crea_card_mensile_tutto_schermo("Dispensa", "📦", "Dispensa", "#00897B", voci_dispensa_mese, data)
+            # Riga 5 (A tutto schermo): DETERSIVI E VARIE (Mese)
+            riga_detersivi = crea_card_mensile_tutto_schermo("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", voci_detersivi_mese, data)
+
+            layer_semplificata.controls.extend([
+                riga_1,
+                riga_2,
+                riga_3,
+                ft.Divider(height=6, color="#CFD8DC"),
+                riga_dispensa,
+                riga_detersivi
+            ])
+
+        # ==========================================
+        # MODALITÀ COMPLETA - VISTA MESE
+        # ==========================================
+        elif vista == "Mese":
+            testo_header.value = f"{MESI[data.month]} {data.year}"
+            layer_mese.controls.clear()
+
+            griglia = ft.Column(spacing=0)
+            matrice = calendar.monthcalendar(data.year, data.month)
+
+            for settimana in matrice:
+                riga_ui = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
+                for giorno in settimana:
+                    if giorno == 0:
+                        riga_ui.controls.append(ft.Container(expand=1, height=90, border=bordo_standard()))
+                    else:
+                        is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
+                        is_sel = (giorno == data.day)
+                        data_giorno = data.replace(day=giorno)
+                        d_str = data_giorno.strftime("%Y-%m-%d")
+                        voci_giorno = dizionario_menu.get(d_str, [])
+
+                        cerchio = ft.Container(
+                            content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
+                            bgcolor=ft.Colors.BLUE_900 if is_oggi else (ft.Colors.BLUE_100 if is_sel else ft.Colors.TRANSPARENT),
+                            border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
+                        )
+
+                        cat_presenti = []
+                        for sup in SUPERCATEGORIE:
+                            v_sup = [x for x in voci_giorno if x["categoria"] == sup]
+                            if v_sup:
+                                voce_ric = next((x for x in v_sup if x.get("ricette") and x["ricette"].get("nome")), v_sup[0])
+                                dettaglio = ""
+                                ha_warn = False
+                                if voce_ric.get("ricette") and voce_ric["ricette"].get("nome"):
+                                    dettaglio = f": {voce_ric['ricette']['nome']}"
+                                    if not ricetta_ha_ingredienti(voce_ric.get("id_ricetta")):
+                                        ha_warn = True
+                                elif voce_ric.get("ingredienti") and voce_ric["ingredienti"].get("nome"):
+                                    dettaglio = f": {voce_ric['ingredienti']['nome']}"
+                                cat_presenti.append((sup, f"{'⚠️ ' if ha_warn else ''}{sup[:3]}{dettaglio}", ha_warn))
+
+                        col_badge = ft.Column(spacing=1, expand=True)
+                        for sup_nome, etichetta, is_warn in cat_presenti[:2]:
+                            col_badge.controls.append(
+                                ft.Container(
+                                    content=ft.Text(etichetta, size=7, color=ft.Colors.BLACK if is_warn else ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
+                                    bgcolor="#FFF59D" if is_warn else COLORI_PASTI.get(sup_nome, ft.Colors.BLUE_900),
+                                    padding=2, border_radius=2, height=18
+                                )
+                            )
+                        if len(cat_presenti) > 2:
+                            col_badge.controls.append(
+                                ft.Container(
+                                    content=ft.Text(f"+ {len(cat_presenti) - 2} altri", size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+                                    alignment=ft.Alignment(0, 0)
+                                )
+                            )
+
+                        riga_ui.controls.append(
+                            ft.Container(
+                                content=ft.Column([
+                                    ft.Container(content=cerchio, alignment=ft.Alignment(0, 0)),
+                                    col_badge
+                                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                                expand=1, height=90, border=bordo_standard(), padding=2,
+                                on_click=lambda e, dt=data_giorno: apri_giorno_selezionato(dt)
+                            )
+                        )
+                griglia.controls.append(riga_ui)
+
+            layer_mese.controls.extend([
+                ft.Row(
+                    controls=[
+                        ft.Container(content=ft.Text(g, size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700), expand=1, alignment=ft.Alignment(0, 0), border=bordo_standard(), padding=2)
+                        for g in GIORNI
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0
+                ),
+                griglia
+            ])
+
+        # ==========================================
+        # MODALITÀ COMPLETA - VISTA SETTIMANA
+        # ==========================================
+        elif vista == "Settimana":
+            lunedi = data - timedelta(days=data.weekday())
+            domenica = lunedi + timedelta(days=6)
+            testo_header.value = (
+                f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}"
+                if lunedi.month == domenica.month else
+                f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
+            )
+            layer_settimana.controls.clear()
+
+            riga1 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
+            riga2 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
+
+            for i in range(7):
+                gc = lunedi + timedelta(days=i)
+                d_str = gc.strftime("%Y-%m-%d")
+                voci_giorno = dizionario_menu.get(d_str, [])
+
+                cerchio_sett = ft.Container(
+                    content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=13, weight=ft.FontWeight.BOLD),
+                    bgcolor=ft.Colors.BLUE_900 if (gc.date() == oggi.date()) else ft.Colors.TRANSPARENT,
+                    border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
+                )
+
+                intestazione = ft.Container(
+                    content=ft.Column([
+                        ft.Text(GIORNI[i], size=9, color=ft.Colors.GREY_700),
+                        cerchio_sett
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                    padding=4
+                )
+
+                col_pasti_sett = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO)
+                for sup in SUPERCATEGORIE:
+                    v_sup = [x for x in voci_giorno if x["categoria"] == sup]
+                    if v_sup:
+                        col_sup = COLORI_PASTI.get(sup, ft.Colors.BLUE_900)
+                        testi_voci = []
+                        for x in v_sup:
+                            pref = f"{x['subcategoria'][:3]}: " if x.get("subcategoria") else ""
+                            if x.get("ricette") and x["ricette"].get("nome"):
+                                testi_voci.append(f"• {pref}{x['ricette']['nome']}")
+                            elif x.get("ingredienti") and x["ingredienti"].get("nome"):
+                                testi_voci.append(f"• {pref}{x['ingredienti']['nome']}")
+
+                        col_pasti_sett.controls.append(
+                            ft.Container(
+                                content=ft.Column(
+                                    [ft.Text(sup.upper(), size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)] +
+                                    [ft.Text(tv, size=8, color=ft.Colors.WHITE, no_wrap=False) for tv in testi_voci],
+                                    spacing=1
+                                ),
+                                bgcolor=col_sup, padding=4, border_radius=4, width=float("inf")
+                            )
+                        )
+
+                box_giorno = ft.Container(
+                    content=ft.Column([
+                        intestazione,
+                        ft.Divider(height=1, color="#E0E0E0"),
+                        ft.Container(content=col_pasti_sett, padding=2, expand=True)
+                    ], spacing=0),
+                    expand=1, height=300, border=bordo_standard(),
+                    on_click=lambda e, dt=gc: apri_giorno_selezionato(dt)
+                )
+
+                if i < 4:
+                    riga1.controls.append(box_giorno)
+                else:
+                    riga2.controls.append(box_giorno)
+
+            riga2.controls.append(ft.Container(expand=1))
+            layer_settimana.controls.extend([riga1, ft.Container(height=12), riga2])
+
+        # ==========================================
+        # MODALITÀ COMPLETA - VISTA GIORNO
+        # ==========================================
+        elif vista == "Giorno":
+            testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
+            is_oggi = (data.date() == oggi.date())
+            layer_giorno.controls.clear()
+
+            d_str = data.strftime("%Y-%m-%d")
+            voci_giorno = dizionario_menu.get(d_str, [])
+
+            intestazione = ft.Container(
+                content=ft.Row([
+                    ft.Column([
+                        ft.Text(GIORNI[data.weekday()], size=12, color=ft.Colors.GREY_700),
+                        ft.Text(str(data.day), size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if is_oggi else ft.Colors.BLACK)
+                    ], spacing=0),
+                    ft.Container(
+                        content=ft.Text("✏️ Compila / Modifica Menu del Giorno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                        bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=6,
+                        on_click=lambda e: apri_giorno_selezionato(data)
+                    )
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                padding=10, border=bordo_standard()
+            )
+
+            col_dettaglio_giorno = ft.Column(spacing=8)
+
+            if not voci_giorno:
+                col_dettaglio_giorno.controls.append(
+                    ft.Container(
+                        content=ft.Text("Nessun pasto programmato per questa giornata. Clicca su 'Compila / Modifica Menu' per aggiungere ricette o ingredienti.", color=ft.Colors.GREY_600, italic=True, size=12),
+                        padding=20, alignment=ft.Alignment(0, 0)
+                    )
+                )
+            else:
+                for sup in SUPERCATEGORIE:
+                    v_sup = [x for x in voci_giorno if x["categoria"] == sup]
+                    if v_sup:
+                        col_sup = COLORI_PASTI.get(sup, ft.Colors.BLUE_900)
+                        righe_pasto = [ft.Text(f"🍽️ {sup.upper()}", size=13, weight=ft.FontWeight.BOLD, color=col_sup)]
+                        for x in v_sup:
+                            sub_lbl = f"[{x['subcategoria']}] " if x.get("subcategoria") else ""
+                            if x.get("ricette") and x["ricette"].get("nome"):
+                                m_ric = estrai_meta_ricetta(x["ricette"])
+                                righe_pasto.append(ft.Text(f"  🍲 {sub_lbl}{x['ricette']['nome']} (per {m_ric['porzioni']} pers.)", size=12, weight=ft.FontWeight.BOLD))
+                            elif x.get("ingredienti") and x["ingredienti"].get("nome"):
+                                q = x.get("quantita") or 0
+                                q_str = f" ({formatta_numero(q)} {x.get('unita_misura') or ''})" if q else ""
+                                righe_pasto.append(ft.Text(f"  • {sub_lbl}{x['ingredienti']['nome']}{q_str}", size=12))
+
+                        col_dettaglio_giorno.controls.append(
+                            ft.Container(
+                                content=ft.Column(righe_pasto, spacing=3),
+                                bgcolor=ft.Colors.WHITE, padding=10, border_radius=8,
+                                border=ft.Border(top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), left=ft.BorderSide(5, col_sup), right=ft.BorderSide(1, "#E0E0E0")),
+                                on_click=lambda e: apri_giorno_selezionato(data)
+                            )
+                        )
+
+            layer_giorno.controls.extend([intestazione, ft.Container(height=6), col_dettaglio_giorno])
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def aggiorna_calendario_menu():
+        data = stato["data"]
         badge_loading_cal.visible = True
         try:
             page.update()
@@ -2496,25 +3362,13 @@ def crea_calendario_menu(page: ft.Page):
             pass
 
         def worker_calendario():
-            btn_giorno.bgcolor = ft.Colors.BLUE_900 if vista == "Giorno" else ft.Colors.GREY_200
-            btn_giorno.content.color = ft.Colors.WHITE if vista == "Giorno" else ft.Colors.BLACK
-            btn_settimana.bgcolor = ft.Colors.BLUE_900 if vista == "Settimana" else ft.Colors.GREY_200
-            btn_settimana.content.color = ft.Colors.WHITE if vista == "Settimana" else ft.Colors.BLACK
-            btn_mese.bgcolor = ft.Colors.BLUE_900 if vista == "Mese" else ft.Colors.GREY_200
-            btn_mese.content.color = ft.Colors.WHITE if vista == "Mese" else ft.Colors.BLACK
-
-            layer_semplificata.visible = is_semplificata
-            layer_mese.visible = (not is_semplificata and vista == "Mese")
-            layer_settimana.visible = (not is_semplificata and vista == "Settimana")
-            layer_giorno.visible = (not is_semplificata and vista == "Giorno")
-
             dizionario_menu = {}
             voci_dispensa_mese = []
             voci_detersivi_mese = []
 
             if supabase:
                 try:
-                    assicura_cache_anagrafica(forza_ricarica=True)
+                    assicura_cache_anagrafica(forza_ricarica=False)
 
                     data_rif = data.replace(day=1)
                     inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -2536,6 +3390,8 @@ def crea_calendario_menu(page: ft.Page):
                                 if primo_mese_corr <= d_str <= ultimo_mese_corr:
                                     voci_dispensa_mese.append(riga)
                             elif cat_r == "Detersivi":
+                                if riga.get("id_ingrediente"):
+                                    CACHE_ANAGRAFICA["ids_detersivi"].add(riga["id_ingrediente"])
                                 if primo_mese_corr <= d_str <= ultimo_mese_corr:
                                     voci_detersivi_mese.append(riga)
                             else:
@@ -2545,263 +3401,12 @@ def crea_calendario_menu(page: ft.Page):
                 except Exception as ex:
                     print("Errore caricamento menu:", ex)
 
-            # ==========================================
-            # MODALITÀ SEMPLIFICATA (SETTIMANALE SU 3 RIGHE + DISPENSA + DETERSIVI)
-            # ==========================================
-            if is_semplificata:
-                lunedi = data - timedelta(days=data.weekday())
-                domenica = lunedi + timedelta(days=6)
-                testo_header.value = (
-                    f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}"
-                    if lunedi.month == domenica.month else
-                    f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
-                )
-                layer_semplificata.controls.clear()
-
-                cards_giorni = []
-                for i in range(7):
-                    gc = lunedi + timedelta(days=i)
-                    d_str = gc.strftime("%Y-%m-%d")
-                    cards_giorni.append(crea_card_giorno_semplificata(gc, i, dizionario_menu.get(d_str, [])))
-
-                card_dispensa = crea_card_mensile_spuntabile("Dispensa", "📦", "Dispensa", "#00897B", voci_dispensa_mese, data)
-                card_detersivi = crea_card_mensile_spuntabile("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", voci_detersivi_mese, data)
-
-                # Riga 1: Lunedì, Martedì, Mercoledì
-                riga_1 = ft.Row([cards_giorni[0], cards_giorni[1], cards_giorni[2]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
-                # Riga 2: Giovedì, Venerdì, Sabato
-                riga_2 = ft.Row([cards_giorni[3], cards_giorni[4], cards_giorni[5]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
-                # Riga 3: Domenica, Dispensa (Mese), Detersivi e Varie (Mese)
-                riga_3 = ft.Row([cards_giorni[6], card_dispensa, card_detersivi], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
-
-                layer_semplificata.controls.extend([riga_1, riga_2, riga_3])
-
-            # ==========================================
-            # MODALITÀ COMPLETA - VISTA MESE
-            # ==========================================
-            elif vista == "Mese":
-                testo_header.value = f"{MESI[data.month]} {data.year}"
-                layer_mese.controls.clear()
-
-                griglia = ft.Column(spacing=0)
-                matrice = calendar.monthcalendar(data.year, data.month)
-
-                for settimana in matrice:
-                    riga_ui = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
-                    for giorno in settimana:
-                        if giorno == 0:
-                            riga_ui.controls.append(ft.Container(expand=1, height=90, border=bordo_standard()))
-                        else:
-                            is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
-                            is_sel = (giorno == data.day)
-                            data_giorno = data.replace(day=giorno)
-                            d_str = data_giorno.strftime("%Y-%m-%d")
-                            voci_giorno = dizionario_menu.get(d_str, [])
-
-                            cerchio = ft.Container(
-                                content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
-                                bgcolor=ft.Colors.BLUE_900 if is_oggi else (ft.Colors.BLUE_100 if is_sel else ft.Colors.TRANSPARENT),
-                                border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
-                            )
-
-                            cat_presenti = []
-                            for sup in SUPERCATEGORIE:
-                                v_sup = [x for x in voci_giorno if x["categoria"] == sup]
-                                if v_sup:
-                                    voce_ric = next((x for x in v_sup if x.get("ricette") and x["ricette"].get("nome")), v_sup[0])
-                                    dettaglio = ""
-                                    ha_warn = False
-                                    if voce_ric.get("ricette") and voce_ric["ricette"].get("nome"):
-                                        dettaglio = f": {voce_ric['ricette']['nome']}"
-                                        if not ricetta_ha_ingredienti(voce_ric.get("id_ricetta")):
-                                            ha_warn = True
-                                    elif voce_ric.get("ingredienti") and voce_ric["ingredienti"].get("nome"):
-                                        dettaglio = f": {voce_ric['ingredienti']['nome']}"
-                                    cat_presenti.append((sup, f"{'⚠️ ' if ha_warn else ''}{sup[:3]}{dettaglio}", ha_warn))
-
-                            col_badge = ft.Column(spacing=1, expand=True)
-                            for sup_nome, etichetta, is_warn in cat_presenti[:2]:
-                                col_badge.controls.append(
-                                    ft.Container(
-                                        content=ft.Text(etichetta, size=7, color=ft.Colors.BLACK if is_warn else ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
-                                        bgcolor="#FFF59D" if is_warn else COLORI_PASTI.get(sup_nome, ft.Colors.BLUE_900),
-                                        padding=2, border_radius=2, height=18
-                                    )
-                                )
-                            if len(cat_presenti) > 2:
-                                col_badge.controls.append(
-                                    ft.Container(
-                                        content=ft.Text(f"+ {len(cat_presenti) - 2} altri", size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                                        alignment=ft.Alignment(0, 0)
-                                    )
-                                )
-
-                            riga_ui.controls.append(
-                                ft.Container(
-                                    content=ft.Column([
-                                        ft.Container(content=cerchio, alignment=ft.Alignment(0, 0)),
-                                        col_badge
-                                    ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
-                                    expand=1, height=90, border=bordo_standard(), padding=2,
-                                    on_click=lambda e, dt=data_giorno: apri_giorno_selezionato(dt)
-                                )
-                            )
-                    griglia.controls.append(riga_ui)
-
-                layer_mese.controls.extend([
-                    ft.Row(
-                        controls=[
-                            ft.Container(content=ft.Text(g, size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700), expand=1, alignment=ft.Alignment(0, 0), border=bordo_standard(), padding=2)
-                            for g in GIORNI
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0
-                    ),
-                    griglia
-                ])
-
-            # ==========================================
-            # MODALITÀ COMPLETA - VISTA SETTIMANA
-            # ==========================================
-            elif vista == "Settimana":
-                lunedi = data - timedelta(days=data.weekday())
-                domenica = lunedi + timedelta(days=6)
-                testo_header.value = (
-                    f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}"
-                    if lunedi.month == domenica.month else
-                    f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
-                )
-                layer_settimana.controls.clear()
-
-                riga1 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
-                riga2 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
-
-                for i in range(7):
-                    gc = lunedi + timedelta(days=i)
-                    d_str = gc.strftime("%Y-%m-%d")
-                    voci_giorno = dizionario_menu.get(d_str, [])
-
-                    cerchio_sett = ft.Container(
-                        content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=13, weight=ft.FontWeight.BOLD),
-                        bgcolor=ft.Colors.BLUE_900 if (gc.date() == oggi.date()) else ft.Colors.TRANSPARENT,
-                        border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
-                    )
-
-                    intestazione = ft.Container(
-                        content=ft.Column([
-                            ft.Text(GIORNI[i], size=9, color=ft.Colors.GREY_700),
-                            cerchio_sett
-                        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
-                        padding=4
-                    )
-
-                    col_pasti_sett = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO)
-                    for sup in SUPERCATEGORIE:
-                        v_sup = [x for x in voci_giorno if x["categoria"] == sup]
-                        if v_sup:
-                            col_sup = COLORI_PASTI.get(sup, ft.Colors.BLUE_900)
-                            testi_voci = []
-                            for x in v_sup:
-                                pref = f"{x['subcategoria'][:3]}: " if x.get("subcategoria") else ""
-                                if x.get("ricette") and x["ricette"].get("nome"):
-                                    testi_voci.append(f"• {pref}{x['ricette']['nome']}")
-                                elif x.get("ingredienti") and x["ingredienti"].get("nome"):
-                                    testi_voci.append(f"• {pref}{x['ingredienti']['nome']}")
-
-                            col_pasti_sett.controls.append(
-                                ft.Container(
-                                    content=ft.Column(
-                                        [ft.Text(sup.upper(), size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)] +
-                                        [ft.Text(tv, size=8, color=ft.Colors.WHITE, no_wrap=False) for tv in testi_voci],
-                                        spacing=1
-                                    ),
-                                    bgcolor=col_sup, padding=4, border_radius=4, width=float("inf")
-                                )
-                            )
-
-                    box_giorno = ft.Container(
-                        content=ft.Column([
-                            intestazione,
-                            ft.Divider(height=1, color="#E0E0E0"),
-                            ft.Container(content=col_pasti_sett, padding=2, expand=True)
-                        ], spacing=0),
-                        expand=1, height=300, border=bordo_standard(),
-                        on_click=lambda e, dt=gc: apri_giorno_selezionato(dt)
-                    )
-
-                    if i < 4:
-                        riga1.controls.append(box_giorno)
-                    else:
-                        riga2.controls.append(box_giorno)
-
-                riga2.controls.append(ft.Container(expand=1))
-                layer_settimana.controls.extend([riga1, ft.Container(height=12), riga2])
-
-            # ==========================================
-            # MODALITÀ COMPLETA - VISTA GIORNO
-            # ==========================================
-            elif vista == "Giorno":
-                testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
-                is_oggi = (data.date() == oggi.date())
-                layer_giorno.controls.clear()
-
-                d_str = data.strftime("%Y-%m-%d")
-                voci_giorno = dizionario_menu.get(d_str, [])
-
-                intestazione = ft.Container(
-                    content=ft.Row([
-                        ft.Column([
-                            ft.Text(GIORNI[data.weekday()], size=12, color=ft.Colors.GREY_700),
-                            ft.Text(str(data.day), size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if is_oggi else ft.Colors.BLACK)
-                        ], spacing=0),
-                        ft.Container(
-                            content=ft.Text("✏️ Compila / Modifica Menu del Giorno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
-                            bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=6,
-                            on_click=lambda e: apri_giorno_selezionato(data)
-                        )
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    padding=10, border=bordo_standard()
-                )
-
-                col_dettaglio_giorno = ft.Column(spacing=8)
-
-                if not voci_giorno:
-                    col_dettaglio_giorno.controls.append(
-                        ft.Container(
-                            content=ft.Text("Nessun pasto programmato per questa giornata. Clicca su 'Compila / Modifica Menu' per aggiungere ricette o ingredienti.", color=ft.Colors.GREY_600, italic=True, size=12),
-                            padding=20, alignment=ft.Alignment(0, 0)
-                        )
-                    )
-                else:
-                    for sup in SUPERCATEGORIE:
-                        v_sup = [x for x in voci_giorno if x["categoria"] == sup]
-                        if v_sup:
-                            col_sup = COLORI_PASTI.get(sup, ft.Colors.BLUE_900)
-                            righe_pasto = [ft.Text(f"🍽️ {sup.upper()}", size=13, weight=ft.FontWeight.BOLD, color=col_sup)]
-                            for x in v_sup:
-                                sub_lbl = f"[{x['subcategoria']}] " if x.get("subcategoria") else ""
-                                if x.get("ricette") and x["ricette"].get("nome"):
-                                    righe_pasto.append(ft.Text(f"  🍲 {sub_lbl}{x['ricette']['nome']}", size=12, weight=ft.FontWeight.BOLD))
-                                elif x.get("ingredienti") and x["ingredienti"].get("nome"):
-                                    q = x.get("quantita") or 0
-                                    q_str = f" ({formatta_numero(q)} {x.get('unita_misura') or ''})" if q else ""
-                                    righe_pasto.append(ft.Text(f"  • {sub_lbl}{x['ingredienti']['nome']}{q_str}", size=12))
-
-                            col_dettaglio_giorno.controls.append(
-                                ft.Container(
-                                    content=ft.Column(righe_pasto, spacing=3),
-                                    bgcolor=ft.Colors.WHITE, padding=10, border_radius=8,
-                                    border=ft.Border(top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), left=ft.BorderSide(5, col_sup), right=ft.BorderSide(1, "#E0E0E0")),
-                                    on_click=lambda e: apri_giorno_selezionato(data)
-                                )
-                            )
-
-                layer_giorno.controls.extend([intestazione, ft.Container(height=6), col_dettaglio_giorno])
+            ram_menu["dizionario_menu"] = dizionario_menu
+            ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
+            ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
 
             badge_loading_cal.visible = False
-            try:
-                page.update()
-            except Exception:
-                pass
+            disegna_vista_da_ram()
 
         threading.Thread(target=worker_calendario, daemon=True).start()
 
