@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Il .strip() rimuove eventuali spazi vuoti invisibili copiati per sbaglio su Render
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://extra-large-family.onrender.com").strip()
@@ -42,29 +41,34 @@ connetti_e_sveglia_supabase()
 # ⚡ CUSTODE SILENZIOSO: PING OGNI 4 MINUTI CON ANTI-CACHE PER NON FAR SPEGNERE RENDER ⚡
 def custode_keep_alive():
     while True:
-        time.sleep(240) # Ogni 4 minuti (sotto la soglia di 15 min di Render)
+        time.sleep(240)  # Ogni 4 minuti (sotto la soglia dei 15 minuti di Render)
         try:
             connetti_e_sveglia_supabase()
         except Exception:
             pass
         try:
             if RENDER_URL:
-                url_ping = f"{RENDER_URL.rstrip('/')}/?ping={int(time.time())}"
-                req = urllib.request.Request(url_ping, headers={'User-Agent': 'ELF-KeepAlive', 'Cache-Control': 'no-cache'})
+                url_ping = f"{RENDER_URL.rstrip('/')}/?keepalive={int(time.time())}"
+                req = urllib.request.Request(
+                    url_ping,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ELF-KeepAlive/2.0',
+                        'Accept': 'text/html,application/xhtml+xml',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate'
+                    }
+                )
                 urllib.request.urlopen(req, timeout=10)
         except Exception:
             pass
 
 threading.Thread(target=custode_keep_alive, daemon=True).start()
 
-# Array per tradurre il mese in italiano
 MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 
 def main(page: ft.Page):
-    page.title = "ELF" 
+    page.title = "ELF"
     page.theme_mode = ft.ThemeMode.LIGHT
-    
-    # ⚡ LOG PARLANTE VISIVO ⚡
+
     if messaggio_errore:
         page.add(
             ft.Container(
@@ -76,9 +80,9 @@ def main(page: ft.Page):
                 alignment=ft.Alignment(0, 0)
             )
         )
-        return # Ferma l'esecuzione dell'app qui, non carica il calendario
+        return
 
-    # ⚡ SINCRONIZZAZIONE SELETTIVA (NON RICARICA IMPEGNI SE MODIFICHI IL MENU) ⚡
+    # ⚡ SINCRONIZZAZIONE SELETTIVA PER AZZERARE LA LATENZA ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
@@ -90,26 +94,30 @@ def main(page: ft.Page):
     page.pubsub.subscribe(ricevi_broadcast)
 
     # ⚡ GESTIONE RITORNO DALLO STANDBY SU SMARTPHONE ⚡
-    def al_ritorno_in_app(e):
-        try:
-            page.update()
-        except Exception:
-            pass
+    def gestisci_riconnessione_standby(e):
+        def sveglia_bg():
+            try:
+                connetti_e_sveglia_supabase()
+                page.update()
+            except Exception:
+                pass
+        threading.Thread(target=sveglia_bg, daemon=True).start()
 
-    page.on_connect = al_ritorno_in_app
+    page.on_connect = gestisci_riconnessione_standby
 
     def naviga(route_string):
         page.route = route_string
-        route_change(None) 
-    
+        route_change(None)
+
     def route_change(e):
         page.views.clear()
-        
-        # Calcolo data odierna in italiano
+
         oggi = datetime.now()
         data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
 
-        # ⚡ CARICA SUBITO IMPEGNI, E CARICA IL MENU SOLO AL PRIMO SWITCH (AVVIO ISTANTANEO) ⚡
+        # Precarica in background l'anagrafica del menu mentre l'utente vede subito gli impegni
+        threading.Thread(target=lambda: modulo_menu.assicura_cache_anagrafica(forza_ricarica=False), daemon=True).start()
+
         vista_impegni_box = ft.Container(content=modulo_calendario.crea_calendario(page), visible=True, expand=True)
         vista_menu_box = ft.Container(content=None, visible=False, expand=True)
         menu_inizializzato = [False]
@@ -133,13 +141,12 @@ def main(page: ft.Page):
             content=ft.Row([lbl_impegni, switch_modalita, lbl_menu], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
             bgcolor="#EEF2F6", padding=4
         )
-        
+
         page.views.append(
             ft.View(
                 route="/",
                 controls=[
                     ft.AppBar(
-                        # ⚡ TITOLO PULITO CON DATA SOTTOSTANTE ⚡
                         title=ft.Column(
                             controls=[
                                 ft.Text("Extra Large Family", weight=ft.FontWeight.BOLD, size=22),
@@ -147,16 +154,16 @@ def main(page: ft.Page):
                             ],
                             spacing=0,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER
-                        ), 
+                        ),
                         bgcolor=ft.Colors.BLUE_900,
                         color=ft.Colors.WHITE,
                         center_title=True,
-                        toolbar_height=70, 
+                        toolbar_height=70,
                         actions=[
                             ft.PopupMenuButton(
                                 items=[
                                     ft.PopupMenuItem(
-                                        content=ft.Text(value="Gestione Famiglia"), 
+                                        content=ft.Text(value="Gestione Famiglia"),
                                         on_click=lambda _: naviga("/famiglia")
                                     )
                                 ]
@@ -167,13 +174,13 @@ def main(page: ft.Page):
                     vista_impegni_box,
                     vista_menu_box
                 ],
-                padding=0 
+                padding=0
             )
         )
-        
+
         if page.route == "/famiglia":
             page.views.append(modulo_famiglia.vista_famiglia(page, supabase))
-        
+
         page.update()
 
     def view_pop(e):
@@ -184,7 +191,7 @@ def main(page: ft.Page):
 
     page.on_route_change = route_change
     page.on_view_pop = view_pop
-    
+
     page.route = "/"
     route_change(None)
 
@@ -192,7 +199,7 @@ if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 8080))
     ft.run(
         main,
-        port=porta, 
+        port=porta,
         host="0.0.0.0",
         view=ft.AppView.WEB_BROWSER,
         assets_dir="assets"
