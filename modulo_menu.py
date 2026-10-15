@@ -94,7 +94,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
     def carica_dati_giorno_db(inizializza_aperture=False):
         nonlocal lista_ingredienti, lista_ricette, menu_del_giorno, mappa_ricette_ing
-        lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=True)
+        lista_ingredienti, lista_ricette = assicura_cache_anagrafica(forza_ricarica=false)
         res_menu = supabase.table("menu_giornalieri").select(
             "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
         ).eq("data_menu", data_str).execute()
@@ -815,7 +815,7 @@ def crea_calendario_menu(page: ft.Page):
             dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
             if supabase:
                 try:
-                    assicura_cache_anagrafica(forza_ricarica=True)
+                    assicura_cache_anagrafica(forza_ricarica=false)
                     data_rif = data.replace(day=1)
                     inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
                     fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
