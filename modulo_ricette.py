@@ -212,15 +212,13 @@ def salva_meta_ricetta_db(id_ricetta: str, portata: str, porzioni: int, url_font
 def normalizza_ingrediente_record(ing_raw: dict):
     u_raw = str(ing_raw.get("unita_default") or "g")
     is_det = "|DET" in u_raw
-    u_clean = u_raw.replace("|DET", "").strip() or ("pz" if is_det else "g")
-    nome_low = str(ing_raw.get("nome") or "").strip().lower()
-    if nome_low in PAROLE_CHIAVE_DETERSIVI or ing_raw.get("id") in CACHE_ANAGRAFICA["ids_detersivi"]:
-        is_det = True
+    is_disp = "|DISPENSA" in u_raw
+    u_clean = u_raw.replace("|DET", "").replace("|DISPENSA", "").strip() or ("pz" if is_det else "g")
+    
     copia = dict(ing_raw)
     copia["unita_default"] = u_clean if u_clean in UNITA_MISURA else "pz"
     copia["is_detersivo"] = is_det
-    if is_det and copia.get("id"):
-        CACHE_ANAGRAFICA["ids_detersivi"].add(copia["id"])
+    copia["is_dispensa_base"] = is_disp
     return copia
 
 
@@ -1346,6 +1344,33 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 info_i = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"})
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
+
+                # Checkbox dinamico per impostare l'ingrediente come base da dispensa
+                is_disp_attivo = info_i.get("is_dispensa_base", False)
+                chk_dispensa = ft.Checkbox(
+                    label="📌 Dispensa (Base)",
+                    value=is_disp_attivo,
+                    text_style=ft.TextStyle(size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.BROWN_700),
+                    density=ft.VisualDensity.COMPACT
+                )
+
+                def toggle_dispensa_ing(e, ing_id=info_i["id"], u_def=info_i["unita_default"], is_d=info_i.get("is_detersivo", False)):
+                    nuovo_stato = e.control.value
+                    tag_det = "|DET" if is_d else ""
+                    tag_disp = "|DISPENSA" if nuovo_stato else ""
+                    nuova_unita_db = f"{u_def}{tag_det}{tag_disp}"
+                    
+                    if is_valid_uuid(ing_id):
+                        threading.Thread(
+                            target=lambda: supabase.table("ingredienti").update({"unita_default": nuova_unita_db}).eq("id", ing_id).execute(),
+                            daemon=True
+                        ).start()
+                    for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
+                        if str(ig.get("id")) == str(ing_id):
+                            ig["unita_default"] = nuova_unita_db
+                            ig["is_dispensa_base"] = nuovo_stato
+
+                chk_dispensa.on_change = toggle_dispensa_ing
 
                 def salva_q(e, riga_ref=ri, b=bq_i, s=su_i):
                     nq, nu = parse_qta(b.textfield.value), s.get_value()
