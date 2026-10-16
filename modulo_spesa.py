@@ -260,33 +260,78 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                 threading.Thread(target=lambda: [aggiorna_flag_preso_db(mid, nuovo_stato) for mid in ids_dir], daemon=True).start()
             disegna_lista_spesa()
 
+        # Configurazione grafica per distinguere le 3 categorie
+        STILI_SEZIONE = {
+            "": {
+                "titolo": "🥩 INGREDIENTI DA COMPRARE",
+                "bg_header": "#1565C0", "bg_card": "#F5F7FA", "bordo": "#90CAF9", "mostra_qta": True
+            },
+            "[Dispensa]": {
+                "titolo": "📦 DISPENSA (CONTROLLO SCORTE)",
+                "bg_header": "#00897B", "bg_card": "#E0F2F1", "bordo": "#4DB6AC", "mostra_qta": False
+            },
+            "[Detersivi]": {
+                "titolo": "🧼 DETERSIVI E CASA",
+                "bg_header": "#546E7A", "bg_card": "#ECEFF1", "bordo": "#90A4AE", "mostra_qta": False
+            }
+        }
+
+        sezione_corrente = None
         for k_id, item in da_comprare:
-            q_finale = formatta_qta_finale(item["qta"], item["unita"])
-            lbl_extra = f" {item['etichetta_extra']}" if item.get("etichetta_extra") else ""
+            ext = item.get("etichetta_extra", "")
+            stile = STILI_SEZIONE.get(ext, STILI_SEZIONE[""])
+
+            # Intestazione di sezione quando cambia il gruppo
+            if ext != sezione_corrente:
+                sezione_corrente = ext
+                colonna_lista.controls.append(
+                    ft.Container(
+                        content=ft.Text(stile["titolo"], size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        bgcolor=stile["bg_header"], padding=ft.Padding(8, 4, 8, 4), border_radius=5
+                    )
+                )
+
+            riga_ctrl = [
+                ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
+                ft.Text(item["nome"], size=13, weight=ft.FontWeight.BOLD, expand=True)
+            ]
+
+            # Mostra il badge quantità SOLO per gli ingredienti delle ricette (mai per Dispensa)
+            if stile["mostra_qta"]:
+                q_finale = formatta_qta_finale(item["qta"], item["unita"])
+                riga_ctrl.append(
+                    ft.Container(
+                        content=ft.Text(q_finale, size=12, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                        bgcolor=ft.Colors.BLUE_900, padding=ft.Padding(8, 3, 8, 3), border_radius=8
+                    )
+                )
+
             colonna_lista.controls.append(
                 ft.Container(
-                    content=ft.Row([
-                        ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
-                        ft.Text(f"{item['nome']}{lbl_extra}", size=13, weight=ft.FontWeight.BOLD, expand=True),
-                        ft.Container(
-                            content=ft.Text(q_finale, size=12, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
-                            bgcolor=ft.Colors.BLUE_900, padding=ft.Padding(8, 3, 8, 3), border_radius=8
-                        )
-                    ], spacing=4),
-                    bgcolor="#F5F7FA", padding=ft.Padding(4, 2, 8, 2), border_radius=6,
-                    border=bordo_campo_uniforme("#E0E0E0")
+                    content=ft.Row(riga_ctrl, spacing=4),
+                    bgcolor=stile["bg_card"], padding=ft.Padding(4, 2, 8, 2), border_radius=6,
+                    border=ft.Border(
+                        top=ft.BorderSide(1, stile["bordo"]), bottom=ft.BorderSide(1, stile["bordo"]),
+                        left=ft.BorderSide(4, stile["bg_header"]), right=ft.BorderSide(1, stile["bordo"])
+                    )
                 )
             )
+
         if gia_in_dispensa:
             colonna_lista.controls.append(ft.Divider(height=8, color="#E0E0E0"))
+            colonna_lista.controls.append(
+                ft.Text("✅ GIÀ IN DISPENSA / PRESI:", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700)
+            )
             for k_id, item in gia_in_dispensa:
-                q_finale = formatta_qta_finale(item["qta"], item["unita"])
+                ext = item.get("etichetta_extra", "")
+                mostra_q = (ext == "")
+                q_finale = formatta_qta_finale(item["qta"], item["unita"]) if mostra_q else ""
                 colonna_lista.controls.append(
                     ft.Container(
                         content=ft.Row([
                             ft.Checkbox(value=True, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                             ft.Text(f"✓ {item['nome']}", size=12, color=ft.Colors.GREY_600, italic=True, expand=True),
-                            ft.Text(q_finale, size=11, color=ft.Colors.GREY_600)
+                            *([ft.Text(q_finale, size=11, color=ft.Colors.GREY_600)] if mostra_q else [])
                         ], spacing=4),
                         bgcolor="#EEEEEE", padding=ft.Padding(4, 1, 8, 1), border_radius=6
                     )
