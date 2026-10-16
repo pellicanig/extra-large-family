@@ -9,7 +9,8 @@ from modulo_ricette import (
     chiudi_dialog_sicuro,
     formatta_numero,
     bordo_campo_uniforme,
-    aggiorna_flag_preso_db
+    aggiorna_flag_preso_db,
+    normalizza_ingrediente_record
 )
 
 
@@ -96,7 +97,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
     apri_dialog_sicuro(page, dlg_spesa)
 
     def normalizza_qta_unita(qta, unita):
-        u = str(unita or "pz").replace("|DET", "").lower().strip()
+        u = str(unita or "pz").replace("|DET", "").replace("|DISPENSA", "").lower().strip()
         q = float(qta or 0)
         if u == "kg":
             return q * 1000.0, "g"
@@ -143,7 +144,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
 
             try:
                 res_m = supabase.table("menu_giornalieri").select(
-                    "*, ingredienti(id, nome), ricette(id, nome)"
+                    "*, ingredienti(id, nome, unita_default), ricette(id, nome)"
                 ).gte("data_menu", min(inizio_str, primo_mese_str)).lte("data_menu", max(fine_str, fine_mese_str)).execute()
 
                 righe_valide = [
@@ -156,61 +157,76 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                 mappa_ri = {}
                 if ids_ric:
                     res_ri = supabase.table("ricette_ingredienti").select(
-                        "*, ingredienti(id, nome)"
+                        "*, ingredienti(id, nome, unita_default)"
                     ).in_("id_ricetta", ids_ric).limit(5000).execute()
                     for ri in (res_ri.data or []):
                         mappa_ri.setdefault(ri["id_ricetta"], []).append(ri)
 
-                # Lista dei beni di consumo di base da non accumulare per quantità nella spesa
-                BASE_CONSUMABILE = {
-                    "sale", "pepe", "zucchero", "olio", "olio d'oliva", "olio extravergine d'oliva",
-                    "aceto", "aglio", "cipolla", "parmigiano", "grana", "pangrattato", "burro", "farina"
-                }
+                # Individua tutti i prodotti segnati come "Presente" (preso=True) in Dispensa o Detersivi del mese
+                presenti_in_dispensa = set()
+                for m in righe_valide:
+                    if m.get("categoria") in ["Dispensa", "Detersivi"] and bool(m.get("preso")):
+                        ing_m = m.get("ingredienti") or {}
+                        if isinstance(ing_m, dict) and ing_m.get("nome"):
+                            presenti_in_dispensa.add(ing_m["nome"].strip().lower())
 
                 somme = {}
                 spuntati_sessione.clear()
-                
-                def aggiungi_alla_spesa(ing_obj, qta_ing, unita_ing, id_menu_rif=""):
+
+                def aggiungi_alla_spesa(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_rif="", is_preso_riga=False):
                     if not ing_obj:
                         return
                     if isinstance(ing_obj, str):
-                        nome_ing = ing_obj
-                        u_def_db = ""
+                        info_norm = normalizza_ingrediente_record({"nome": ing_obj, "unita_default": unita_ing or "g"})
                     else:
-                        nome_ing = ing_obj.get("nome", "Prodotto")
-                        u_def_db = str(ing_obj.get("unita_default") or "")
-                    
-                    is_base_dinamico = "|DISPENSA" in u_def_db
+                        info_norm = normalizza_ingrediente_record(ing_obj)
+
+                    nome_ing = info_norm.get("nome", "Prodotto")
                     n_low = nome_ing.strip().lower()
-                    
+                    is_base_dinamico = bool(info_norm.get("is_dispensa_base")) or (cat_rif == "Dispensa" and float(qta_ing or 0) == 0)
+
                     if is_base_dinamico:
                         chiave = (n_low, "promemoria")
                         somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(), "qta": 1.0, "unita": "pz",
-                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]"
+                            "nome": nome_ing.capitalize(),
+                            "qta": 0.0,
+                            "unita": "q.b.",
+                            "ids_menu_diretti": [],
+                            "preso_db": False,
+                            "etichetta_extra": "[Dispensa]"
                         })
+                        if id_menu_rif and id_menu_rif not in somme[chiave]["ids_menu_diretti"]:
+                            somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
                     else:
                         q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
                         chiave = (n_low, u_base)
+                        etichetta = f"[{cat_rif}]" if cat_rif in ["Dispensa", "Detersivi"] else ""
                         somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
-                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": ""
+                            "nome": nome_ing.capitalize(),
+                            "qta": 0.0,
+                            "unita": u_base,
+                            "ids_menu_diretti": [],
+                            "preso_db": False,
+                            "etichetta_extra": etichetta
                         })
                         somme[chiave]["qta"] += q_norm
-                        if id_menu_rif:
+                        if etichetta and not somme[chiave]["etichetta_extra"]:
+                            somme[chiave]["etichetta_extra"] = etichetta
+                        if id_menu_rif and id_menu_rif not in somme[chiave]["ids_menu_diretti"]:
                             somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
 
-                    if is_preso_db:
+                    if is_preso_riga or (n_low in presenti_in_dispensa):
                         somme[chiave]["preso_db"] = True
 
                 for m in righe_valide:
+                    cat = m.get("categoria") or ""
                     is_preso_db = bool(m.get("preso"))
                     if m.get("id_ingrediente") and m.get("ingredienti"):
-                        aggiungi_alla_spesa(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"])
+                        aggiungi_alla_spesa(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"], cat, is_preso_db)
                     elif m.get("id_ricetta"):
                         for ri in mappa_ri.get(m["id_ricetta"], []):
                             if ri.get("ingredienti"):
-                                aggiungi_alla_spesa(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"))
+                                aggiungi_alla_spesa(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db)
 
                 for v in somme.values():
                     if v["preso_db"]:
