@@ -21,6 +21,8 @@ from modulo_ricette import (
     aggiorna_flag_preso_db,
     estrai_meta_ricetta,
     normalizza_ingrediente_record,
+    assicura_ingrediente_in_dispensa_mese,
+    cerca_ingrediente_in_cache_per_nome,
     crea_box_quantita,
     crea_selettore_unita,
     assicura_cache_anagrafica,
@@ -107,9 +109,14 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                 res_ri = supabase.table("ricette_ingredienti").select(
                     "*, ingredienti(id, nome, unita_default)"
                 ).in_("id_ricetta", ids_ricette_giorno).execute()
+                visti_per_ric = {}
                 for riga in (res_ri.data or []):
                     rid = riga["id_ricetta"]
-                    mappa_ricette_ing.setdefault(rid, []).append(riga)
+                    ing_d = riga.get("ingredienti") or {}
+                    chiave_u = str(ing_d.get("nome") or riga.get("id_ingrediente") or riga.get("id")).strip().lower()
+                    if chiave_u not in visti_per_ric.setdefault(rid, set()):
+                        visti_per_ric[rid].add(chiave_u)
+                        mappa_ricette_ing.setdefault(rid, []).append(riga)
                 for rid in ids_ricette_giorno:
                     CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(rid)] = len(mappa_ricette_ing.get(rid, []))
 
@@ -182,7 +189,8 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
         lista_ui = ft.Column(spacing=4)
         for v in voci:
             ing_obj = normalizza_ingrediente_record(v.get("ingredienti") or {"id": v["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
-            qta_str = f"{formatta_numero(v.get('quantita') or 0)} {v.get('unita_misura') or ''}".strip()
+            u_clean = str(v.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
+            qta_str = f"{formatta_numero(v.get('quantita') or 0)} {u_clean}".strip()
             lista_ui.controls.append(
                 ft.Container(
                     content=ft.Row([
@@ -251,9 +259,48 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
             col_ing_espansi = ft.Column(spacing=4)
             for ri in ings_associati:
-                ing_info = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"})
+                raw_d = ri.get("ingredienti") or {"id": ri["id_ingrediente"], "nome": "Ingrediente", "unita_default": "g"}
+                ing_c = cerca_ingrediente_in_cache_per_nome(raw_d.get("nome", ""))
+                ing_info = dict(ing_c) if ing_c else normalizza_ingrediente_record(raw_d)
+
                 box_q_ri = crea_box_quantita(valore_iniziale=formatta_numero(ri.get("quantita") or 0), width=86, height=32, text_size=11, mostra_prefisso=True)
                 sel_u_ri = crea_selettore_unita(page, valore_iniziale=ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
+
+                chk_disp_g = ft.Checkbox(
+                    label="📌 Dispensa (Base)",
+                    value=bool(ing_info.get("is_dispensa_base", False))
+                )
+
+                def toggle_disp_giorno(e, info_ref=ing_info):
+                    nuovo_stato = bool(e.control.value)
+                    u_def = info_ref.get("unita_default", "g")
+                    is_d = info_ref.get("is_detersivo", False)
+                    tag_det = "|DET" if is_d else ""
+                    tag_disp = "|DISPENSA" if nuovo_stato else ""
+                    nuova_u_db = f"{u_def}{tag_det}{tag_disp}"
+                    modifiche_effettuate[0] = True
+
+                    for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
+                        if ig.get("nome", "").strip().lower() == info_ref.get("nome", "").strip().lower():
+                            ig["unita_default"] = u_def
+                            ig["is_dispensa_base"] = nuovo_stato
+
+                    def w_tg():
+                        ing_id_r = info_ref.get("id")
+                        if not is_valid_uuid(ing_id_r):
+                            ing_id_r = ottieni_o_crea_ing_sicuro(info_ref.get("nome", ""), u_def, is_d)
+                        if is_valid_uuid(ing_id_r):
+                            supabase.table("ingredienti").update({"unita_default": nuova_u_db}).eq("id", ing_id_r).execute()
+                            if nuovo_stato:
+                                assicura_ingrediente_in_dispensa_mese(ing_id_r, data_selezionata)
+                            else:
+                                try:
+                                    supabase.table("menu_giornalieri").delete().eq("categoria", "Dispensa").eq("id_ingrediente", ing_id_r).execute()
+                                except Exception:
+                                    pass
+                    threading.Thread(target=w_tg, daemon=True).start()
+
+                chk_disp_g.on_change = toggle_disp_giorno
 
                 col_ing_espansi.controls.append(
                     ft.Container(
@@ -270,7 +317,8 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                                     bgcolor=ft.Colors.GREEN_700, height=32, padding=ft.Padding(8, 0, 8, 0), alignment=ft.Alignment(0, 0), border_radius=5,
                                     on_click=lambda e, id_r=ri["id"], bq=box_q_ri, su=sel_u_ri: esegui_azione_db("⏳ Salvataggio...", lambda: supabase.table("ricette_ingredienti").update({"quantita": parse_qta(bq.textfield.value), "unita_misura": su.get_value()}).eq("id", id_r).execute())
                                 )
-                            ], spacing=4)
+                            ], spacing=4),
+                            chk_disp_g
                         ], spacing=2),
                         bgcolor=ft.Colors.WHITE, padding=5, border_radius=5
                     )
@@ -580,7 +628,8 @@ def crea_calendario_menu(page: ft.Page):
                 ing_v = vv.get("ingredienti") or {}
                 nome_v = ing_v.get("nome") or "Voce"
                 q_v = vv.get("quantita") or 0
-                q_str = f" ({formatta_numero(q_v)} {vv.get('unita_misura') or ''})" if q_v else ""
+                u_clean = str(vv.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
+                q_str = f" ({formatta_numero(q_v)} {u_clean})" if q_v else ""
 
                 def del_varie(e, id_v=vv["id"]):
                     if d_str_g in ram_menu["dizionario_menu"]:
@@ -733,4 +782,180 @@ def crea_calendario_menu(page: ft.Page):
                         data_giorno = data.replace(day=giorno)
                         voci_giorno = dizionario_menu.get(data_giorno.strftime("%Y-%m-%d"), [])
                         cerchio = ft.Container(
-                            content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=1
+                            content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
+                            bgcolor=ft.Colors.BLUE_900 if is_oggi else ft.Colors.TRANSPARENT, border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
+                        )
+                        col_badge = ft.Column(spacing=1, expand=True)
+                        for sup in SUPERCATEGORIE:
+                            v_sup = [x for x in voci_giorno if x["categoria"] == sup]
+                            if v_sup and len(col_badge.controls) < 2:
+                                vr = next((x for x in v_sup if x.get("ricette")), v_sup[0])
+                                dett = f": {vr['ricette']['nome']}" if vr.get("ricette") else (f": {vr['ingredienti']['nome']}" if vr.get("ingredienti") else "")
+                                is_w = bool(vr.get("ricette")) and not ricetta_ha_ingredienti(vr.get("id_ricetta"))
+                                col_badge.controls.append(
+                                    ft.Container(
+                                        content=ft.Text(f"{'⚠️ ' if is_w else ''}{sup[:3]}{dett}", size=7, color=ft.Colors.BLACK if is_w else ft.Colors.WHITE, weight=ft.FontWeight.BOLD, no_wrap=True),
+                                        bgcolor="#FFF59D" if is_w else COLORI_PASTI.get(sup, ft.Colors.BLUE_900), padding=2, border_radius=2, height=18
+                                    )
+                                )
+                        riga_ui.controls.append(
+                            ft.Container(
+                                content=ft.Column([ft.Container(content=cerchio, alignment=ft.Alignment(0, 0)), col_badge], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                                expand=1, height=90, border=bordo_standard(), padding=2, on_click=lambda e, dt=data_giorno: apri_giorno_selezionato(dt)
+                            )
+                        )
+                griglia.controls.append(riga_ui)
+            layer_mese.controls.extend([
+                ft.Row([ft.Container(content=ft.Text(g, size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700), expand=1, alignment=ft.Alignment(0, 0), border=bordo_standard(), padding=2) for g in GIORNI], spacing=0),
+                griglia
+            ])
+
+        elif vista == "Settimana":
+            lunedi = data - timedelta(days=data.weekday())
+            domenica = lunedi + timedelta(days=6)
+            testo_header.value = f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}"
+            layer_settimana.controls.clear()
+            r1, r2 = ft.Row(spacing=0), ft.Row(spacing=0)
+            for i in range(7):
+                gc = lunedi + timedelta(days=i)
+                voci_g = dizionario_menu.get(gc.strftime("%Y-%m-%d"), [])
+                col_p = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
+                for sup in SUPERCATEGORIE:
+                    vs = [x for x in voci_g if x["categoria"] == sup]
+                    if vs:
+                        tv = [f"• {(x.get('ricette') or x.get('ingredienti') or {}).get('nome', '')}" for x in vs]
+                        col_p.controls.append(ft.Container(content=ft.Column([ft.Text(sup.upper(), size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)] + [ft.Text(t, size=8, color=ft.Colors.WHITE) for t in tv], spacing=1), bgcolor=COLORI_PASTI.get(sup, ft.Colors.BLUE_900), padding=4, border_radius=4))
+                box_g = ft.Container(
+                    content=ft.Column([ft.Text(f"{GIORNI[i]} {gc.day}", size=10, weight=ft.FontWeight.BOLD), ft.Divider(height=1), ft.Container(content=col_p, expand=True)], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=1, height=280, border=bordo_standard(), padding=3, on_click=lambda e, dt=gc: apri_giorno_selezionato(dt)
+                )
+                (r1 if i < 4 else r2).controls.append(box_g)
+            r2.controls.append(ft.Container(expand=1))
+            layer_settimana.controls.extend([r1, ft.Container(height=10), r2])
+
+        elif vista == "Giorno":
+            testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
+            layer_giorno.controls.clear()
+            voci_g = dizionario_menu.get(data.strftime("%Y-%m-%d"), [])
+            layer_giorno.controls.append(
+                ft.Container(
+                    content=ft.Row([
+                        ft.Text(f"{GIORNI[data.weekday()]} {data.day}", size=20, weight=ft.FontWeight.BOLD),
+                        ft.Container(content=ft.Text("✏️ Compila Menu del Giorno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12), bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=6, on_click=lambda e: apri_giorno_selezionato(data))
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    padding=10, border=bordo_standard()
+                )
+            )
+            for sup in SUPERCATEGORIE:
+                vs = [x for x in voci_g if x["categoria"] == sup]
+                if vs:
+                    righe_p = [ft.Text(f"🍽️ {sup.upper()}", size=13, weight=ft.FontWeight.BOLD, color=COLORI_PASTI.get(sup))]
+                    for x in vs:
+                        if x.get("ricette"):
+                            righe_p.append(ft.Text(f"  🍲 {x['ricette']['nome']}", size=12, weight=ft.FontWeight.BOLD))
+                        elif x.get("ingredienti"):
+                            u_c = str(x.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
+                            righe_p.append(ft.Text(f"  • {x['ingredienti']['nome']} ({formatta_numero(x.get('quantita') or 0)} {u_c})", size=12))
+                    layer_giorno.controls.append(ft.Container(content=ft.Column(righe_p, spacing=2), bgcolor=ft.Colors.WHITE, padding=8, border_radius=8, border=bordo_standard(), on_click=lambda e: apri_giorno_selezionato(data)))
+
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    def aggiorna_calendario_menu():
+        data = stato["data"]
+        badge_loading_cal.visible = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        def worker_calendario():
+            if not supabase:
+                badge_loading_cal.visible = False
+                disegna_vista_da_ram()
+                return
+
+            try:
+                assicura_cache_anagrafica(forza_ricarica=False)
+                data_rif = data.replace(day=1)
+                inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
+                fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
+                primo_mese_corr = data.replace(day=1).strftime("%Y-%m-%d")
+                ultimo_mese_corr = data.replace(day=calendar.monthrange(data.year, data.month)[1]).strftime("%Y-%m-%d")
+
+                res = supabase.table("menu_giornalieri").select(
+                    "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
+                ).gte("data_menu", inizio_f).lte("data_menu", fine_f).execute()
+
+                dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
+                visti_disp, visti_det = set(), set()
+                ids_ric_vis = set()
+
+                for riga in (res.data or []):
+                    cat_r, d_str = riga.get("categoria"), riga["data_menu"]
+                    if is_valid_uuid(riga.get("id_ricetta")):
+                        ids_ric_vis.add(riga["id_ricetta"])
+                    if cat_r == "Dispensa" and primo_mese_corr <= d_str <= ultimo_mese_corr:
+                        k_disp = str(riga.get("id_ingrediente") or riga.get("id"))
+                        if k_disp not in visti_disp:
+                            visti_disp.add(k_disp)
+                            voci_dispensa_mese.append(riga)
+                    elif cat_r == "Detersivi" and primo_mese_corr <= d_str <= ultimo_mese_corr:
+                        if riga.get("id_ingrediente"):
+                            CACHE_ANAGRAFICA["ids_detersivi"].add(riga["id_ingrediente"])
+                        k_det = str(riga.get("id_ingrediente") or riga.get("id"))
+                        if k_det not in visti_det:
+                            visti_det.add(k_det)
+                            voci_detersivi_mese.append(riga)
+                    elif cat_r not in ["Dispensa", "Detersivi"]:
+                        dizionario_menu.setdefault(d_str, []).append(riga)
+
+                for d_k, lista_old in ram_menu["dizionario_menu"].items():
+                    for item_old in lista_old:
+                        if item_old.get("in_salvataggio"):
+                            nome_old = (item_old.get("ricette") or {}).get("nome", "").lower()
+                            gia_su_db = any(
+                                (x.get("ricette") or {}).get("nome", "").lower() == nome_old
+                                for x in dizionario_menu.get(d_k, [])
+                            )
+                            if not gia_su_db:
+                                dizionario_menu.setdefault(d_k, []).append(item_old)
+
+                if ids_ric_vis:
+                    aggiorna_conteggio_ricette_visibili(list(ids_ric_vis))
+
+                ram_menu["dizionario_menu"] = dizionario_menu
+                ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
+                ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
+            except Exception as ex:
+                print("Errore caricamento menu:", ex)
+            finally:
+                badge_loading_cal.visible = False
+                disegna_vista_da_ram()
+
+        threading.Thread(target=worker_calendario, daemon=True).start()
+
+    page.aggiorna_vista_menu = aggiorna_calendario_menu
+
+    header = ft.Row(
+        controls=[
+            ft.Row([ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20), ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20), testo_header, badge_loading_cal], spacing=4),
+            ft.Row([box_switch_semplificata, box_bottoni_vista], spacing=8, wrap=True)
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, run_spacing=8
+    )
+
+    btn_fai_la_spesa = ft.Container(
+        content=ft.Row([ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.WHITE, size=20), ft.Text("FAI LA SPESA (Somma Ingredienti & Dispensa)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=13)], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+        bgcolor=ft.Colors.GREEN_700, padding=12, border_radius=8,
+        on_click=lambda e: apri_popup_fai_la_spesa(page, stato["data"], aggiorna_calendario_menu)
+    )
+
+    aggiorna_calendario_menu()
+
+    return ft.Container(
+        content=ft.Column([header, area_dinamica, ft.Divider(height=10, color="#EEEEEE"), btn_fai_la_spesa], spacing=10, scroll=ft.ScrollMode.AUTO),
+        padding=5, expand=True
+    )
