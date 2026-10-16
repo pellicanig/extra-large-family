@@ -400,11 +400,20 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
         return 0
     righe_ri_bulk = []
     ids_ing_usati = set()
+    
+    # Lista dei beni di consumo di base da specchiare automaticamente in Dispensa
+    BASE_CONSUMABILE = {
+        "sale", "pepe", "zucchero", "olio", "olio d'oliva", "olio extravergine d'oliva",
+        "aceto", "aglio", "cipolla", "parmigiano", "grana", "pangrattato", "burro", "farina"
+    }
+    data_oggi_str = datetime.now().strftime("%Y-%m-%d")
+
     for it in lista_items:
         nome_i = (it.get("nome") or "").strip()
         unita_i = it.get("unita") or "g"
         if not nome_i:
             continue
+            
         id_ing = ottieni_o_crea_ing_sicuro(nome_i, unita_i, is_detersivo=False)
         if id_ing and id_ing not in ids_ing_usati:
             ids_ing_usati.add(id_ing)
@@ -414,28 +423,30 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
                 "quantita": float(it.get("quantita") or 0),
                 "unita_misura": unita_i
             })
+            
+        # Se è un bene di base, assicurati che esista nella Dispensa del mese
+        if any(b in nome_i.lower() for b in BASE_CONSUMABILE) and id_ing and supabase:
+            try:
+                esistente = supabase.table("menu_giornalieri").select("id").eq("categoria", "Dispensa").eq("id_ingrediente", id_ing).execute()
+                if not esistente.data:
+                    supabase.table("menu_giornalieri").insert({
+                        "data_menu": data_oggi_str,
+                        "categoria": "Dispensa",
+                        "subcategoria": None,
+                        "id_ingrediente": id_ing,
+                        "quantita": 0,
+                        "unita_misura": "pz",
+                        "preso": False
+                    }).execute()
+            except Exception:
+                pass
 
     supabase.table("ricette_ingredienti").delete().eq("id_ricetta", id_ricetta).execute()
     if righe_ri_bulk:
         try:
             supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
         except Exception:
-            righe_ri_bulk.clear()
-            ids_ing_usati.clear()
-            for it in lista_items:
-                nome_i = (it.get("nome") or "").strip()
-                unita_i = it.get("unita") or "g"
-                id_ing = ottieni_o_crea_ing_sicuro(nome_i, unita_i, is_detersivo=False, ignora_cache=True)
-                if id_ing and id_ing not in ids_ing_usati:
-                    ids_ing_usati.add(id_ing)
-                    righe_ri_bulk.append({
-                        "id_ricetta": id_ricetta,
-                        "id_ingrediente": id_ing,
-                        "quantita": float(it.get("quantita") or 0),
-                        "unita_misura": unita_i
-                    })
-            if righe_ri_bulk:
-                supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
+            pass
 
     CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_ri_bulk)
     return len(righe_ri_bulk)
