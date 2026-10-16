@@ -1160,17 +1160,19 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
             for ri in righe_ri:
                 info_i = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"})
+                
+                # 1. Controlli locali per la riga
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
 
-                # Checkbox dinamico per impostare l'ingrediente come base da dispensa
+                # 2. Checkbox dinamico per la Dispensa (Base) - Pulito, senza argomenti non supportati
                 is_disp_attivo = info_i.get("is_dispensa_base", False)
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
                     value=is_disp_attivo
                 )
 
-                def toggle_dispensa_ing(e, ing_id=info_i["id"], u_def=info_i["unita_default"], is_d=info_i.get("is_detersivo", False)):
+                def toggle_dispensa_ing(e, ing_id=info_i.get("id"), u_def=info_i.get("unita_default", "g"), is_d=info_i.get("is_detersivo", False)):
                     nuovo_stato = e.control.value
                     tag_det = "|DET" if is_d else ""
                     tag_disp = "|DISPENSA" if nuovo_stato else ""
@@ -1188,13 +1190,41 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 chk_dispensa.on_change = toggle_dispensa_ing
 
-                # 2. Inserisci chk_dispensa dentro la Column o il Container che compone la card dell'ingrediente:
-                # Esempio all'interno della Column principale della riga ingrediente:
-                colonna_singolo_ingrediente = ft.Column([
-                    ft.Row([ft.Text(info_i["nome"], weight=ft.FontWeight.BOLD, expand=True)]),
-                    ft.Row([campo_qta, dropdown_unita, btn_salva]),
-                    chk_dispensa  # <--- ECCOLO QUI! Va aggiunto nei controls della colonna
-                ], spacing=4)
+                def salva_q(e, riga_ref=ri, b=bq_i, s=su_i):
+                    nq, nu = parse_qta(b.textfield.value), s.get_value()
+                    riga_ref["quantita"] = nq
+                    riga_ref["unita_misura"] = nu
+                    stato_popup["modificato"] = True
+                    disegna_popup_da_ram(msg_extra=f"Quantità aggiornata: {info_i['nome']}")
+                    if is_valid_uuid(riga_ref.get("id")):
+                        threading.Thread(target=lambda: supabase.table("ricette_ingredienti").update({"quantita": nq, "unita_misura": nu}).eq("id", riga_ref["id"]).execute(), daemon=True).start()
+
+                def elim_i(e, riga_ref=ri):
+                    stato_popup["righe_ri"] = [x for x in stato_popup["righe_ri"] if x.get("id") != riga_ref.get("id")]
+                    stato_popup["modificato"] = True
+                    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(stato_popup["righe_ri"])
+                    disegna_popup_da_ram()
+                    if is_valid_uuid(riga_ref.get("id")):
+                        threading.Thread(target=lambda: (supabase.table("ricette_ingredienti").delete().eq("id", riga_ref["id"]).execute(), on_close_refresh() if on_close_refresh else None), daemon=True).start()
+
+                # 3. Assemblaggio della card con nome, pulsanti, quantità, unità, salva e checkbox dispensa
+                col_corpo.controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Text(f"▪ {info_i['nome']}", size=12, weight=ft.FontWeight.BOLD, expand=True),
+                                ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14, on_click=lambda e, it=info_i: apri_popup_rinomina_ingrediente(page, it, CACHE_ANAGRAFICA.get("ingredienti") or [], ricarica_ricetta_da_db)),
+                                ft.IconButton(icon=ft.Icons.CLOSE, icon_color=ft.Colors.RED_700, icon_size=15, on_click=elim_i)
+                            ], spacing=2),
+                            ft.Row([
+                                bq_i, su_i,
+                                ft.Container(content=ft.Text("💾 Salva", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.GREEN_700, height=32, padding=ft.Padding(8, 0, 8, 0), alignment=ft.Alignment(0, 0), border_radius=5, on_click=salva_q)
+                            ], spacing=4),
+                            chk_dispensa
+                        ], spacing=4),
+                        bgcolor="#F5F7FA", padding=6, border_radius=6, border=bordo_campo_uniforme("#E0E0E0")
+                    )
+                )
 
                 def salva_q(e, riga_ref=ri, b=bq_i, s=su_i):
                     nq, nu = parse_qta(b.textfield.value), s.get_value()
