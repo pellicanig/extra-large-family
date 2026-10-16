@@ -1040,12 +1040,39 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
         return
     vecchie_p, nuove_p = max(1, int(vecchie_persone or 8)), max(1, int(nuove_persone or 8))
     fattore = float(nuove_p) / float(vecchie_p)
-    res_ri = supabase.table("ricette_ingredienti").select("*").eq("id_ricetta", id_ricetta).execute()
+    
+    res_ri = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome)").eq("id_ricetta", id_ricetta).execute()
+    data_oggi_str = datetime.now().strftime("%Y-%m-%d")
+    
     for r in (res_ri.data or []):
-        q = float(r.get("quantita") or 0)
-        if q > 0 and r.get("unita_misura") != "q.b.":
-            nq = round(q * fattore, 2)
-            supabase.table("ricette_ingredienti").update({"quantita": nq}).eq("id", r["id"]).execute()
+        ing_obj = r.get("ingredienti") or {}
+        nome_i = (ing_obj.get("nome") or "").strip()
+        nome_low = nome_i.lower()
+        
+        # Se l'ingrediente rientra tra quelli di base della dispensa, rimuovilo dalla ricetta e mettilo in dispensa
+        is_base_dispensa = any(base in nome_low for base in INGREDIENTI_DISPENSA_BASE)
+        if is_base_dispensa:
+            supabase.table("ricette_ingredienti").delete().eq("id", r["id"]).execute()
+            try:
+                esistente = supabase.table("menu_giornalieri").select("id").eq("categoria", "Dispensa").eq("id_ingrediente", ing_obj.get("id")).execute()
+                if not esistente.data and ing_obj.get("id"):
+                    supabase.table("menu_giornalieri").insert({
+                        "data_menu": data_oggi_str,
+                        "categoria": "Dispensa",
+                        "subcategoria": None,
+                        "id_ingrediente": ing_obj.get("id"),
+                        "quantita": 0,
+                        "unita_misura": "pz",
+                        "preso": False
+                    }).execute()
+            except Exception:
+                pass
+        else:
+            q = float(r.get("quantita") or 0)
+            if q > 0 and r.get("unita_misura") != "q.b.":
+                nq = round(q * fattore, 2)
+                supabase.table("ricette_ingredienti").update({"quantita": nq}).eq("id", r["id"]).execute()
+                
     salva_meta_ricetta_db(id_ricetta, meta_attuale.get("portata", "Primo"), nuove_p, meta_attuale.get("url_fonte", ""), meta_attuale.get("foto_url", ""))
 
 
