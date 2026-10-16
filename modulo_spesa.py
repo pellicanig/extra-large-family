@@ -167,8 +167,6 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
 
             try:
                 sincronizza_e_pulisci_dispensa_mese(data_riferimento)
-
-            try:
                 res_m = supabase.table("menu_giornalieri").select(
                     "*, ingredienti(id, nome, unita_default), ricette(id, nome)"
                 ).gte("data_menu", min(inizio_str, primo_mese_str)).lte("data_menu", max(fine_str, fine_mese_str)).execute()
