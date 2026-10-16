@@ -1350,7 +1350,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
                     value=is_disp_attivo,
-                    text_style=ft.TextStyle(size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.BROWN_700),
+                    
                     density=ft.VisualDensity.COMPACT
                 )
 
