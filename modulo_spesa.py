@@ -161,36 +161,49 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     for ri in (res_ri.data or []):
                         mappa_ri.setdefault(ri["id_ricetta"], []).append(ri)
 
+                # Lista dei beni di consumo di base da non accumulare per quantità nella spesa
+                BASE_CONSUMABILE = {
+                    "sale", "pepe", "zucchero", "olio", "olio d'oliva", "olio extravergine d'oliva",
+                    "aceto", "aglio", "cipolla", "parmigiano", "grana", "pangrattato", "burro", "farina"
+                }
+
                 somme = {}
                 spuntati_sessione.clear()
+                
+                def aggiungi_alla_spesa(nome_ing, qta_ing, unita_ing, id_menu_rif=""):
+                    n_low = nome_ing.strip().lower()
+                    is_base = any(b in n_low for b in BASE_CONSUMABILE)
+                    
+                    if is_base:
+                        # Promemoria unitario senza accumulo di quantità
+                        chiave = (n_low, "promemoria")
+                        somme.setdefault(chiave, {
+                            "nome": nome_ing.capitalize(), "qta": 1.0, "unita": "pz",
+                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]"
+                        })
+                    else:
+                        q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
+                        chiave = (n_low, u_base)
+                        somme.setdefault(chiave, {
+                            "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
+                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": ""
+                        })
+                        somme[chiave]["qta"] += q_norm
+                        if id_menu_rif:
+                            somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
+
+                    if is_preso_db:
+                        somme[chiave]["preso_db"] = True
+
                 for m in righe_valide:
                     cat = m.get("categoria")
                     is_preso_db = bool(m.get("preso"))
                     if m.get("id_ingrediente") and m.get("ingredienti"):
-                        nome_i = m["ingredienti"]["nome"]
-                        q_norm, u_base = normalizza_qta_unita(m.get("quantita") or 0, m.get("unita_misura"))
-                        chiave = (nome_i.lower(), u_base)
-                        somme.setdefault(chiave, {
-                            "nome": nome_i, "qta": 0.0, "unita": u_base,
-                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": ""
-                        })
-                        somme[chiave]["qta"] += q_norm
-                        somme[chiave]["ids_menu_diretti"].append(m["id"])
-                        if is_preso_db:
-                            somme[chiave]["preso_db"] = True
-                        if cat in ["Dispensa", "Detersivi"]:
-                            somme[chiave]["etichetta_extra"] = f"[{cat}]"
+                        aggiungi_alla_spesa(m["ingredienti"]["nome"], m.get("quantita") or 0, m.get("unita_misura"), m["id"])
                     elif m.get("id_ricetta"):
                         for ri in mappa_ri.get(m["id_ricetta"], []):
                             if ri.get("ingredienti"):
-                                nome_i = ri["ingredienti"]["nome"]
-                                q_norm, u_base = normalizza_qta_unita(ri.get("quantita") or 0, ri.get("unita_misura"))
-                                chiave = (nome_i.lower(), u_base)
-                                somme.setdefault(chiave, {
-                                    "nome": nome_i, "qta": 0.0, "unita": u_base,
-                                    "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": ""
-                                })
-                                somme[chiave]["qta"] += q_norm
+                                aggiungi_alla_spesa(ri["ingredienti"]["nome"], ri.get("quantita") or 0, ri.get("unita_misura"))
 
                 for v in somme.values():
                     if v["preso_db"]:
