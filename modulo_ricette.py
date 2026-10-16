@@ -1370,6 +1370,14 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 chk_dispensa.on_change = toggle_dispensa_ing
 
+                # 2. Inserisci chk_dispensa dentro la Column o il Container che compone la card dell'ingrediente:
+                # Esempio all'interno della Column principale della riga ingrediente:
+                colonna_singolo_ingrediente = ft.Column([
+                    ft.Row([ft.Text(info_i["nome"], weight=ft.FontWeight.BOLD, expand=True)]),
+                    ft.Row([campo_qta, dropdown_unita, btn_salva]),
+                    chk_dispensa  # <--- ECCOLO QUI! Va aggiunto nei controls della colonna
+                ], spacing=4)
+
                 def salva_q(e, riga_ref=ri, b=bq_i, s=su_i):
                     nq, nu = parse_qta(b.textfield.value), s.get_value()
                     riga_ref["quantita"] = nq
