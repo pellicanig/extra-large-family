@@ -834,8 +834,8 @@ _MODELLI_NON_DISPONIBILI = set()
 def ottieni_lista_modelli_gemini(api_key: str):
     if MODELLO_GEMINI_RILEVATO[0] and MODELLO_GEMINI_RILEVATO[0] not in _MODELLI_NON_DISPONIBILI:
         return [MODELLO_GEMINI_RILEVATO[0]]
-    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking", "pro", "latest", "exp", "preview")
-    preferiti = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking")
+    preferiti = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-latest"]
     trovati = []
     try:
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(api_key)}"
