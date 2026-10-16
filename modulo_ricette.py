@@ -796,36 +796,21 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     query_pulita = re.sub(r"(?i)\b(il|la|lo|è|gia|già|pronto|pronta|comprato|comprata)\b", " ", query_pulita)
     query_pulita = re.sub(r"\s+", " ", query_pulita).strip() or query_ricerca.strip()
 
-    # Avvia subito Gemini AI in parallelo mentre cerca sui siti di cucina!
+    # 1. Avvia subito Gemini AI in parallelo
     box_ai_parallelo = [None]
     def worker_ai():
         box_ai_parallelo[0] = chiedi_ricetta_a_gemini_ai(query_ricerca, nome_ricetta_originale or query_pulita)
     t_ai = threading.Thread(target=worker_ai, daemon=True)
     t_ai.start()
 
-    queries_da_provare = [query_pulita]
-    if "pizza di patate" in query_pulita.lower() or "tortino di patate" in query_pulita.lower():
-        queries_da_provare.append("gateau di patate")
-    elif "tagliatelle al sugo" in query_pulita.lower() or "tagliatelle al rag" in query_pulita.lower():
-        queries_da_provare.append("tagliatelle al ragu alla bolognese")
-    elif "gnocchetti" in query_pulita.lower():
-        queries_da_provare.append(re.sub(r"(?i)gnocchetti", "gnocchi", query_pulita))
-    elif "telline" in query_pulita.lower():
-        queries_da_provare.append("pasta con le telline")
-
-    parole_chiave = [
-        w.lower() for w in re.findall(r"[a-zA-Zàèéìòù]{3,}", query_pulita)
-        if w.lower() not in {"con", "alle", "alla", "agli", "del", "della", "dei"}
+    q_enc = urllib.parse.quote_plus(query_pulita)
+    urls_ricerca = [
+        f"https://www.giallozafferano.it/ricerca-ricette/{q_enc}/",
+        f"https://www.cucchiaio.it/ricerca.html?q={q_enc}",
+        f"https://www.misya.info/?s={q_enc}",
+        f"https://www.fattoincasadabenedetta.it/?s={q_enc}",
+        f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query_pulita + ' ricetta site:blog.giallozafferano.it OR site:giallozafferano.it OR site:cucchiaio.it OR site:misya.info OR site:fattoincasadabenedetta.it')}"
     ]
-
-    urls_ricerca = []
-    for qp in queries_da_provare:
-        q_enc = urllib.parse.quote_plus(qp)
-        urls_ricerca.append(f"https://www.giallozafferano.it/ricerca-ricette/{q_enc}/")
-        urls_ricerca.append(f"https://www.cucchiaio.it/ricerca.html?q={q_enc}")
-    urls_ricerca.append(
-        f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query_pulita + ' ricetta site:giallozafferano.it OR site:blog.giallozafferano.it OR site:cucchiaio.it OR site:misya.info')}"
-    )
 
     pattern_links = (
         r'https://(?:ricette|blog)\.giallozafferano\.it/[a-zA-Z0-9\-_/]+\.html|'
@@ -835,19 +820,10 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
         r'https://www\.fattoincasadabenedetta\.it/ricetta/[a-zA-Z0-9\-_]+/?'
     )
 
-    links_candidati = []
-    for u_search in urls_ricerca[:4]:
-        try:
-            req = urllib.request.Request(u_search, headers=headers)
-            with urllib.request.urlopen(req, timeout=4) as resp:
-                html_s = html.unescape(resp.read().decode("utf-8", errors="ignore"))
-            html_s = urllib.parse.unquote(html_s)
-            for lk in re.findall(pattern_links, html_s):
-                if lk not in links_candidati and "ricerca" not in lk and "categoria" not in lk:
-                    links_candidati.append(lk)
-        except Exception:
-            continue
-
+    parole_chiave = [
+        w.lower() for w in re.findall(r"[a-zA-Zàèéìòù]{3,}", query_pulita)
+        if w.lower() not in {"con", "alle", "alla", "agli", "del", "della", "dei"}
+    ]
     parole_indesiderate = ["bianco", "capriolo", "anatra", "cinghiale", "lepre", "broccoli", "gamberi", "astice", "vegan"]
 
     def calcola_score_link(lk):
@@ -859,19 +835,51 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
         score -= len(slug) * 0.05
         return score
 
+    # Scarica in parallelo le pagine di ricerca di tutti i portali
+    links_per_portale = []
+    lock_lk = threading.Lock()
+
+    def cerca_su_portale(u_s):
+        try:
+            req = urllib.request.Request(u_s, headers=headers)
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                html_s = urllib.parse.unquote(html.unescape(resp.read().decode("utf-8", errors="ignore")))
+            trovati = [
+                lk for lk in re.findall(pattern_links, html_s)
+                if "ricerca" not in lk and "categoria" not in lk and "page" not in lk
+            ]
+            trovati_unici = list(dict.fromkeys(trovati))
+            trovati_unici.sort(key=calcola_score_link, reverse=True)
+            with lock_lk:
+                links_per_portale.append(trovati_unici[:2])
+        except Exception:
+            pass
+
+    threads_s = [threading.Thread(target=cerca_su_portale, args=(u,), daemon=True) for u in urls_ricerca]
+    for t in threads_s:
+        t.start()
+    for t in threads_s:
+        t.join(timeout=4.5)
+
+    # Alterna i migliori link di ciascun sito per avere varietà (GZ, Blog GZ, Cucchiaio, Misya, Benedetta)
+    links_candidati = []
+    for round_idx in range(2):
+        for lista_p in links_per_portale:
+            if round_idx < len(lista_p) and lista_p[round_idx] not in links_candidati:
+                links_candidati.append(lista_p[round_idx])
+
     links_candidati.sort(key=calcola_score_link, reverse=True)
 
-    # 1. PRIMA LE PROPOSTE DEI SITI WEB E BLOG
+    # Scarica in parallelo le ricette candidate (senza foto)
     risultati_trovati = []
-    for link in links_candidati[:4]:
+    def estrai_da_link(link):
         try:
             req_r = urllib.request.Request(link, headers=headers)
             with urllib.request.urlopen(req_r, timeout=4) as resp_r:
                 html_r = resp_r.read().decode("utf-8", errors="ignore")
             info = estrai_info_complete_da_pagina_ricetta(html_r, link)
             if info and info.get("raw_ings"):
-                ings_validi = []
-                nomi_visti = set()
+                ings_validi, nomi_visti = [], set()
                 for r_str in info["raw_ings"]:
                     parsed = analizza_stringa_ingrediente_web_base(r_str)
                     if parsed and parsed["nome"].lower() not in nomi_visti:
@@ -884,20 +892,28 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
                          ("Misya" if "misya" in link else
                           ("Fatto in casa da Benedetta" if "benedetta" in link else "Cucchiaio d'Argento")))
                     )
-                    risultati_trovati.append({
-                        "titolo": info["titolo"],
-                        "sito": sito_nome,
-                        "url_fonte": link,
-                        "foto_url": info["foto_url"],
-                        "porzioni_base": info["porzioni_base"] or 4,
-                        "ingredienti_base": ings_validi
-                    })
+                    with lock_lk:
+                        risultati_trovati.append({
+                            "titolo": info["titolo"],
+                            "sito": sito_nome,
+                            "url_fonte": link,
+                            "foto_url": "",
+                            "porzioni_base": info["porzioni_base"] or 4,
+                            "ingredienti_base": ings_validi
+                        })
         except Exception:
-            continue
+            pass
 
-    # 2. ULTIMA PROPOSTA SEMPRE GARANTITA: GEMINI AI
-    t_ai.join(timeout=5)
+    threads_r = [threading.Thread(target=estrai_da_link, args=(lk,), daemon=True) for lk in links_candidati[:6]]
+    for t in threads_r:
+        t.start()
+    for t in threads_r:
+        t.join(timeout=4.5)
+
+    # Ultima proposta sempre garantita: Gemini AI
+    t_ai.join(timeout=4)
     sol_ai = box_ai_parallelo[0] or genera_scomposizione_intelligente_condimento_pronto(query_ricerca, nome_ricetta_originale or query_pulita)
+    sol_ai["foto_url"] = ""
     risultati_trovati.append(sol_ai)
 
     return risultati_trovati
@@ -1297,34 +1313,18 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             ing_str = ", ".join([f"{x['nome']} ({formatta_numero(x['quantita'])} {x['unita']})" if x["unita"] != "q.b." else f"{x['nome']} (q.b.)" for x in ings_s[:10]])
             url_f = cand.get("url_fonte") or f"https://www.google.com/search?q={urllib.parse.quote_plus(stato_popup['query_web'] + ' ricetta')}"
 
-            riga_f = []
-            if cand.get("foto_url"):
-                riga_f.append(ft.Image(src=cand["foto_url"], width=64, height=64, border_radius=8))
-
-            col_t = [
-                ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
-                ft.Text(f"Fonte: {cand['sito']} (dosi per {p_t} pers.)", size=10, color=ft.Colors.GREY_700),
-                ft.TextButton(
-                    "🔗 Apri ricetta / preparazione in una nuova scheda",
-                    url=url_f,
-                    style=ft.ButtonStyle(padding=0)
-                )
+            riga_f = [
+                ft.Column([
+                    ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                    ft.Text(f"Fonte: {cand['sito']} (dosi per {p_t} pers.)", size=10, color=ft.Colors.GREY_700),
+                    ft.TextButton(
+                        "🔗 Apri ricetta / preparazione in una nuova scheda",
+                        url=url_f,
+                        style=ft.ButtonStyle(padding=0)
+                    ),
+                    *([ft.Text(f"👩‍🍳 {cand['preparazione_breve']}", size=10, italic=True, color=ft.Colors.BLUE_GREY_800)] if cand.get("preparazione_breve") else [])
+                ], spacing=2, expand=True)
             ]
-            if cand.get("preparazione_breve"):
-                col_t.append(ft.Text(f"👩‍🍳 {cand['preparazione_breve']}", size=10, italic=True, color=ft.Colors.BLUE_GREY_800))
-            riga_f.append(ft.Column(col_t, spacing=2, expand=True))
-
-            col_t = [
-                ft.Text(f"📌 {cand['titolo']}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
-                ft.Text(f"Fonte: {cand['sito']} (dosi per {p_t} pers.)", size=10, color=ft.Colors.GREY_700),
-                ft.Container(
-                    content=ft.Text("🔗 Apri ricetta / preparazione in una nuova scheda", size=10, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD),
-                    url=url_f
-                )
-            ]
-            if cand.get("preparazione_breve"):
-                col_t.append(ft.Text(f"👩‍🍳 {cand['preparazione_breve']}", size=10, italic=True, color=ft.Colors.BLUE_GREY_800))
-            riga_f.append(ft.Column(col_t, spacing=2, expand=True))
 
             nav = []
             if len(r_list) > 1:
