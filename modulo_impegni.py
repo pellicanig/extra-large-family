@@ -426,12 +426,15 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     page.update()
                     return
 
+            note_grezze = txt_note.value.replace("\u200b", "").strip() if txt_note.value else ""
+            note_pulite = formatta_titolo_intelligente(note_grezze) if note_grezze else None
+
             dati_base = {
                 "titolo": titolo_pulito,
                 "ora_inizio": ora_inizio_db,
                 "ora_fine": ora_fine_db,
                 "id_categoria": dd_categoria.value,
-                "note": txt_note.value.strip() if txt_note.value else None,
+                "note": note_pulite,
                 "is_evidenziato": switch_evidenziato.value
             }
 
