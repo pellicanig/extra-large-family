@@ -4,6 +4,7 @@ import re
 import json
 import html
 import time
+import calendar
 import threading
 import urllib.request
 import urllib.parse
@@ -73,7 +74,6 @@ CACHE_ANAGRAFICA = {
     "ingredienti": None,
     "ricette": None,
     "conteggio_ing_ricette": {},
-    "dettaglio_ing_ricette": {},
     "ids_detersivi": set()
 }
 
@@ -201,74 +201,49 @@ def salva_meta_ricetta_db(id_ricetta: str, portata: str, porzioni: int, url_font
 
 
 def normalizza_ingrediente_record(ing_raw: dict):
-    if not isinstance(ing_raw, dict):
-        ing_raw = {}
     u_raw = str(ing_raw.get("unita_default") or "g")
-    ing_id = str(ing_raw.get("id") or "")
-    ing_nome = str(ing_raw.get("nome") or "").strip().lower()
-
-    # Arricchisce da cache se la riga ha dati parziali
-    lista_cache = CACHE_ANAGRAFICA.get("ingredienti") or []
-    if lista_cache:
-        match_c = next(
-            (x for x in lista_cache
-             if (is_valid_uuid(ing_id) and str(x.get("id")) == ing_id)
-             or (ing_nome and str(x.get("nome") or "").strip().lower() == ing_nome)),
-            None
-        )
-        if match_c:
-            if not is_valid_uuid(ing_id) and is_valid_uuid(match_c.get("id")):
-                ing_id = str(match_c["id"])
-            if "|DISPENSA" not in u_raw and match_c.get("is_dispensa_base"):
-                u_raw += "|DISPENSA"
-            if "|DET" not in u_raw and match_c.get("is_detersivo"):
-                u_raw += "|DET"
-
-    is_det = ("|DET" in u_raw) or bool(ing_raw.get("is_detersivo"))
-    is_disp = ("|DISPENSA" in u_raw) or bool(ing_raw.get("is_dispensa_base"))
+    is_det = "|DET" in u_raw
+    is_disp = "|DISPENSA" in u_raw
     u_clean = u_raw.replace("|DET", "").replace("|DISPENSA", "").strip() or ("pz" if is_det else "g")
 
     copia = dict(ing_raw)
-    if is_valid_uuid(ing_id):
-        copia["id"] = ing_id
     copia["unita_default"] = u_clean if u_clean in UNITA_MISURA else "pz"
     copia["is_detersivo"] = is_det
     copia["is_dispensa_base"] = is_disp
     return copia
 
 
-def sincronizza_ingrediente_dispensa_mese(id_ingrediente: str, attivo: bool, data_riferimento_str: str = None):
-    """Aggiunge o rimuove automaticamente l'ingrediente nella Dispensa del mese quando viene spuntato/despuntato il checkbox."""
+def assicura_ingrediente_in_dispensa_mese(id_ingrediente: str, data_rif: datetime = None):
+    """Inserisce l'ingrediente nella Dispensa del mese corrente se non è già presente."""
     if not supabase or not is_valid_uuid(id_ingrediente):
         return
+    dt = data_rif or datetime.now()
+    primo_mese = dt.replace(day=1).strftime("%Y-%m-%d")
+    ultimo_gg = calendar.monthrange(dt.year, dt.month)[1]
+    fine_mese = dt.replace(day=ultimo_gg).strftime("%Y-%m-%d")
     try:
-        dt_base = datetime.strptime(data_riferimento_str[:10], "%Y-%m-%d") if data_riferimento_str else datetime.now()
-    except Exception:
-        dt_base = datetime.now()
-
-    primo_mese = dt_base.replace(day=1).strftime("%Y-%m-%d")
-     fine_mese = f"{dt_base.year:04d}-{dt_base.month:02d}-31"
-
-    try:
-        esistenti = supabase.table("menu_giornalieri").select("id, quantita").eq("categoria", "Dispensa").eq("id_ingrediente", id_ingrediente).gte("data_menu", primo_mese).lte("data_menu", fine_mese).execute()
-        righe_es = esistenti.data or []
-        if attivo:
-            if not righe_es:
-                supabase.table("menu_giornalieri").insert({
-                    "data_menu": primo_mese,
-                    "categoria": "Dispensa",
-                    "subcategoria": None,
-                    "id_ingrediente": id_ingrediente,
-                    "quantita": 0,
-                    "unita_misura": "pz",
-                    "preso": False
-                }).execute()
-        else:
-            for r in righe_es:
-                if float(r.get("quantita") or 0) == 0:
-                    supabase.table("menu_giornalieri").delete().eq("id", r["id"]).execute()
+        esistente = (
+            supabase.table("menu_giornalieri")
+            .select("id")
+            .eq("categoria", "Dispensa")
+            .eq("id_ingrediente", id_ingrediente)
+            .gte("data_menu", primo_mese)
+            .lte("data_menu", fine_mese)
+            .limit(1)
+            .execute()
+        )
+        if not esistente.data:
+            supabase.table("menu_giornalieri").insert({
+                "data_menu": primo_mese,
+                "categoria": "Dispensa",
+                "subcategoria": None,
+                "id_ingrediente": id_ingrediente,
+                "quantita": 0,
+                "unita_misura": "pz",
+                "preso": False
+            }).execute()
     except Exception as ex:
-        print("Errore sincronizza_ingrediente_dispensa_mese:", ex)
+        print("Errore sincronizzazione ingrediente in dispensa:", ex)
 
 
 def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mostra_prefisso=True, expand=False, prefisso_custom="Q.tà:", on_change_fn=None):
@@ -343,14 +318,21 @@ def assicura_cache_anagrafica(forza_ricarica=False):
     return CACHE_ANAGRAFICA["ingredienti"] or [], CACHE_ANAGRAFICA["ricette"] or []
 
 
+def cerca_ingrediente_in_cache_per_nome(nome_raw: str):
+    nome_low = re.sub(r"\s+", " ", (nome_raw or "").strip()).lower()
+    if not nome_low:
+        return None
+    lista_ing = CACHE_ANAGRAFICA.get("ingredienti") or []
+    return next((i for i in lista_ing if i.get("nome", "").strip().lower() == nome_low), None)
+
+
 def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bool = False, ignora_cache: bool = False):
     nome_pulito = re.sub(r"\s+", " ", (nome_raw or "").strip()).capitalize()
     if not nome_pulito:
         return None
     lista_ing, _ = assicura_cache_anagrafica(forza_ricarica=ignora_cache)
     unita_clean = str(unita_scelta or "g").replace("|DET", "").replace("|DISPENSA", "").strip()
-    if unita_clean not in UNITA_MISURA:
-        unita_clean = "pz" if is_detersivo else "g"
+    unita_db = f"{unita_clean}|DET" if is_detersivo else unita_clean
 
     if not ignora_cache:
         esistente = next((i for i in lista_ing if i["nome"].strip().lower() == nome_pulito.lower()), None)
@@ -359,9 +341,8 @@ def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bo
                 esistente["is_detersivo"] = True
                 CACHE_ANAGRAFICA["ids_detersivi"].add(esistente["id"])
                 tag_disp = "|DISPENSA" if esistente.get("is_dispensa_base") else ""
-                unita_upd = f"{esistente.get('unita_default', unita_clean)}|DET{tag_disp}"
                 try:
-                    supabase.table("ingredienti").update({"unita_default": unita_upd}).eq("id", esistente["id"]).execute()
+                    supabase.table("ingredienti").update({"unita_default": f"{unita_clean}|DET{tag_disp}"}).eq("id", esistente["id"]).execute()
                 except Exception:
                     pass
             return esistente["id"]
@@ -375,7 +356,6 @@ def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bo
     except Exception:
         pass
 
-    unita_db = f"{unita_clean}|DET" if is_detersivo else unita_clean
     try:
         res_ins = supabase.table("ingredienti").insert({"nome": nome_pulito, "unita_default": unita_db}).execute()
         nuovo = normalizza_ingrediente_record(res_ins.data[0])
@@ -384,8 +364,7 @@ def ottieni_o_crea_ing_sicuro(nome_raw: str, unita_scelta: str, is_detersivo: bo
     except Exception:
         res_retry = supabase.table("ingredienti").select("*").ilike("nome", nome_pulito).limit(1).execute()
         if res_retry.data:
-            trovato = normalizza_ingrediente_record(res_retry.data[0])
-            return trovato["id"]
+            return res_retry.data[0]["id"]
     return None
 
 
@@ -449,7 +428,7 @@ def ricetta_ha_ingredienti(id_ricetta):
 
 def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
     if not is_valid_uuid(id_ricetta):
-        return []
+        return 0
     righe_ri_bulk = []
     ids_ing_usati = set()
 
@@ -468,28 +447,20 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
                 "quantita": float(it.get("quantita") or 0),
                 "unita_misura": unita_i
             })
-            # Specchia in Dispensa SOLO se l'utente aveva già flaggato questo ingrediente con il checkbox |DISPENSA
+            # Specchia in Dispensa SOLO se l'ingrediente è stato flaggato dall'utente con il checkbox |DISPENSA
             ing_cache = next((x for x in (CACHE_ANAGRAFICA.get("ingredienti") or []) if str(x.get("id")) == str(id_ing)), None)
             if ing_cache and ing_cache.get("is_dispensa_base"):
-                sincronizza_ingrediente_dispensa_mese(id_ing, True)
+                assicura_ingrediente_in_dispensa_mese(id_ing)
 
     supabase.table("ricette_ingredienti").delete().eq("id_ricetta", id_ricetta).execute()
     if righe_ri_bulk:
         try:
             supabase.table("ricette_ingredienti").insert(righe_ri_bulk).execute()
-        except Exception as ex:
-            print("Errore insert ricette_ingredienti bulk:", ex)
+        except Exception:
+            pass
 
-    try:
-        res_agg = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome, unita_default)").eq("id_ricetta", id_ricetta).execute()
-        righe_salvate = res_agg.data or []
-    except Exception:
-        righe_salvate = []
-
-    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_salvate) if righe_salvate else len(righe_ri_bulk)
-    if righe_salvate:
-        CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ricetta)] = list(righe_salvate)
-    return righe_salvate
+    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_ri_bulk)
+    return len(righe_ri_bulk)
 
 
 # ==========================================================
@@ -580,6 +551,19 @@ def scala_ingredienti_candidato(candidato_web: dict, num_persone_target: int):
     return scalati
 
 
+def genera_fallback_ricetta(query_ricerca: str, nome_ricetta_originale: str = ""):
+    nome_base = (nome_ricetta_originale or query_ricerca or "Ricetta").strip()
+    return {
+        "titolo": f"Ricetta: {nome_base}",
+        "sito": "Inserimento Manuale",
+        "preparazione_breve": "Usa il box in alto per aggiungere gli ingredienti desiderati.",
+        "url_fonte": f"https://www.google.com/search?q={urllib.parse.quote_plus(nome_base + ' ricetta')}",
+        "foto_url": "",
+        "porzioni_base": 4,
+        "ingredienti_base": []
+    }
+
+
 def ottieni_lista_modelli_gemini(api_key: str):
     if MODELLO_GEMINI_RILEVATO[0]:
         return [MODELLO_GEMINI_RILEVATO[0]]
@@ -616,7 +600,7 @@ def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str =
     raw_key = os.environ.get("GEMINI_API_KEY", "") or GEMINI_API_KEY
     api_key = raw_key.replace("GEMINI_API_KEY=", "").strip().strip('"').strip("'")
     if not api_key:
-        return None
+        return genera_fallback_ricetta(query_ricerca, nome_ricetta_originale)
 
     prompt = f"""Sei uno chef di cucina casalinga italiana. L'utente deve fare la spesa per preparare: "{query_ricerca}" (piatto: "{nome_ricetta_originale}").
 Restituisci gli ingredienti semplici ed essenziali per 4 persone.
@@ -667,7 +651,7 @@ Rispondi SOLO con un JSON valido:
             print(f"Tentativo modello {modello_target} non riuscito ({ex}), provo il successivo...")
             continue
 
-    return None
+    return genera_fallback_ricetta(query_ricerca, nome_ricetta_originale)
 
 
 def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
@@ -854,10 +838,12 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
         t.join(timeout=4.5)
 
     t_ai.join(timeout=4)
-    if box_ai_parallelo[0]:
-        sol_ai = box_ai_parallelo[0]
+    sol_ai = box_ai_parallelo[0]
+    if sol_ai and sol_ai.get("ingredienti_base"):
         sol_ai["foto_url"] = ""
         risultati_trovati.append(sol_ai)
+    elif not risultati_trovati:
+        risultati_trovati.append(genera_fallback_ricetta(query_ricerca, nome_ricetta_originale or query_pulita))
 
     return risultati_trovati
 
@@ -870,21 +856,20 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
 
     res_ri = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome, unita_default)").eq("id_ricetta", id_ricetta).execute()
 
-    righe_aggiornate = []
+    righe_rimaste = []
     for r in (res_ri.data or []):
         q = float(r.get("quantita") or 0)
         if q > 0 and r.get("unita_misura") != "q.b.":
             nq = round(q * fattore, 2)
             supabase.table("ricette_ingredienti").update({"quantita": nq}).eq("id", r["id"]).execute()
             r["quantita"] = nq
-        righe_aggiornate.append(r)
+        righe_rimaste.append(r)
 
     salva_meta_ricetta_db(id_ricetta, meta_attuale.get("portata", "Primo"), nuove_p, meta_attuale.get("url_fonte", ""), meta_attuale.get("foto_url", ""))
-    CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ricetta)] = list(righe_aggiornate)
-    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_aggiornate)
 
     if stato_popup is not None and disegna_callback is not None:
-        stato_popup["righe_ri"] = righe_aggiornate
+        stato_popup["righe_ri"] = righe_rimaste
+        CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_rimaste)
         disegna_callback(msg_extra=f"Dosi ricalcolate per {nuove_p} persone!")
 
 
@@ -892,9 +877,8 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
 # POPUP DI GESTIONE E DETTAGLIO RICETTA
 # ==========================================================
 def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredienti: list, on_done_callback):
-    info_norm = normalizza_ingrediente_record(ing_obj)
-    txt_nome = ft.TextField(label="Nome ingrediente", value=info_norm.get("nome", ""), dense=True, text_size=13)
-    sel_unita = crea_selettore_unita(page, valore_iniziale=info_norm.get("unita_default", "g"), width=90, height=36, text_size=12)
+    txt_nome = ft.TextField(label="Nome ingrediente", value=ing_obj.get("nome", ""), dense=True, text_size=13)
+    sel_unita = crea_selettore_unita(page, valore_iniziale=ing_obj.get("unita_default", "g"), width=90, height=36, text_size=12)
     dlg_mod = None
 
     def salva_mod(e):
@@ -903,10 +887,10 @@ def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredie
             return
         chiudi_dialog_sicuro(page, dlg_mod)
         def w():
-            tag_det = "|DET" if info_norm.get("is_detersivo") else ""
-            tag_disp = "|DISPENSA" if info_norm.get("is_dispensa_base") else ""
-            u_finale = f"{sel_unita.get_value()}{tag_det}{tag_disp}"
-            supabase.table("ingredienti").update({"nome": n_nuovo, "unita_default": u_finale}).eq("id", info_norm["id"]).execute()
+            tag_det = "|DET" if ing_obj.get("is_detersivo") else ""
+            tag_disp = "|DISPENSA" if ing_obj.get("is_dispensa_base") else ""
+            nuova_u_db = f"{sel_unita.get_value()}{tag_det}{tag_disp}"
+            supabase.table("ingredienti").update({"nome": n_nuovo, "unita_default": nuova_u_db}).eq("id", ing_obj["id"]).execute()
             assicura_cache_anagrafica(forza_ricarica=True)
             if on_done_callback:
                 on_done_callback()
@@ -959,7 +943,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
     cache_ing_ric = CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {}).get(str(id_ricetta_init), [])
     ric_init_cache = next((r for r in (CACHE_ANAGRAFICA.get("ricette") or []) if str(r.get("id")) == str(id_ricetta_init)), None)
     meta_init = estrai_meta_ricetta(ric_init_cache)
-    gia_compilata_init = bool(cache_ing_ric) or ricetta_ha_ingredienti(id_ricetta_init)
+    gia_compilata_init = bool(cache_ing_ric) or ricetta_ha_ingredienti(id_ricetta_init) or bool(meta_init["url_fonte"])
 
     spinner_det = ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=ft.Colors.WHITE)
     lbl_det_status = ft.Text("Lettura ingredienti...", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
@@ -1032,16 +1016,16 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
         url_fonte_attuale = stato_popup["url_fonte"]
         foto_url_attuale = stato_popup["foto_url"]
 
-        # Deduplicazione in RAM per evitare righe doppie
+        # Deduplicazione automatica in RAM per evitare doppioni visivi
         righe_uniche = []
-        chiavi_viste = set()
+        visti_ing = set()
         for r_item in stato_popup["righe_ri"]:
             ing_d = r_item.get("ingredienti") or {}
-            k_u = str(r_item.get("id_ingrediente") or ing_d.get("id") or "").strip()
-            if not is_valid_uuid(k_u):
-                k_u = str(ing_d.get("nome") or r_item.get("id") or "").strip().lower()
-            if k_u and k_u not in chiavi_viste:
-                chiavi_viste.add(k_u)
+            nome_k = str(ing_d.get("nome") or "").strip().lower()
+            id_k = str(r_item.get("id_ingrediente") or ing_d.get("id") or "")
+            chiave_u = nome_k if nome_k else id_k
+            if chiave_u and chiave_u not in visti_ing:
+                visti_ing.add(chiave_u)
                 righe_uniche.append(r_item)
         stato_popup["righe_ri"] = righe_uniche
         righe_ri = righe_uniche
@@ -1086,16 +1070,17 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             if not nv:
                 return
             qv, uv = parse_qta(box_q_man.textfield.value), sel_u_man.get_value()
+            ing_esistente = cerca_ingrediente_in_cache_per_nome(nv)
+            u_def_init = f"{uv}|DISPENSA" if (ing_esistente and ing_esistente.get("is_dispensa_base")) else uv
 
-            ing_cache = next((x for x in (CACHE_ANAGRAFICA.get("ingredienti") or []) if x["nome"].strip().lower() == nv.lower()), None)
             id_temp_riga = f"temp_ri_{int(time.time()*1000)}"
             nuova_riga_ram = {
                 "id": id_temp_riga,
                 "id_ricetta": id_ric,
-                "id_ingrediente": ing_cache["id"] if ing_cache else "",
+                "id_ingrediente": ing_esistente["id"] if ing_esistente else "",
                 "quantita": qv,
                 "unita_misura": uv,
-                "ingredienti": dict(ing_cache) if ing_cache else {"id": "", "nome": nv, "unita_default": uv}
+                "ingredienti": {"id": ing_esistente["id"] if ing_esistente else "", "nome": nv, "unita_default": u_def_init}
             }
             stato_popup["righe_ri"].append(nuova_riga_ram)
             stato_popup["modificato"] = True
@@ -1114,10 +1099,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                             nuova_riga_ram["id"] = res_ins.data[0]["id"]
                             nuova_riga_ram["id_ingrediente"] = id_i
                             nuova_riga_ram["ingredienti"]["id"] = id_i
-                        ing_c = next((x for x in (CACHE_ANAGRAFICA.get("ingredienti") or []) if str(x.get("id")) == str(id_i)), None)
+                        ing_c = cerca_ingrediente_in_cache_per_nome(nv)
                         if ing_c and ing_c.get("is_dispensa_base"):
-                            sincronizza_ingrediente_dispensa_mese(id_i, True)
-                        CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(vero_id_ric)] = list(stato_popup["righe_ri"])
+                            assicura_ingrediente_in_dispensa_mese(id_i)
                         if on_close_refresh:
                             on_close_refresh()
                 except Exception as ex:
@@ -1140,7 +1124,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             )
         )
 
-        # 2. SE LA RICETTA HA INGREDIENTI: LINK PREPARAZIONE + RICALCOLO + LISTA UNICA CON CHECKBOX DISPENSA
+        # 2. SE LA RICETTA HA INGREDIENTI: FOTO + LINK PREPARAZIONE + RICALCOLO + LISTA UNICA
         if ha_ing:
             url_prep_attivo = url_fonte_attuale or f"https://www.google.com/search?q={urllib.parse.quote_plus(stato_popup['nome_ricetta'] + ' ricetta preparazione')}"
             riga_top_meta = []
@@ -1175,7 +1159,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 threading.Thread(
                     target=lambda: ricalibra_ingredienti_ricetta_db(
-                        assicura_id_reale(), vecchie_p, np,
+                        id_ric, vecchie_p, np,
                         {"portata": stato_popup["portata"], "url_fonte": stato_popup["url_fonte"], "foto_url": stato_popup["foto_url"]}
                     ),
                     daemon=True
@@ -1196,7 +1180,14 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             )
 
             for ri in righe_ri:
-                info_i = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"})
+                raw_ing_dict = ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"}
+                # Sincronizza lo stato con l'anagrafica in cache se presente
+                ing_in_cache = cerca_ingrediente_in_cache_per_nome(raw_ing_dict.get("nome", ""))
+                if ing_in_cache:
+                    info_i = dict(ing_in_cache)
+                else:
+                    info_i = normalizza_ingrediente_record(raw_ing_dict)
+
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
 
@@ -1206,33 +1197,40 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     value=is_disp_attivo
                 )
 
-                def toggle_dispensa_ing(e, riga_ref=ri, info_snapshot=info_i):
+                def toggle_dispensa_ing(e, riga_ref=ri, info_ref=info_i):
                     nuovo_stato = bool(e.control.value)
-                    u_def = info_snapshot.get("unita_default", "g")
-                    is_d = bool(info_snapshot.get("is_detersivo", False))
+                    u_def = info_ref.get("unita_default", "g")
+                    is_d = info_ref.get("is_detersivo", False)
                     tag_det = "|DET" if is_d else ""
                     tag_disp = "|DISPENSA" if nuovo_stato else ""
                     nuova_unita_db = f"{u_def}{tag_det}{tag_disp}"
-                    nome_ing = info_snapshot.get("nome", "")
-                    ing_id_curr = info_snapshot.get("id", "")
 
                     stato_popup["modificato"] = True
-                    if isinstance(riga_ref.get("ingredienti"), dict):
+                    if riga_ref.get("ingredienti"):
                         riga_ref["ingredienti"]["unita_default"] = nuova_unita_db
-                        riga_ref["ingredienti"]["is_dispensa_base"] = nuovo_stato
 
                     for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
-                        if (is_valid_uuid(ing_id_curr) and str(ig.get("id")) == str(ing_id_curr)) or ig.get("nome", "").strip().lower() == nome_ing.strip().lower():
-                            ig["unita_default"] = nuova_unita_db
+                        if ig.get("nome", "").strip().lower() == info_ref.get("nome", "").strip().lower():
+                            ig["unita_default"] = u_def
                             ig["is_dispensa_base"] = nuovo_stato
 
-                    def w_disp():
-                        real_id = ing_id_curr if is_valid_uuid(ing_id_curr) else ottieni_o_crea_ing_sicuro(nome_ing, u_def, is_d)
-                        if is_valid_uuid(real_id):
-                            supabase.table("ingredienti").update({"unita_default": nuova_unita_db}).eq("id", real_id).execute()
-                            sincronizza_ingrediente_dispensa_mese(real_id, nuovo_stato)
+                    def w_toggle():
+                        ing_id_reale = info_ref.get("id")
+                        if not is_valid_uuid(ing_id_reale):
+                            ing_id_reale = ottieni_o_crea_ing_sicuro(info_ref.get("nome", ""), u_def, is_d)
+                        if is_valid_uuid(ing_id_reale):
+                            supabase.table("ingredienti").update({"unita_default": nuova_unita_db}).eq("id", ing_id_reale).execute()
+                            if nuovo_stato:
+                                assicura_ingrediente_in_dispensa_mese(ing_id_reale)
+                            else:
+                                try:
+                                    supabase.table("menu_giornalieri").delete().eq("categoria", "Dispensa").eq("id_ingrediente", ing_id_reale).execute()
+                                except Exception:
+                                    pass
+                            if on_close_refresh:
+                                on_close_refresh()
 
-                    threading.Thread(target=w_disp, daemon=True).start()
+                    threading.Thread(target=w_toggle, daemon=True).start()
 
                 chk_dispensa.on_change = toggle_dispensa_ing
 
@@ -1241,7 +1239,6 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     riga_ref["quantita"] = nq
                     riga_ref["unita_misura"] = nu
                     stato_popup["modificato"] = True
-                    CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(stato_popup["righe_ri"])
                     disegna_popup_da_ram(msg_extra=f"Quantità aggiornata: {nome_ing}")
                     if is_valid_uuid(riga_ref.get("id")):
                         threading.Thread(target=lambda: supabase.table("ricette_ingredienti").update({"quantita": nq, "unita_misura": nu}).eq("id", riga_ref["id"]).execute(), daemon=True).start()
@@ -1250,7 +1247,6 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     stato_popup["righe_ri"] = [x for x in stato_popup["righe_ri"] if x.get("id") != riga_ref.get("id")]
                     stato_popup["modificato"] = True
                     CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(stato_popup["righe_ri"])
-                    CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(stato_popup["righe_ri"])
                     disegna_popup_da_ram()
                     if is_valid_uuid(riga_ref.get("id")):
                         threading.Thread(target=lambda: (supabase.table("ricette_ingredienti").delete().eq("id", riga_ref["id"]).execute(), on_close_refresh() if on_close_refresh else None), daemon=True).start()
@@ -1308,27 +1304,32 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 nuove_righe_ram = []
                 for i, x in enumerate(ings_s):
-                    ing_c = next((ig for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []) if ig["nome"].strip().lower() == x["nome"].strip().lower()), None)
+                    ing_c = cerca_ingrediente_in_cache_per_nome(x["nome"])
+                    u_def_str = f"{x['unita']}|DISPENSA" if (ing_c and ing_c.get("is_dispensa_base")) else x["unita"]
                     nuove_righe_ram.append({
                         "id": f"temp_ri_{i}_{int(time.time()*1000)}",
                         "id_ricetta": id_ric,
                         "id_ingrediente": ing_c["id"] if ing_c else "",
                         "quantita": x["quantita"],
                         "unita_misura": x["unita"],
-                        "ingredienti": dict(ing_c) if ing_c else {"id": "", "nome": x["nome"], "unita_default": x["unita"]}
+                        "ingredienti": {"id": ing_c["id"] if ing_c else "", "nome": x["nome"], "unita_default": u_def_str}
                     })
 
                 stato_popup["righe_ri"] = nuove_righe_ram
-                CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(nuove_righe_ram)
+                CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(ings_s)
                 disegna_popup_da_ram(msg_extra=f"Applicata '{cand['titolo']}' ({p_t} persone)!")
 
                 def w_app():
                     vero_id = assicura_id_reale()
-                    righe_db_reali = salva_lista_ingredienti_in_blocco(vero_id, ings_s)
+                    salva_lista_ingredienti_in_blocco(vero_id, ings_s)
                     salva_meta_ricetta_db(vero_id, stato_popup["portata"], p_t, cand.get("url_fonte", ""), cand.get("foto_url", ""))
-                    if righe_db_reali:
-                        stato_popup["righe_ri"] = righe_db_reali
-                        disegna_popup_da_ram(msg_extra=f"Applicata '{cand['titolo']}' ({p_t} persone)!")
+                    try:
+                        res_agg = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome, unita_default)").eq("id_ricetta", vero_id).execute()
+                        if res_agg.data:
+                            stato_popup["righe_ri"] = res_agg.data
+                            CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(vero_id)] = list(res_agg.data)
+                    except Exception:
+                        pass
                     if on_close_refresh:
                         on_close_refresh()
 
@@ -1352,7 +1353,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
             nav = []
             if len(r_list) > 1:
-                is_on_gemini = ("Gemini" in cand.get("sito", ""))
+                is_on_gemini = (idx == len(r_list) - 1)
                 nav.append(
                     ft.Row([
                         ft.TextButton("◀ Prec.", on_click=lambda e: (stato_popup.update({"idx_web": (stato_popup["idx_web"] - 1) % len(r_list)}), render_anteprima(), page.update())),
@@ -1462,10 +1463,16 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(righe_db)
                 CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(righe_db)
 
-                ha_ing = len(stato_popup["righe_ri"]) > 0
+                # Se la ricetta contiene ingredienti già marcati con |DISPENSA, si assicura che siano nella Dispensa del mese
+                for r_item in righe_db:
+                    ing_d = r_item.get("ingredienti") or {}
+                    if "|DISPENSA" in str(ing_d.get("unita_default") or "") and is_valid_uuid(ing_d.get("id")):
+                        assicura_ingrediente_in_dispensa_mese(ing_d["id"])
 
-                # Se la ricetta non ha ingredienti, avvia la ricerca automatica
-                if (not ha_ing) and (not stato_popup["ricerca_fatta"]):
+                ha_ing = len(stato_popup["righe_ri"]) > 0
+                ha_link = bool((stato_popup.get("url_fonte") or "").strip())
+
+                if (not ha_ing) and (not ha_link) and (not stato_popup["ricerca_fatta"]):
                     stato_popup["ricerca_fatta"] = True
                     stato_popup["ricerca_in_corso"] = True
                     banner_det.visible = True
@@ -1785,4 +1792,3 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
         ]
     )
     apri_dialog_sicuro(page, dlg_v)
-# === FINE FILE modulo_ricette.py ===
