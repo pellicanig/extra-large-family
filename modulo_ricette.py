@@ -532,14 +532,53 @@ def genera_scomposizione_intelligente_condimento_pronto(query_raw: str, nome_ric
     base_trovata = next((b.capitalize() for b in basi_primi if re.search(rf"\b{b}\b", low)), None)
     url_google_ai = f"https://www.google.com/search?q={urllib.parse.quote_plus((nome_ricetta_base or query_raw) + ' ricetta semplice')}"
 
-    if "legumi" in low:
+    if "frittata" in low or "uova" in low:
+        if "rotolo" in low:
+            ings = [
+                {"nome": "Uova", "qta_base": 6.0, "unita": "pz"},
+                {"nome": "Parmigiano grattugiato", "qta_base": 50.0, "unita": "g"},
+                {"nome": "Prosciutto cotto", "qta_base": 120.0, "unita": "g"},
+                {"nome": "Mozzarella / Formaggio spalmabile", "qta_base": 150.0, "unita": "g"}
+            ]
+            prep = "Cuocere la frittata al forno con uova e parmigiano, farcirla con prosciutto e formaggio e arrotolarla."
+        else:
+            ings = [
+                {"nome": "Uova", "qta_base": 6.0, "unita": "pz"},
+                {"nome": "Parmigiano grattugiato", "qta_base": 40.0, "unita": "g"},
+                {"nome": "Verdure miste / Zucchine", "qta_base": 300.0, "unita": "g"},
+                {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."}
+            ]
+            prep = "Sbattere le uova con il parmigiano, unire le verdure saltate e cuocere in padella o al forno."
+    elif "hamburg" in low or "svizzer" in low:
         ings = [
-            {"nome": "Ceci / Fagioli / Lenticchie", "qta_base": 500.0, "unita": "g"},
+            {"nome": "Carne macinata / Hamburger", "qta_base": 600.0, "unita": "g"},
+            {"nome": "Pane per hamburger", "qta_base": 4.0, "unita": "pz"},
+            {"nome": "Cheddar / Sottilette", "qta_base": 4.0, "unita": "fette"},
+            {"nome": "Insalata / Pomodoro", "qta_base": 200.0, "unita": "g"}
+        ]
+        prep = "Cuocere gli hamburger sulla piastra, fondere il formaggio sopra e comporre i panini."
+    elif "muffin" in low or "torta" in low or "ciambell" in low:
+        ings = [
+            {"nome": "Farina 00", "qta_base": 250.0, "unita": "g"},
+            {"nome": "Uova", "qta_base": 3.0, "unita": "pz"},
+            {"nome": "Zucchero", "qta_base": 150.0, "unita": "g"},
+            {"nome": "Latte", "qta_base": 100.0, "unita": "ml"},
+            {"nome": "Olio di semi / Burro", "qta_base": 80.0, "unita": "ml"},
+            {"nome": "Lievito per dolci", "qta_base": 1.0, "unita": "pz"}
+        ]
+        if "carot" in low:
+            ings.append({"nome": "Carote", "qta_base": 250.0, "unita": "g"})
+        elif "cioccolat" in low or "gocce" in low:
+            ings.append({"nome": "Gocce di cioccolato", "qta_base": 100.0, "unita": "g"})
+        prep = "Mescolare gli ingredienti umidi e secchi, versare negli stampini e cuocere in forno a 180°C."
+    elif "legumi" in low or "lenticchie" in low or "ceci" in low or "fagioli" in low:
+        ings = [
+            {"nome": "Legumi misti (Ceci / Fagioli / Lenticchie)", "qta_base": 500.0, "unita": "g"},
             {"nome": "Passata di pomodoro", "qta_base": 150.0, "unita": "g"},
             {"nome": "Sedano, Carota e Cipolla", "qta_base": 100.0, "unita": "g"},
             {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."}
         ]
-        prep = "Rosolare il battuto di odori, unire i legumi misti e cuocere a fuoco lento con brodo o passata."
+        prep = "Rosolare il battuto di odori, unire i legumi e cuocere a fuoco lento con brodo o passata."
     elif "pesto" in low:
         ings = [
             {"nome": base_trovata or "Pasta", "qta_base": 350.0, "unita": "g"},
@@ -614,13 +653,28 @@ def genera_scomposizione_intelligente_condimento_pronto(query_raw: str, nome_ric
             {"nome": "Prosciutto cotto", "qta_base": 150.0, "unita": "g"}
         ]
         prep = "Farcire le piadine con pomodoro, mozzarella e prosciutto e scaldare finché fila."
-    elif "bragiolett" in low or ("pollo" in low and ("speck" in low or "spek" in low)):
+    elif "bragiolett" in low or "involtini" in low or ("pollo" in low and ("speck" in low or "spek" in low)):
         ings = [
             {"nome": "Pollo a fette", "qta_base": 600.0, "unita": "g"},
             {"nome": "Speck", "qta_base": 120.0, "unita": "g"},
             {"nome": "Mozzarella", "qta_base": 150.0, "unita": "g"}
         ]
         prep = "Farcire le fettine di pollo con speck e mozzarella, arrotolare gli involtini e cuocere in padella o forno."
+    elif "polpett" in low:
+        ings = [
+            {"nome": "Carne macinata", "qta_base": 500.0, "unita": "g"},
+            {"nome": "Uova", "qta_base": 2.0, "unita": "pz"},
+            {"nome": "Parmigiano grattugiato", "qta_base": 50.0, "unita": "g"},
+            {"nome": "Pangrattato", "qta_base": 80.0, "unita": "g"}
+        ]
+        prep = "Impastare la carne con uova, parmigiano e pangrattato, formare le polpette e cuocerle in padella o al sugo."
+    elif "cotolett" in low:
+        ings = [
+            {"nome": "Fettine di pollo / vitello", "qta_base": 600.0, "unita": "g"},
+            {"nome": "Uova", "qta_base": 2.0, "unita": "pz"},
+            {"nome": "Pangrattato", "qta_base": 150.0, "unita": "g"}
+        ]
+        prep = "Passare le fettine nell'uovo sbattuto e nel pangrattato e dorarle in padella o in forno."
     elif base_trovata:
         condimento = re.sub(rf"(?i)\b{base_trovata}\b", "", testo_completo)
         condimento = re.sub(r"(?i)^(con|al|alla|allo|ai|agli|alle|e|ed)\s+", "", condimento.strip()).strip().capitalize()
@@ -644,30 +698,39 @@ def genera_scomposizione_intelligente_condimento_pronto(query_raw: str, nome_ric
     }
 
 
-def ottieni_modello_gemini_valido(api_key: str):
+def ottieni_lista_modelli_gemini(api_key: str):
     if MODELLO_GEMINI_RILEVATO[0]:
-        return MODELLO_GEMINI_RILEVATO[0]
+        return [MODELLO_GEMINI_RILEVATO[0]]
+    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking")
+    preferiti = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash"]
+    trovati = []
     try:
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(api_key)}"
         req = urllib.request.Request(url_list, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=4) as resp:
             dati = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        modelli_disp = [
+        disponibili = [
             m.get("name", "").replace("models/", "")
             for m in dati.get("models", [])
-            if "generateContent" in m.get("supportedGenerationMethods", []) and "gemini" in m.get("name", "")
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+            and "gemini" in m.get("name", "").lower()
+            and not any(s in m.get("name", "").lower() for s in scarti)
         ]
-        for pref in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]:
-            for md in modelli_disp:
-                if md.startswith(pref):
-                    MODELLO_GEMINI_RILEVATO[0] = md
-                    return md
-        if modelli_disp:
-            MODELLO_GEMINI_RILEVATO[0] = modelli_disp[0]
-            return modelli_disp[0]
+        # 1. Prima i match esatti stabili (senza -preview / -exp)
+        for p in preferiti:
+            if p in disponibili and p not in trovati:
+                trovati.append(p)
+        # 2. Poi gli altri modelli stabili disponibili
+        for d in disponibili:
+            if d not in trovati and "preview" not in d and "exp" not in d:
+                trovati.append(d)
+        # 3. Infine eventuali altri modelli
+        for d in disponibili:
+            if d not in trovati:
+                trovati.append(d)
     except Exception as ex:
         print("Info lista modelli Gemini:", ex)
-    return "gemini-1.5-flash"
+    return trovati if trovati else ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
 
 def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str = ""):
@@ -688,37 +751,42 @@ Rispondi SOLO con un JSON valido:
         "generationConfig": {"temperature": 0.2}
     }).encode("utf-8")
 
-    modello_target = ottieni_modello_gemini_valido(api_key)
-    try:
-        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/{modello_target}:generateContent?key={urllib.parse.quote(api_key)}"
-        req = urllib.request.Request(url_api, data=payload, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            risp_json = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        testo_out = risp_json["candidates"][0]["content"]["parts"][0]["text"]
-        m_json = re.search(r"\{.*\}", testo_out, flags=re.DOTALL)
-        dati_ai = json.loads(m_json.group(0) if m_json else testo_out)
-        ings_validi = []
-        for item in dati_ai.get("ingredienti_base", []):
-            u = item.get("unita", "g")
-            if u not in UNITA_MISURA:
-                u = "g"
-            ings_validi.append({
-                "nome": str(item.get("nome", "")).strip().capitalize(),
-                "qta_base": float(item.get("qta_base") or 0),
-                "unita": u
-            })
-        if ings_validi:
-            return {
-                "titolo": f"✨ {dati_ai.get('titolo') or nome_ricetta_originale} (Soluzione AI Gemini)",
-                "sito": "🤖 Intelligenza Artificiale Gemini",
-                "preparazione_breve": dati_ai.get("preparazione_breve", ""),
-                "url_fonte": f"https://www.google.com/search?q={urllib.parse.quote_plus((nome_ricetta_originale or query_ricerca) + ' ricetta')}",
-                "foto_url": "",
-                "porzioni_base": int(dati_ai.get("porzioni_base") or 4),
-                "ingredienti_base": ings_validi
-            }
-    except Exception as ex:
-        print(f"Info fallback AI locale ({modello_target}):", ex)
+    candidati_modelli = ottieni_lista_modelli_gemini(api_key)
+    for modello_target in candidati_modelli[:4]:
+        try:
+            url_api = f"https://generativelanguage.googleapis.com/v1beta/models/{modello_target}:generateContent?key={urllib.parse.quote(api_key)}"
+            req = urllib.request.Request(url_api, data=payload, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                risp_json = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            testo_out = risp_json["candidates"][0]["content"]["parts"][0]["text"]
+            m_json = re.search(r"\{.*\}", testo_out, flags=re.DOTALL)
+            dati_ai = json.loads(m_json.group(0) if m_json else testo_out)
+            ings_validi = []
+            for item in dati_ai.get("ingredienti_base", []):
+                u = item.get("unita", "g")
+                if u not in UNITA_MISURA:
+                    u = "g"
+                ings_validi.append({
+                    "nome": str(item.get("nome", "")).strip().capitalize(),
+                    "qta_base": float(item.get("qta_base") or 0),
+                    "unita": u
+                })
+            if ings_validi:
+                MODELLO_GEMINI_RILEVATO[0] = modello_target
+                return {
+                    "titolo": f"✨ {dati_ai.get('titolo') or nome_ricetta_originale} (Soluzione AI Gemini)",
+                    "sito": "🤖 Intelligenza Artificiale Gemini",
+                    "preparazione_breve": dati_ai.get("preparazione_breve", ""),
+                    "url_fonte": f"https://www.google.com/search?q={urllib.parse.quote_plus((nome_ricetta_originale or query_ricerca) + ' ricetta')}",
+                    "foto_url": "",
+                    "porzioni_base": int(dati_ai.get("porzioni_base") or 4),
+                    "ingredienti_base": ings_validi
+                }
+        except Exception as ex:
+            if MODELLO_GEMINI_RILEVATO[0] == modello_target:
+                MODELLO_GEMINI_RILEVATO[0] = None
+            print(f"Tentativo modello {modello_target} non riuscito ({ex}), provo il successivo...")
+            continue
 
     return genera_scomposizione_intelligente_condimento_pronto(query_ricerca, nome_ricetta_originale)
 
