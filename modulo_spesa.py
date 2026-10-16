@@ -173,15 +173,17 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                 def aggiungi_alla_spesa(ing_obj, qta_ing, unita_ing, id_menu_rif=""):
                     if not ing_obj:
                         return
-                    nome_ing = ing_obj.get("nome", "Prodotto")
-                    u_def_db = str(ing_obj.get("unita_default") or "")
+                    if isinstance(ing_obj, str):
+                        nome_ing = ing_obj
+                        u_def_db = ""
+                    else:
+                        nome_ing = ing_obj.get("nome", "Prodotto")
+                        u_def_db = str(ing_obj.get("unita_default") or "")
                     
-                    # Riconosce dinamicamente se l'ingrediente è stato flaggato come "Dispensa" nel popup
                     is_base_dinamico = "|DISPENSA" in u_def_db
                     n_low = nome_ing.strip().lower()
                     
                     if is_base_dinamico:
-                        # Promemoria unitario senza accumulo di quantità
                         chiave = (n_low, "promemoria")
                         somme.setdefault(chiave, {
                             "nome": nome_ing.capitalize(), "qta": 1.0, "unita": "pz",
@@ -202,7 +204,6 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                         somme[chiave]["preso_db"] = True
 
                 for m in righe_valide:
-                    cat = m.get("categoria")
                     is_preso_db = bool(m.get("preso"))
                     if m.get("id_ingrediente") and m.get("ingredienti"):
                         aggiungi_alla_spesa(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"])
@@ -210,16 +211,6 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                         for ri in mappa_ri.get(m["id_ricetta"], []):
                             if ri.get("ingredienti"):
                                 aggiungi_alla_spesa(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"))
-
-                for m in righe_valide:
-                    cat = m.get("categoria")
-                    is_preso_db = bool(m.get("preso"))
-                    if m.get("id_ingrediente") and m.get("ingredienti"):
-                        aggiungi_alla_spesa(m["ingredienti"]["nome"], m.get("quantita") or 0, m.get("unita_misura"), m["id"])
-                    elif m.get("id_ricetta"):
-                        for ri in mappa_ri.get(m["id_ricetta"], []):
-                            if ri.get("ingredienti"):
-                                aggiungi_alla_spesa(ri["ingredienti"]["nome"], ri.get("quantita") or 0, ri.get("unita_misura"))
 
                 for v in somme.values():
                     if v["preso_db"]:
