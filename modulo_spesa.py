@@ -281,7 +281,6 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
             ext = item.get("etichetta_extra", "")
             stile = STILI_SEZIONE.get(ext, STILI_SEZIONE[""])
 
-            # Intestazione di sezione quando cambia il gruppo
             if ext != sezione_corrente:
                 sezione_corrente = ext
                 colonna_lista.controls.append(
@@ -291,12 +290,13 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     )
                 )
 
+            # ELENCO PURO: Se è Dispensa o Detersivi, mettiamo SOLO la checkbox e il nome del prodotto (senza quantità)
             riga_ctrl = [
                 ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                 ft.Text(item["nome"], size=13, weight=ft.FontWeight.BOLD, expand=True)
             ]
 
-            # Mostra il badge quantità SOLO per gli ingredienti delle ricette (mai per Dispensa)
+            # Mostra la quantità con il badge blu SOLO per gli ingredienti delle ricette
             if stile["mostra_qta"]:
                 q_finale = formatta_qta_finale(item["qta"], item["unita"])
                 riga_ctrl.append(
