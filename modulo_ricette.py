@@ -1349,9 +1349,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 is_disp_attivo = info_i.get("is_dispensa_base", False)
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
-                    value=is_disp_attivo,
-                    
-                    density=ft.VisualDensity.COMPACT
+                    value=is_disp_attivo
                 )
 
                 def toggle_dispensa_ing(e, ing_id=info_i["id"], u_def=info_i["unita_default"], is_d=info_i.get("is_detersivo", False)):
