@@ -213,8 +213,150 @@ def normalizza_ingrediente_record(ing_raw: dict):
     return copia
 
 
+def generalizza_nome_dispensa(nome_raw: str) -> str:
+    """
+    Normalizza semanticamente i nomi per la Dispensa:
+    - Unifica varianti culinarie (es. 'Sale fino' -> 'Sale', 'Pepe nero' -> 'Pepe',
+      'Cipolle ramate' -> 'Cipolla', 'Costa sedano' -> 'Sedano', 'Uova medie' -> 'Uova',
+      'Olio' / 'Olio evo' -> 'Olio extravergine d'oliva')
+    - Preserva le distinzioni merceologiche reali ('Olio di semi' != 'Olio extravergine d'oliva',
+      'Vino rosso' != 'Vino bianco', 'Farina di mais' != 'Farina', 'Zucchero di canna' != 'Zucchero').
+    """
+    s = re.sub(r"\s+", " ", (nome_raw or "").strip()).lower()
+    if not s:
+        return ""
+
+    # 1. Rimuove prefissi di taglio/porzione tipici delle ricette web
+    s = re.sub(
+        r"^(costa di |coste di |costa |coste |gambo di |gambi di |spicchio di |spicchio d'|spicchi di |spicchi d'|"
+        r"foglie di |foglia di |rametto di |rametti di |ciuffo di |ciuffi di |pizzico di |scorza di |succo di |macinata di )",
+        "", s
+    ).strip()
+
+    # 2. Famiglie con specificatori merceologici protetti (Olio, Vino, Aceto, Farina, Zucchero, Latte)
+    if s.startswith("olio"):
+        if any(k in s for k in ["semi", "arachid", "girasol", "mais", "frigg", "fritt"]):
+            return "Olio di semi"
+        for spec in ["cocco", "sesamo", "noce", "noci", "tartufo", "peperoncino", "riso", "lino"]:
+            if spec in s:
+                return s.capitalize()
+        return "Olio extravergine d'oliva"
+
+    if s.startswith("vino"):
+        if "bianco" in s:
+            return "Vino bianco"
+        if "rosso" in s or "nero" in s:
+            return "Vino rosso"
+        if "rosato" in s or "rosè" in s:
+            return "Vino rosato"
+        return "Vino"
+
+    if s.startswith("aceto"):
+        if "mele" in s:
+            return "Aceto di mele"
+        if "balsamico" in s:
+            return "Aceto balsamico"
+        if "riso" in s:
+            return "Aceto di riso"
+        return "Aceto"
+
+    if s.startswith("farina"):
+        for spec in ["mais", "polenta", "ceci", "mandorl", "castagn", "riso", "cocco", "avena", "integrale", "manitoba", "semola", "grano saraceno", "farro"]:
+            if spec in s:
+                return s.capitalize()
+        return "Farina"
+
+    if s.startswith("zucchero"):
+        if "velo" in s:
+            return "Zucchero a velo"
+        if any(k in s for k in ["canna", "bruno", "mascobado", "grezzo"]):
+            return "Zucchero di canna"
+        return "Zucchero"
+
+    if s.startswith("latte"):
+        if any(k in s for k in ["soia", "cocco", "mandorl", "avena", "riso", "condensato", "polvere"]):
+            return s.capitalize()
+        return "Latte"
+
+    # 3. Raggruppamento radici base della dispensa
+    if s.startswith("sale") and "lavastoviglie" not in s:
+        return "Sale"
+    if (s == "pepe" or s.startswith("pepe ")) and not s.startswith("peperon"):
+        return "Pepe"
+    if s.startswith("cipoll") and not s.startswith("cipollin"):
+        return "Cipolla"
+    if s.startswith("agli") or "aglio" in s:
+        return "Aglio"
+    if s.startswith("sedan") or "sedano" in s:
+        return "Sedano"
+    if s.startswith("carot"):
+        return "Carota"
+    if s.startswith("uov") or s in ["tuorlo", "tuorli", "albume", "albumi"]:
+        return "Uova"
+    if s.startswith("parmigian") or s.startswith("grana padan") or s == "grana":
+        return "Parmigiano"
+    if s.startswith("burro") and "arachid" not in s:
+        return "Burro"
+    if s.startswith("pangrattat") or s.startswith("pane grattugiat") or s.startswith("pan grattat"):
+        return "Pangrattato"
+    if "concentrato di pomodoro" in s:
+        return "Concentrato di pomodoro"
+    if s.startswith("passata di pomodor") or s == "passata":
+        return "Passata di pomodoro"
+    if s.startswith("dado"):
+        return "Dado vegetale"
+    if s.startswith("alloro"):
+        return "Alloro"
+    if s.startswith("rosmarin"):
+        return "Rosmarino"
+    if s.startswith("prezzemol"):
+        return "Prezzemolo"
+    if s.startswith("basilic"):
+        return "Basilico"
+    if s.startswith("peperoncin"):
+        return "Peperoncino"
+    if s.startswith("origano"):
+        return "Origano"
+
+    # 4. Confronto dinamico con gli ingredienti già marcati |DISPENSA in anagrafica
+    # (se il nome inizia con un ingrediente base esistente e non ha specificatori 'di ...' diversi)
+    if " di " not in s and " d'" not in s and " al " not in s and " alla " not in s:
+        prima_parola = s.split(" ")[0]
+        if len(prima_parola) >= 4:
+            radice = prima_parola[:-1]
+            for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
+                if ig.get("is_dispensa_base"):
+                    n_ig = ig.get("nome", "").strip().lower()
+                    if n_ig == prima_parola or ( " " not in n_ig and len(n_ig) >= 4 and n_ig[:-1] == radice):
+                        return ig.get("nome", "").strip().capitalize()
+
+    return s.capitalize()
+
+
+def ottieni_o_crea_ing_dispensa_canonico(nome_raw: str) -> str:
+    """Restituisce l'ID dell'ingrediente generalizzato per la Dispensa e si assicura che abbia il flag |DISPENSA."""
+    nome_gen = generalizza_nome_dispensa(nome_raw)
+    if not nome_gen:
+        return None
+    id_ing = ottieni_o_crea_ing_sicuro(nome_gen, "pz", is_detersivo=False)
+    if is_valid_uuid(id_ing):
+        ing_c = next((x for x in (CACHE_ANAGRAFICA.get("ingredienti") or []) if str(x.get("id")) == str(id_ing)), None)
+        u_base = (ing_c.get("unita_default") if ing_c else "pz") or "pz"
+        u_clean = str(u_base).replace("|DET", "").replace("|DISPENSA", "").strip() or "pz"
+        if not ing_c or not ing_c.get("is_dispensa_base"):
+            nuova_u = f"{u_clean}|DISPENSA"
+            try:
+                supabase.table("ingredienti").update({"unita_default": nuova_u}).eq("id", id_ing).execute()
+            except Exception:
+                pass
+            if ing_c:
+                ing_c["is_dispensa_base"] = True
+                ing_c["unita_default"] = u_clean
+    return id_ing
+
+
 def assicura_ingrediente_in_dispensa_mese(id_ingrediente: str, data_rif: datetime = None):
-    """Inserisce l'ingrediente nella Dispensa del mese corrente se non è già presente."""
+    """Inserisce l'ingrediente (in forma generalizzata) nella Dispensa del mese di riferimento se non è già presente."""
     if not supabase or not is_valid_uuid(id_ingrediente):
         return
     dt = data_rif or datetime.now()
@@ -222,11 +364,17 @@ def assicura_ingrediente_in_dispensa_mese(id_ingrediente: str, data_rif: datetim
     ultimo_gg = calendar.monthrange(dt.year, dt.month)[1]
     fine_mese = dt.replace(day=ultimo_gg).strftime("%Y-%m-%d")
     try:
+        ing_c = next((x for x in (CACHE_ANAGRAFICA.get("ingredienti") or []) if str(x.get("id")) == str(id_ingrediente)), None)
+        if ing_c and ing_c.get("nome"):
+            id_target = ottieni_o_crea_ing_dispensa_canonico(ing_c["nome"]) or id_ingrediente
+        else:
+            id_target = id_ingrediente
+
         esistente = (
             supabase.table("menu_giornalieri")
             .select("id")
             .eq("categoria", "Dispensa")
-            .eq("id_ingrediente", id_ingrediente)
+            .eq("id_ingrediente", id_target)
             .gte("data_menu", primo_mese)
             .lte("data_menu", fine_mese)
             .limit(1)
@@ -237,13 +385,130 @@ def assicura_ingrediente_in_dispensa_mese(id_ingrediente: str, data_rif: datetim
                 "data_menu": primo_mese,
                 "categoria": "Dispensa",
                 "subcategoria": None,
-                "id_ingrediente": id_ingrediente,
+                "id_ingrediente": id_target,
                 "quantita": 0,
                 "unita_misura": "pz",
                 "preso": False
             }).execute()
     except Exception as ex:
         print("Errore sincronizzazione ingrediente in dispensa:", ex)
+
+
+def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
+    """
+    Esegue lo screening completo della Dispensa per il mese di data_rif:
+    1. Legge tutte le ricette pianificate nel mese e individua gli ingredienti marcati come Dispensa.
+    2. Generalizza i nomi (es. 'Pepe nero' -> 'Pepe', 'Sale fino' -> 'Sale', 'Cipolle ramate' -> 'Cipolla')
+       ed elimina automaticamente i doppioni già presenti in Dispensa (preservando le spunte 'Presente' e le voci manuali).
+    3. Popola automaticamente la Dispensa del mese (es. Novembre) con gli ingredienti base delle ricette del mese.
+    """
+    if not supabase:
+        return
+    dt = data_rif or datetime.now()
+    primo_mese = dt.replace(day=1).strftime("%Y-%m-%d")
+    ultimo_gg = calendar.monthrange(dt.year, dt.month)[1]
+    fine_mese = dt.replace(day=ultimo_gg).strftime("%Y-%m-%d")
+
+    try:
+        lista_ing_cache, _ = assicura_cache_anagrafica(forza_ricarica=False)
+        nomi_dispensa_attivi = {
+            generalizza_nome_dispensa(i["nome"]).lower()
+            for i in lista_ing_cache if i.get("is_dispensa_base") and i.get("nome")
+        }
+
+        res_mese = (
+            supabase.table("menu_giornalieri")
+            .select("*, ingredienti(id, nome, unita_default)")
+            .gte("data_menu", primo_mese)
+            .lte("data_menu", fine_mese)
+            .execute()
+        )
+        righe_mese = res_mese.data or []
+        righe_dispensa = [r for r in righe_mese if r.get("categoria") == "Dispensa"]
+        ids_ricette_mese = list({r["id_ricetta"] for r in righe_mese if r.get("categoria") not in ["Dispensa", "Detersivi"] and is_valid_uuid(r.get("id_ricetta"))})
+
+        # 1. Raccoglie i nomi generalizzati richiesti dalle ricette pianificate nel mese
+        richiesti_da_ricette = set()
+        if ids_ricette_mese:
+            res_ri = (
+                supabase.table("ricette_ingredienti")
+                .select("*, ingredienti(id, nome, unita_default)")
+                .in_("id_ricetta", ids_ricette_mese)
+                .execute()
+            )
+            for ri in (res_ri.data or []):
+                ing_d = ri.get("ingredienti") or {}
+                nome_i = (ing_d.get("nome") or "").strip()
+                if not nome_i:
+                    continue
+                u_def = str(ing_d.get("unita_default") or "")
+                nome_gen = generalizza_nome_dispensa(nome_i)
+                if "|DISPENSA" in u_def or nome_gen.lower() in nomi_dispensa_attivi:
+                    richiesti_da_ricette.add(nome_gen)
+                    nomi_dispensa_attivi.add(nome_gen.lower())
+
+        # 2. Deduplica e normalizza le righe già presenti nella Dispensa del mese (mantenendo anche quelle manuali)
+        gruppi_disp = {}
+        for rd in righe_dispensa:
+            nome_orig = ((rd.get("ingredienti") or {}).get("nome") or "").strip()
+            if not nome_orig:
+                continue
+            nome_gen = generalizza_nome_dispensa(nome_orig)
+            gruppi_disp.setdefault(nome_gen.lower(), {"nome_gen": nome_gen, "righe": []})["righe"].append(rd)
+
+        visti_canonici = set()
+        for k_low, info_g in gruppi_disp.items():
+            nome_gen = info_g["nome_gen"]
+            righe_g = info_g["righe"]
+            visti_canonici.add(k_low)
+            id_canonico = ottieni_o_crea_ing_dispensa_canonico(nome_gen)
+            if not is_valid_uuid(id_canonico):
+                continue
+
+            preso_unificato = any(bool(x.get("preso")) for x in righe_g)
+            riga_principale = next((x for x in righe_g if str(x.get("id_ingrediente")) == str(id_canonico)), righe_g[0])
+
+            # Se la riga principale puntava a una variante (es. 'Pepe nero' invece di 'Pepe') o cambia stato 'preso', la aggiorna
+            if str(riga_principale.get("id_ingrediente")) != str(id_canonico) or bool(riga_principale.get("preso")) != preso_unificato:
+                try:
+                    supabase.table("menu_giornalieri").update({
+                        "id_ingrediente": id_canonico,
+                        "preso": preso_unificato,
+                        "quantita": 0,
+                        "unita_misura": "pz"
+                    }).eq("id", riga_principale["id"]).execute()
+                except Exception:
+                    pass
+
+            # Elimina eventuali righe doppie dello stesso ingrediente generalizzato
+            for r_dup in righe_g:
+                if r_dup["id"] != riga_principale["id"]:
+                    try:
+                        supabase.table("menu_giornalieri").delete().eq("id", r_dup["id"]).execute()
+                    except Exception:
+                        pass
+
+        # 3. Inserisce nella Dispensa del mese gli ingredienti base delle ricette non ancora presenti
+        nuove_righe_disp = []
+        for nome_req in richiesti_da_ricette:
+            if nome_req.lower() not in visti_canonici:
+                id_can = ottieni_o_crea_ing_dispensa_canonico(nome_req)
+                if is_valid_uuid(id_can):
+                    visti_canonici.add(nome_req.lower())
+                    nuove_righe_disp.append({
+                        "data_menu": primo_mese,
+                        "categoria": "Dispensa",
+                        "subcategoria": None,
+                        "id_ingrediente": id_can,
+                        "quantita": 0,
+                        "unita_misura": "pz",
+                        "preso": False
+                    })
+        if nuove_righe_disp:
+            supabase.table("menu_giornalieri").insert(nuove_righe_disp).execute()
+
+    except Exception as ex:
+        print("Errore sincronizza_e_pulisci_dispensa_mese:", ex)
 
 
 def crea_box_quantita(valore_iniziale="1", width=90, height=34, text_size=12, mostra_prefisso=True, expand=False, prefisso_custom="Q.tà:", on_change_fn=None):
