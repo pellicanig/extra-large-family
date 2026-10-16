@@ -1396,6 +1396,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             pass
 
     def ricarica_ricetta_da_db():
+        # Disegna immediatamente quello che c'è in RAM (0 attesa)
         disegna_popup_da_ram()
 
         def worker_init():
@@ -1412,14 +1413,18 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     stato_popup["foto_url"] = meta["foto_url"]
 
                 res_ri = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome, unita_default)").eq("id_ricetta", id_ric).execute()
-                stato_popup["righe_ri"] = res_ri.data if res_ri.data else []
-                CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(stato_popup["righe_ri"])
-                CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(stato_popup["righe_ri"])
+                righe_db = res_ri.data if res_ri.data else []
+                
+                # Se il DB restituisce righe, aggiorniamo lo stato
+                if righe_db:
+                    stato_popup["righe_ri"] = righe_db
+                    CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(righe_db)
+                    CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(righe_db)
 
                 ha_ing = len(stato_popup["righe_ri"]) > 0
                 ha_link = bool((stato_popup.get("url_fonte") or "").strip())
 
-                # ⚡ Cerca in automatico SOLO se la ricetta è completamente nuova (niente ingredienti e niente link) ⚡
+                # Cerca in automatico SOLO se la ricetta è completamente nuova
                 if (not ha_ing) and (not ha_link) and (not stato_popup["ricerca_fatta"]):
                     stato_popup["ricerca_fatta"] = True
                     stato_popup["ricerca_in_corso"] = True
@@ -1439,6 +1444,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 banner_det.visible = False
                 disegna_popup_da_ram()
 
+        # Esegue la chiamata in background senza bloccare l'interfaccia
         threading.Thread(target=worker_init, daemon=True).start()
 
     ricarica_ricetta_da_db()
