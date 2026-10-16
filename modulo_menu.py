@@ -22,6 +22,7 @@ from modulo_ricette import (
     estrai_meta_ricetta,
     normalizza_ingrediente_record,
     assicura_ingrediente_in_dispensa_mese,
+    sincronizza_e_pulisci_dispensa_mese,
     cerca_ingrediente_in_cache_per_nome,
     crea_box_quantita,
     crea_selettore_unita,
@@ -879,6 +880,7 @@ def crea_calendario_menu(page: ft.Page):
 
             try:
                 assicura_cache_anagrafica(forza_ricarica=False)
+                sincronizza_e_pulisci_dispensa_mese(data)
                 data_rif = data.replace(day=1)
                 inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
                 fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
