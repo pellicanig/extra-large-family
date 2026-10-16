@@ -652,6 +652,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END)
 
         colonna_contenuto = [
+            ft.Container(height=8),
             txt_titolo,
             ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             riga_date_orari,
