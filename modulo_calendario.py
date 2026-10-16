@@ -33,7 +33,9 @@ def crea_calendario(page: ft.Page):
     lista_famiglia = []
     
     def ricarica_dati_base():
-        if supabase:
+        if not supabase:
+            return
+        for tentativo in range(3):
             try:
                 res_cat = supabase.table('categorie').select('*').order('nome').execute()
                 lista_categorie.clear()
@@ -42,8 +44,13 @@ def crea_calendario(page: ft.Page):
                 res_fam = supabase.table('famiglia').select('*').order('nome').execute()
                 lista_famiglia.clear()
                 lista_famiglia.extend(res_fam.data if res_fam.data else [])
+                break
             except Exception as e:
-                print("Errore caricamento liste filtri:", e)
+                if tentativo == 2:
+                    print("Errore caricamento liste filtri:", e)
+                else:
+                    import time
+                    time.sleep(0.3)
 
     ricarica_dati_base()
 
