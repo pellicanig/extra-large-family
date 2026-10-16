@@ -630,7 +630,7 @@ def crea_calendario_menu(page: ft.Page):
                 nome_v = ing_v.get("nome") or "Voce"
                 q_v = vv.get("quantita") or 0
                 u_clean = str(vv.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
-                q_str = f" ({formatta_numero(q_v)} {u_clean})" if q_v else ""
+                q_str = ""
 
                 def del_varie(e, id_v=vv["id"]):
                     if d_str_g in ram_menu["dizionario_menu"]:
