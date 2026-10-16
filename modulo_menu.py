@@ -543,7 +543,7 @@ def crea_calendario_menu(page: ft.Page):
         casella_pranzo = ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text("☀️ PRANZO", size=9, weight=ft.FontWeight.BOLD, color="#2E7D32", expand=True),
+                    ft.Text("☀️ PRANZO", size=8, weight=ft.FontWeight.BOLD, color="#2E7D32", expand=True),
                     ft.Container(
                         content=ft.Text("+ Piatto", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
                         bgcolor="#4CAF50", padding=ft.Padding(6, 2, 6, 2), border_radius=8,
