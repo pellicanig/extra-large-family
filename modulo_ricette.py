@@ -1520,14 +1520,15 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     tag_det = "|DET" if is_d else ""
                     tag_disp = "|DISPENSA" if nuovo_stato else ""
                     nuova_unita_db = f"{u_def}{tag_det}{tag_disp}"
+                    nome_gen_target = generalizza_nome_dispensa(info_ref.get("nome", ""))
 
                     stato_popup["modificato"] = True
                     if riga_ref.get("ingredienti"):
                         riga_ref["ingredienti"]["unita_default"] = nuova_unita_db
 
                     for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
-                        if ig.get("nome", "").strip().lower() == info_ref.get("nome", "").strip().lower():
-                            ig["unita_default"] = u_def
+                        n_ig_low = ig.get("nome", "").strip().lower()
+                        if n_ig_low in [info_ref.get("nome", "").strip().lower(), nome_gen_target.lower()]:
                             ig["is_dispensa_base"] = nuovo_stato
 
                     def w_toggle():
@@ -1539,8 +1540,14 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                             if nuovo_stato:
                                 assicura_ingrediente_in_dispensa_mese(ing_id_reale)
                             else:
+                                ids_da_togliere = [ing_id_reale]
+                                ing_gen_c = cerca_ingrediente_in_cache_per_nome(nome_gen_target)
+                                if ing_gen_c and is_valid_uuid(ing_gen_c.get("id")):
+                                    u_g = ing_gen_c.get("unita_default", "pz")
+                                    supabase.table("ingredienti").update({"unita_default": u_g}).eq("id", ing_gen_c["id"]).execute()
+                                    ids_da_togliere.append(ing_gen_c["id"])
                                 try:
-                                    supabase.table("menu_giornalieri").delete().eq("categoria", "Dispensa").eq("id_ingrediente", ing_id_reale).execute()
+                                    supabase.table("menu_giornalieri").delete().eq("categoria", "Dispensa").in_("id_ingrediente", ids_da_togliere).execute()
                                 except Exception:
                                     pass
                             if on_close_refresh:
