@@ -9,8 +9,7 @@ from modulo_ricette import (
     chiudi_dialog_sicuro,
     formatta_numero,
     bordo_campo_uniforme,
-    aggiorna_flag_preso_db,
-    normalizza_ingrediente_record
+    aggiorna_flag_preso_db
 )
 
 
@@ -162,60 +161,45 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     for ri in (res_ri.data or []):
                         mappa_ri.setdefault(ri["id_ricetta"], []).append(ri)
 
-                # Individua tutti i prodotti segnati come "Presente" (preso=True) in Dispensa o Detersivi del mese
-                presenti_in_dispensa = set()
-                for m in righe_valide:
-                    if m.get("categoria") in ["Dispensa", "Detersivi"] and bool(m.get("preso")):
-                        ing_m = m.get("ingredienti") or {}
-                        if isinstance(ing_m, dict) and ing_m.get("nome"):
-                            presenti_in_dispensa.add(ing_m["nome"].strip().lower())
-
                 somme = {}
                 spuntati_sessione.clear()
 
-                def aggiungi_alla_spesa(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_rif="", is_preso_riga=False):
+                def aggiungi_alla_spesa(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_riga="", preso_riga=False):
                     if not ing_obj:
                         return
                     if isinstance(ing_obj, str):
-                        info_norm = normalizza_ingrediente_record({"nome": ing_obj, "unita_default": unita_ing or "g"})
+                        nome_ing = ing_obj
+                        u_def_db = ""
                     else:
-                        info_norm = normalizza_ingrediente_record(ing_obj)
+                        nome_ing = ing_obj.get("nome", "Prodotto")
+                        u_def_db = str(ing_obj.get("unita_default") or "")
 
-                    nome_ing = info_norm.get("nome", "Prodotto")
+                    is_base_dinamico = ("|DISPENSA" in u_def_db) or (cat_riga == "Dispensa")
                     n_low = nome_ing.strip().lower()
-                    is_base_dinamico = bool(info_norm.get("is_dispensa_base")) or (cat_rif == "Dispensa" and float(qta_ing or 0) == 0)
 
                     if is_base_dinamico:
                         chiave = (n_low, "promemoria")
                         somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(),
-                            "qta": 0.0,
-                            "unita": "q.b.",
-                            "ids_menu_diretti": [],
-                            "preso_db": False,
-                            "etichetta_extra": "[Dispensa]"
+                            "nome": nome_ing.capitalize(), "qta": 1.0, "unita": "pz",
+                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]"
                         })
-                        if id_menu_rif and id_menu_rif not in somme[chiave]["ids_menu_diretti"]:
+                        if id_menu_rif:
                             somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
                     else:
                         q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
                         chiave = (n_low, u_base)
-                        etichetta = f"[{cat_rif}]" if cat_rif in ["Dispensa", "Detersivi"] else ""
                         somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(),
-                            "qta": 0.0,
-                            "unita": u_base,
-                            "ids_menu_diretti": [],
-                            "preso_db": False,
-                            "etichetta_extra": etichetta
+                            "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
+                            "ids_menu_diretti": [], "preso_db": False,
+                            "etichetta_extra": "[Detersivi]" if cat_riga == "Detersivi" else ""
                         })
                         somme[chiave]["qta"] += q_norm
-                        if etichetta and not somme[chiave]["etichetta_extra"]:
-                            somme[chiave]["etichetta_extra"] = etichetta
-                        if id_menu_rif and id_menu_rif not in somme[chiave]["ids_menu_diretti"]:
+                        if id_menu_rif:
                             somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
+                        if cat_riga == "Detersivi":
+                            somme[chiave]["etichetta_extra"] = "[Detersivi]"
 
-                    if is_preso_riga or (n_low in presenti_in_dispensa):
+                    if preso_riga:
                         somme[chiave]["preso_db"] = True
 
                 for m in righe_valide:
@@ -310,4 +294,3 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
         page.update()
 
     avvia_calcolo_spesa()
-# === FINE FILE modulo_spesa.py ===
