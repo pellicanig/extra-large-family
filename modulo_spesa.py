@@ -196,17 +196,17 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     if v["preso_db"]:
                         spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
 
-        def chiave_ordinamento(item):
-            ext = item.get("etichetta_extra", "")
-            if "[Dispensa]" in ext:
-                prio = 1
-            elif "[Detersivi]" in ext:
-                prio = 2
-            else:
-                prio = 0  # Ingredienti di cucina / menu in cima
-            return (prio, item["nome"].lower())
+                def chiave_ordinamento(item):
+                    ext = item.get("etichetta_extra", "")
+                    if "[Dispensa]" in ext:
+                        prio = 1
+                    elif "[Detersivi]" in ext:
+                        prio = 2
+                    else:
+                        prio = 0
+                    return (prio, item["nome"].lower())
 
-        dati_aggregati = sorted(list(somme.values()), key=chiave_ordinamento)
+                dati_aggregati = sorted(list(somme.values()), key=chiave_ordinamento)
                 spinner_spesa.visible = False
                 disegna_lista_spesa()
             except Exception as ex:
