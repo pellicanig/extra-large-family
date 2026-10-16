@@ -997,12 +997,18 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
         return
 
     assicura_cache_anagrafica(forza_ricarica=False)
-    spinner_det = ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=ft.Colors.WHITE)
-    lbl_det_status = ft.Text("Caricamento...", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
-    banner_det = ft.Container(content=ft.Row([spinner_det, lbl_det_status], spacing=8), bgcolor=ft.Colors.ORANGE_800, padding=6, border_radius=6, visible=True)
-
+    cache_ing_ric = CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {}).get(str(id_ricetta_init), [])
     ric_init_cache = next((r for r in (CACHE_ANAGRAFICA.get("ricette") or []) if str(r.get("id")) == str(id_ricetta_init)), None)
     meta_init = estrai_meta_ricetta(ric_init_cache)
+    gia_compilata_init = bool(cache_ing_ric) or ricetta_ha_ingredienti(id_ricetta_init) or bool(meta_init["url_fonte"])
+
+    spinner_det = ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=ft.Colors.WHITE)
+    lbl_det_status = ft.Text("Lettura ingredienti...", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
+    banner_det = ft.Container(
+        content=ft.Row([spinner_det, lbl_det_status], spacing=8),
+        bgcolor=ft.Colors.ORANGE_800, padding=6, border_radius=6,
+        visible=not bool(cache_ing_ric)
+    )
 
     stato_popup = {
         "id_ricetta": str(id_ricetta_init or ""),
@@ -1013,11 +1019,11 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
         "porzioni": meta_init["porzioni"] or 8,
         "url_fonte": meta_init["url_fonte"] or "",
         "foto_url": meta_init["foto_url"] or "",
-        "righe_ri": [],
+        "righe_ri": list(cache_ing_ric),
         "persone_web": 8,
         "risultati_web": [],
         "idx_web": 0,
-        "ricerca_fatta": False,
+        "ricerca_fatta": gia_compilata_init,
         "ricerca_in_corso": False,
         "modificato": False
     }
@@ -1396,6 +1402,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             ft.Container(
                 content=ft.Column([
                     ft.Text("🔍 Ricerca Ricette Web & ✨ Gemini AI", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900),
+                    ft.Container(height=4),
                     tf_q_web,
                     ft.Row([
                         box_p_web,
@@ -1416,7 +1423,6 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             pass
 
     def ricarica_ricetta_da_db():
-        # Mostra SUBITO la maschera all'utente (0 ms di attesa!)
         disegna_popup_da_ram()
 
         def worker_init():
@@ -1434,12 +1440,17 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
                 res_ri = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome, unita_default)").eq("id_ricetta", id_ric).execute()
                 stato_popup["righe_ri"] = res_ri.data if res_ri.data else []
-                ha_ing = len(stato_popup["righe_ri"]) > 0
+                CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(id_ric)] = list(stato_popup["righe_ri"])
                 CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ric)] = len(stato_popup["righe_ri"])
 
-                if not ha_ing and not stato_popup["ricerca_fatta"]:
+                ha_ing = len(stato_popup["righe_ri"]) > 0
+                ha_link = bool((stato_popup.get("url_fonte") or "").strip())
+
+                # ⚡ Cerca in automatico SOLO se la ricetta è completamente nuova (niente ingredienti e niente link) ⚡
+                if (not ha_ing) and (not ha_link) and (not stato_popup["ricerca_fatta"]):
                     stato_popup["ricerca_fatta"] = True
                     stato_popup["ricerca_in_corso"] = True
+                    banner_det.visible = True
                     lbl_det_status.value = f"🌐 Ricerca automatica '{stato_popup['query_web']}'..."
                     disegna_popup_da_ram()
 
