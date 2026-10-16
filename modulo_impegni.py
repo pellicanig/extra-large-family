@@ -26,6 +26,14 @@ PALETTE_COLORI = [
     {"nome": "⚪", "hex": "#9E9E9E"},
 ]
 
+def formatta_titolo_intelligente(testo: str) -> str:
+    t = (testo or "").strip()
+    if not t:
+        return ""
+    if t.isupper() or t.islower():
+        return t.capitalize()
+    return t[0].upper() + t[1:]
+
 def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_callback=None, impegno_esistente=None):
     try:
         if not supabase:
@@ -362,7 +370,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_inizio.error_text = None
             txt_fine.error_text = None
 
-            titolo_pulito = txt_titolo.value.replace("\u200b", "").strip() if txt_titolo.value else ""
+            titolo_grezzo = txt_titolo.value.replace("\u200b", "").strip() if txt_titolo.value else ""
+            titolo_pulito = formatta_titolo_intelligente(titolo_grezzo)
             
             if not titolo_pulito or not dd_categoria.value:
                 txt_errore_form.value = "⚠️ Attenzione: Titolo e Categoria sono obbligatori!"
