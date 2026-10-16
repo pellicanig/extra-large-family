@@ -4,12 +4,15 @@ import threading
 from datetime import datetime, timedelta
 from modulo_ricette import (
     supabase,
+    MESI,
     is_valid_uuid,
     apri_dialog_sicuro,
     chiudi_dialog_sicuro,
     formatta_numero,
     bordo_campo_uniforme,
-    aggiorna_flag_preso_db
+    aggiorna_flag_preso_db,
+    generalizza_nome_dispensa,
+    sincronizza_e_pulisci_dispensa_mese
 )
 
 
@@ -21,21 +24,34 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
         return
 
     oggi_dt = datetime.now()
+    stesso_mese_oggi = (data_riferimento.year == oggi_dt.year and data_riferimento.month == oggi_dt.month)
+    nome_mese_rif = MESI[data_riferimento.month]
     spuntati_sessione = set()
-    stato_filtro = {"scelta": "Da oggi a fine mese"}
+
+    if stesso_mese_oggi:
+        opzioni_filtro = [
+            "Da oggi a fine mese",
+            "Prossimi 7 giorni",
+            "Solo giorno sel.",
+            f"Tutto {nome_mese_rif}"
+        ]
+        scelta_default = "Da oggi a fine mese"
+    else:
+        opzioni_filtro = [
+            f"Tutto {nome_mese_rif}",
+            "Dal giorno sel. a fine mese",
+            "7 giorni dal giorno sel.",
+            "Solo giorno sel."
+        ]
+        scelta_default = f"Tutto {nome_mese_rif}"
+
+    stato_filtro = {"scelta": scelta_default}
     modifiche_spunte = [False]
 
     spinner_spesa = ft.ProgressRing(width=18, height=18, stroke_width=2.5, color=ft.Colors.GREEN_800, visible=True)
     colonna_lista = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
     txt_periodo_date = ft.Text("", size=11, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD)
     txt_riepilogo = ft.Text("", size=11, color=ft.Colors.GREY_700, weight=ft.FontWeight.BOLD)
-
-    opzioni_filtro = [
-        "Da oggi a fine mese",
-        "Prossimi 7 giorni",
-        "Solo giorno sel.",
-        "Tutto il mese"
-    ]
     riga_bottoni_filtro = ft.Row(wrap=True, spacing=4, run_spacing=4)
 
     def cambia_filtro_spesa(nuova_scelta):
@@ -122,24 +138,35 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
         def worker():
             nonlocal dati_aggregati
             scelta = stato_filtro["scelta"]
+            ultimo_gg_rif = calendar.monthrange(data_riferimento.year, data_riferimento.month)[1]
+
             if scelta == "Da oggi a fine mese":
                 dt_i = oggi_dt
                 dt_f = oggi_dt.replace(day=calendar.monthrange(oggi_dt.year, oggi_dt.month)[1])
+            elif scelta == "Dal giorno sel. a fine mese":
+                dt_i = data_riferimento
+                dt_f = data_riferimento.replace(day=ultimo_gg_rif)
             elif scelta == "Prossimi 7 giorni":
                 dt_i = oggi_dt
                 dt_f = oggi_dt + timedelta(days=6)
+            elif scelta == "7 giorni dal giorno sel.":
+                dt_i = data_riferimento
+                dt_f = data_riferimento + timedelta(days=6)
             elif scelta == "Solo giorno sel.":
                 dt_i = data_riferimento
                 dt_f = data_riferimento
             else:
                 dt_i = data_riferimento.replace(day=1)
-                dt_f = data_riferimento.replace(day=calendar.monthrange(data_riferimento.year, data_riferimento.month)[1])
+                dt_f = data_riferimento.replace(day=ultimo_gg_rif)
 
             inizio_str = dt_i.strftime("%Y-%m-%d")
             fine_str = dt_f.strftime("%Y-%m-%d")
             primo_mese_str = data_riferimento.replace(day=1).strftime("%Y-%m-%d")
-            fine_mese_str = data_riferimento.replace(day=calendar.monthrange(data_riferimento.year, data_riferimento.month)[1]).strftime("%Y-%m-%d")
-            txt_periodo_date.value = f"📅 Intervallo: {dt_i.strftime('%d/%m/%Y')} → {dt_f.strftime('%d/%m/%Y')}"
+            fine_mese_str = data_riferimento.replace(day=ultimo_gg_rif).strftime("%Y-%m-%d")
+            txt_periodo_date.value = f"📅 Intervallo ({nome_mese_rif}): {dt_i.strftime('%d/%m/%Y')} → {dt_f.strftime('%d/%m/%Y')}"
+
+            try:
+                sincronizza_e_pulisci_dispensa_mese(data_riferimento)
 
             try:
                 res_m = supabase.table("menu_giornalieri").select(
@@ -178,9 +205,10 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     n_low = nome_ing.strip().lower()
 
                     if is_base_dinamico:
-                        chiave = (n_low, "promemoria")
+                        nome_disp = generalizza_nome_dispensa(nome_ing)
+                        chiave = (nome_disp.lower(), "promemoria")
                         somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(), "qta": 1.0, "unita": "pz",
+                            "nome": nome_disp, "qta": 1.0, "unita": "pz",
                             "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]"
                         })
                         if id_menu_rif:
