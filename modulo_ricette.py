@@ -829,11 +829,13 @@ def genera_fallback_ricetta(query_ricerca: str, nome_ricetta_originale: str = ""
     }
 
 
+_MODELLI_NON_DISPONIBILI = set()
+
 def ottieni_lista_modelli_gemini(api_key: str):
-    if MODELLO_GEMINI_RILEVATO[0]:
+    if MODELLO_GEMINI_RILEVATO[0] and MODELLO_GEMINI_RILEVATO[0] not in _MODELLI_NON_DISPONIBILI:
         return [MODELLO_GEMINI_RILEVATO[0]]
-    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking")
-    preferiti = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash"]
+    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking", "pro", "latest", "exp", "preview")
+    preferiti = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
     trovati = []
     try:
         url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(api_key)}"
@@ -846,19 +848,18 @@ def ottieni_lista_modelli_gemini(api_key: str):
             if "generateContent" in m.get("supportedGenerationMethods", [])
             and "gemini" in m.get("name", "").lower()
             and not any(s in m.get("name", "").lower() for s in scarti)
+            and m.get("name", "").replace("models/", "") not in _MODELLI_NON_DISPONIBILI
         ]
         for p in preferiti:
             if p in disponibili and p not in trovati:
                 trovati.append(p)
         for d in disponibili:
-            if d not in trovati and "preview" not in d and "exp" not in d:
-                trovati.append(d)
-        for d in disponibili:
             if d not in trovati:
                 trovati.append(d)
-    except Exception as ex:
-        print("Info lista modelli Gemini:", ex)
-    return trovati if trovati else ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    except Exception:
+        pass
+    fallback = [m for m in preferiti if m not in _MODELLI_NON_DISPONIBILI]
+    return trovati if trovati else (fallback or ["gemini-2.0-flash"])
 
 
 def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str = ""):
@@ -911,9 +912,10 @@ Rispondi SOLO con un JSON valido:
                     "ingredienti_base": ings_validi
                 }
         except Exception as ex:
+            if "404" in str(ex) or "400" in str(ex):
+                _MODELLI_NON_DISPONIBILI.add(modello_target)
             if MODELLO_GEMINI_RILEVATO[0] == modello_target:
                 MODELLO_GEMINI_RILEVATO[0] = None
-            print(f"Tentativo modello {modello_target} non riuscito ({ex}), provo il successivo...")
             continue
 
     return genera_fallback_ricetta(query_ricerca, nome_ricetta_originale)
@@ -1141,25 +1143,72 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
 # ==========================================================
 # POPUP DI GESTIONE E DETTAGLIO RICETTA
 # ==========================================================
-def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredienti: list, on_done_callback):
-    txt_nome = ft.TextField(label="Nome ingrediente", value=ing_obj.get("nome", ""), dense=True, text_size=13)
+def apri_popup_rinomina_ingrediente(page: ft.Page, ing_obj: dict, lista_ingredienti: list, on_done_callback, riga_ri_ref: dict = None):
+    txt_nome = ft.TextField(label="Nome ingrediente", value=ing_obj.get("nome", ""), dense=True, text_size=13, autofocus=True)
     sel_unita = crea_selettore_unita(page, valore_iniziale=ing_obj.get("unita_default", "g"), width=90, height=36, text_size=12)
     dlg_mod = None
 
-    def salva_mod(e):
+    def salva_mod(e=None):
         n_nuovo = (txt_nome.value or "").strip().capitalize()
         if not n_nuovo:
             return
+        u_scelta = sel_unita.get_value()
+        tag_det = "|DET" if ing_obj.get("is_detersivo") else ""
+        tag_disp = "|DISPENSA" if ing_obj.get("is_dispensa_base") else ""
+        nuova_u_db = f"{u_scelta}{tag_det}{tag_disp}"
+
+        # 1. AGGIORNAMENTO ISTANTANEO IN RAM (0ms: visibile subito nel popup aperto!)
+        ing_obj["nome"] = n_nuovo
+        ing_obj["unita_default"] = u_scelta
+        if riga_ri_ref is not None:
+            if not isinstance(riga_ri_ref.get("ingredienti"), dict):
+                riga_ri_ref["ingredienti"] = {}
+            riga_ri_ref["ingredienti"]["nome"] = n_nuovo
+            riga_ri_ref["ingredienti"]["unita_default"] = nuova_u_db
+            riga_ri_ref["unita_misura"] = u_scelta
+
+        for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
+            if str(ig.get("id")) == str(ing_obj.get("id")):
+                ig["nome"] = n_nuovo
+                ig["unita_default"] = u_scelta
+
         chiudi_dialog_sicuro(page, dlg_mod)
+        if on_done_callback:
+            on_done_callback()
+
+        # 2. SALVATAGGIO SU DATABASE IN BACKGROUND (gestisce anche unione con ingrediente esistente o ricetta appena importata)
         def w():
-            tag_det = "|DET" if ing_obj.get("is_detersivo") else ""
-            tag_disp = "|DISPENSA" if ing_obj.get("is_dispensa_base") else ""
-            nuova_u_db = f"{sel_unita.get_value()}{tag_det}{tag_disp}"
-            supabase.table("ingredienti").update({"nome": n_nuovo, "unita_default": nuova_u_db}).eq("id", ing_obj["id"]).execute()
-            assicura_cache_anagrafica(forza_ricarica=True)
-            if on_done_callback:
-                on_done_callback()
+            try:
+                id_orig = ing_obj.get("id")
+                esistente_altro = next(
+                    (i for i in (CACHE_ANAGRAFICA.get("ingredienti") or [])
+                     if i.get("nome", "").strip().lower() == n_nuovo.lower() and str(i.get("id")) != str(id_orig)),
+                    None
+                )
+                if esistente_altro and is_valid_uuid(esistente_altro.get("id")):
+                    id_target = esistente_altro["id"]
+                    if riga_ri_ref and is_valid_uuid(riga_ri_ref.get("id")):
+                        supabase.table("ricette_ingredienti").update({"id_ingrediente": id_target, "unita_misura": u_scelta}).eq("id", riga_ri_ref["id"]).execute()
+                        riga_ri_ref["id_ingrediente"] = id_target
+                        riga_ri_ref["ingredienti"]["id"] = id_target
+                elif is_valid_uuid(id_orig):
+                    supabase.table("ingredienti").update({"nome": n_nuovo, "unita_default": nuova_u_db}).eq("id", id_orig).execute()
+                else:
+                    id_creato = ottieni_o_crea_ing_sicuro(n_nuovo, u_scelta, bool(ing_obj.get("is_detersivo")), ignora_cache=True)
+                    if id_creato and riga_ri_ref and is_valid_uuid(riga_ri_ref.get("id")):
+                        supabase.table("ricette_ingredienti").update({"id_ingrediente": id_creato, "unita_misura": u_scelta}).eq("id", riga_ri_ref["id"]).execute()
+                        riga_ri_ref["id_ingrediente"] = id_creato
+                        riga_ri_ref["ingredienti"]["id"] = id_creato
+
+                assicura_cache_anagrafica(forza_ricarica=True)
+                if on_done_callback:
+                    on_done_callback()
+            except Exception as ex:
+                print("Errore rinomina ingrediente:", ex)
+
         threading.Thread(target=w, daemon=True).start()
+
+    txt_nome.on_submit = salva_mod
 
     dlg_mod = ft.AlertDialog(
         title=ft.Text("✏️ Modifica Ingrediente", size=15, weight=ft.FontWeight.BOLD),
@@ -1456,7 +1505,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
 
-                is_disp_attivo = bool(info_i.get("is_dispensa_base", False))
+                nome_gen_i = generalizza_nome_dispensa(info_i.get("nome", ""))
+                ing_gen_cache = cerca_ingrediente_in_cache_per_nome(nome_gen_i)
+                is_disp_attivo = bool(info_i.get("is_dispensa_base", False)) or bool(ing_gen_cache and ing_gen_cache.get("is_dispensa_base", False))
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
                     value=is_disp_attivo
@@ -1521,7 +1572,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                         content=ft.Column([
                             ft.Row([
                                 ft.Text(f"▪ {info_i['nome']}", size=12, weight=ft.FontWeight.BOLD, expand=True),
-                                ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14, on_click=lambda e, it=info_i: apri_popup_rinomina_ingrediente(page, it, CACHE_ANAGRAFICA.get("ingredienti") or [], ricarica_ricetta_da_db)),
+                                ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=14, on_click=lambda e, it=info_i, r_ref=ri: apri_popup_rinomina_ingrediente(page, it, CACHE_ANAGRAFICA.get("ingredienti") or [], lambda: (stato_popup.update({"modificato": True}), disegna_popup_da_ram()), riga_ri_ref=r_ref)),
                                 ft.IconButton(icon=ft.Icons.CLOSE, icon_color=ft.Colors.RED_700, icon_size=15, on_click=elim_i)
                             ], spacing=2),
                             ft.Row([
@@ -1593,6 +1644,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                         if res_agg.data:
                             stato_popup["righe_ri"] = res_agg.data
                             CACHE_ANAGRAFICA.setdefault("dettaglio_ing_ricette", {})[str(vero_id)] = list(res_agg.data)
+                            disegna_popup_da_ram()
                     except Exception:
                         pass
                     if on_close_refresh:
