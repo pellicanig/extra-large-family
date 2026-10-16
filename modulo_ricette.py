@@ -1621,18 +1621,26 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
     lista_ingredienti = CACHE_ANAGRAFICA.get("ingredienti") or []
     lista_ricette = CACHE_ANAGRAFICA.get("ricette") or []
     is_categoria_detersivi = (categoria == "Detersivi")
+    is_categoria_dispensa = (categoria == "Dispensa")
+    nascondi_qta = is_categoria_dispensa or is_categoria_detersivi
+
     consente_ricetta = (categoria == "Varie")
 
     stato_tipo = {"modo": "Ingrediente"}
 
+    hint_testo = (
+        "Es. Detersivo piatti, Candeggina, Scottex..." if is_categoria_detersivi 
+        else ("Scrivi il prodotto..." if is_categoria_dispensa else "Es. Pane bianco, Frutta oppure Muffin di carote...")
+    )
+
     txt_voce = ft.TextField(
         label=f"Aggiungi a {titolo_box}...",
-        hint_text="Es. Pane bianco, Frutta oppure Muffin di carote...",
+        hint_text=hint_testo,
         dense=True, text_size=12, autofocus=True
     )
     box_qta = crea_box_quantita(valore_iniziale="1", height=34, text_size=12, mostra_prefisso=True, expand=True)
     sel_uni = crea_selettore_unita(page, valore_iniziale="pz", width=74, height=34, text_size=12)
-    riga_qta_uni = ft.Row([box_qta, sel_uni], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, visible=True)
+    riga_qta_uni = ft.Row([box_qta, sel_uni], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, visible=not nascondi_qta)
     riga_sugg = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
     salvataggio_in_corso = [False]
     dlg_v = None
@@ -1714,8 +1722,8 @@ def apri_popup_aggiungi_voce_diretta(page: ft.Page, data_str: str, categoria: st
         if not nome_v:
             return
         salvataggio_in_corso[0] = True
-        q_val = parse_qta(box_qta.textfield.value)
-        u_val = sel_uni.get_value()
+        q_val = 0.0 if (is_categoria_dispensa or is_categoria_detersivi) else parse_qta(box_qta.textfield.value)
+        u_val = "pz" if (is_categoria_dispensa or is_categoria_detersivi) else sel_uni.get_value()
         modo_scelto = stato_tipo["modo"]
 
         chiudi_dialog_sicuro(page, dlg_v)
