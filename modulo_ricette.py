@@ -1035,7 +1035,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     return risultati_trovati
 
 
-def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuove_persone: int, meta_attuale: dict):
+def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuove_persone: int, meta_attuale: dict, stato_popup=None, disegna_callback=None):
     if not is_valid_uuid(id_ricetta):
         return
     vecchie_p, nuove_p = max(1, int(vecchie_persone or 8)), max(1, int(nuove_persone or 8))
@@ -1044,14 +1044,12 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
     res_ri = supabase.table("ricette_ingredienti").select("*, ingredienti(id, nome)").eq("id_ricetta", id_ricetta).execute()
     data_oggi_str = datetime.now().strftime("%Y-%m-%d")
     
+    righe_rimaste = []
     for r in (res_ri.data or []):
         ing_obj = r.get("ingredienti") or {}
         nome_i = (ing_obj.get("nome") or "").strip()
-        nome_low = nome_i.lower()
         
-        # Se l'ingrediente rientra tra quelli di base della dispensa, rimuovilo dalla ricetta e mettilo in dispensa
-        is_base_dispensa = any(base in nome_low for base in INGREDIENTI_DISPENSA_BASE)
-        if is_base_dispensa:
+        if e_ingrediente_dispensa(nome_i):
             supabase.table("ricette_ingredienti").delete().eq("id", r["id"]).execute()
             try:
                 esistente = supabase.table("menu_giornalieri").select("id").eq("categoria", "Dispensa").eq("id_ingrediente", ing_obj.get("id")).execute()
@@ -1072,8 +1070,16 @@ def ricalibra_ingredienti_ricetta_db(id_ricetta: str, vecchie_persone: int, nuov
             if q > 0 and r.get("unita_misura") != "q.b.":
                 nq = round(q * fattore, 2)
                 supabase.table("ricette_ingredienti").update({"quantita": nq}).eq("id", r["id"]).execute()
+                r["quantita"] = nq
+            righe_rimaste.append(r)
                 
     salva_meta_ricetta_db(id_ricetta, meta_attuale.get("portata", "Primo"), nuove_p, meta_attuale.get("url_fonte", ""), meta_attuale.get("foto_url", ""))
+    
+    # Sincronizzazione istantanea della RAM e dell'interfaccia
+    if stato_popup is not None and disegna_callback is not None:
+        stato_popup["righe_ri"] = righe_rimaste
+        CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(id_ricetta)] = len(righe_rimaste)
+        disegna_callback(msg_extra=f"Dosi ricalcolate per {nuove_p} persone (ingredienti di base spostati in Dispensa)!")
 
 
 # ==========================================================
