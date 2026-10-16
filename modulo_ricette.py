@@ -391,13 +391,6 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
         return 0
     righe_ri_bulk = []
     ids_ing_usati = set()
-    
-    # Lista dei beni di consumo di base da specchiare automaticamente in Dispensa
-    BASE_CONSUMABILE = {
-        "sale", "pepe", "zucchero", "olio", "olio d'oliva", "olio extravergine d'oliva",
-        "aceto", "aglio", "cipolla", "parmigiano", "grana", "pangrattato", "burro", "farina"
-    }
-    data_oggi_str = datetime.now().strftime("%Y-%m-%d")
 
     for it in lista_items:
         nome_i = (it.get("nome") or "").strip()
@@ -414,23 +407,6 @@ def salva_lista_ingredienti_in_blocco(id_ricetta: str, lista_items: list):
                 "quantita": float(it.get("quantita") or 0),
                 "unita_misura": unita_i
             })
-            
-        # Se è un bene di base, assicurati che esista nella Dispensa del mese
-        if any(b in nome_i.lower() for b in BASE_CONSUMABILE) and id_ing and supabase:
-            try:
-                esistente = supabase.table("menu_giornalieri").select("id").eq("categoria", "Dispensa").eq("id_ingrediente", id_ing).execute()
-                if not esistente.data:
-                    supabase.table("menu_giornalieri").insert({
-                        "data_menu": data_oggi_str,
-                        "categoria": "Dispensa",
-                        "subcategoria": None,
-                        "id_ingrediente": id_ing,
-                        "quantita": 0,
-                        "unita_misura": "pz",
-                        "preso": False
-                    }).execute()
-            except Exception:
-                pass
 
     supabase.table("ricette_ingredienti").delete().eq("id_ricetta", id_ricetta).execute()
     if righe_ri_bulk:
@@ -1161,11 +1137,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             for ri in righe_ri:
                 info_i = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"})
                 
-                # Controlli locali per la riga
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
 
-                # Checkbox dinamico per la Dispensa (Base)
                 is_disp_attivo = info_i.get("is_dispensa_base", False)
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
@@ -1207,7 +1181,6 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     if is_valid_uuid(riga_ref.get("id")):
                         threading.Thread(target=lambda: (supabase.table("ricette_ingredienti").delete().eq("id", riga_ref["id"]).execute(), on_close_refresh() if on_close_refresh else None), daemon=True).start()
 
-                # UNICA SCHEDA INTEGRATA: Nome, Azioni, Quantità, Salva e Checkbox Dispensa nello stesso blocco
                 col_corpo.controls.append(
                     ft.Container(
                         content=ft.Column([
