@@ -1161,11 +1161,11 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             for ri in righe_ri:
                 info_i = normalizza_ingrediente_record(ri.get("ingredienti") or {"id": ri.get("id_ingrediente", ""), "nome": "Ingrediente", "unita_default": "g"})
                 
-                # 1. Controlli locali per la riga
+                # Controlli locali per la riga
                 bq_i = crea_box_quantita(formatta_numero(ri.get("quantita") or 0), width=84, height=32, text_size=11, mostra_prefisso=True)
                 su_i = crea_selettore_unita(page, ri.get("unita_misura") or "g", width=70, height=32, text_size=11)
 
-                # 2. Checkbox dinamico per la Dispensa (Base) - Pulito, senza argomenti non supportati
+                # Checkbox dinamico per la Dispensa (Base)
                 is_disp_attivo = info_i.get("is_dispensa_base", False)
                 chk_dispensa = ft.Checkbox(
                     label="📌 Dispensa (Base)",
@@ -1207,7 +1207,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     if is_valid_uuid(riga_ref.get("id")):
                         threading.Thread(target=lambda: (supabase.table("ricette_ingredienti").delete().eq("id", riga_ref["id"]).execute(), on_close_refresh() if on_close_refresh else None), daemon=True).start()
 
-                # 3. Assemblaggio della card con nome, pulsanti, quantità, unità, salva e checkbox dispensa
+                # UNICA SCHEDA INTEGRATA: Nome, Azioni, Quantità, Salva e Checkbox Dispensa nello stesso blocco
                 col_corpo.controls.append(
                     ft.Container(
                         content=ft.Column([
@@ -1221,7 +1221,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                                 ft.Container(content=ft.Text("💾 Salva", size=10, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD), bgcolor=ft.Colors.GREEN_700, height=32, padding=ft.Padding(8, 0, 8, 0), alignment=ft.Alignment(0, 0), border_radius=5, on_click=salva_q)
                             ], spacing=4),
                             chk_dispensa
-                        ], spacing=4),
+                        ], spacing=3),
                         bgcolor="#F5F7FA", padding=6, border_radius=6, border=bordo_campo_uniforme("#E0E0E0")
                     )
                 )
