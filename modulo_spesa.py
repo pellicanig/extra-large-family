@@ -330,6 +330,16 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
             }
         }
 
+        def sposta_in_dispensa_rapido(e, nome_ing):
+            log_render(f"[UTENTE] Spostamento rapido in Dispensa dalla Spesa per '{nome_ing}'")
+            imposta_stato_dispensa_ingrediente_db(nome_ing, "", True, data_riferimento)
+            avvia_calcolo_spesa()
+
+        def togli_da_dispensa_rapido(e, nome_ing):
+            log_render(f"[UTENTE] Rimozione rapida da Dispensa dalla Spesa per '{nome_ing}'")
+            imposta_stato_dispensa_ingrediente_db(nome_ing, "", False, data_riferimento)
+            avvia_calcolo_spesa()
+
         sezione_corrente = None
         for k_id, item in da_comprare:
             ext = item.get("etichetta_extra", "")
@@ -344,11 +354,30 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     )
                 )
 
-            # ELENCO PURO: Se è Dispensa o Detersivi, mettiamo SOLO la checkbox e il nome del prodotto (senza quantità)
             riga_ctrl = [
                 ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                 ft.Text(item["nome"], size=13, weight=ft.FontWeight.BOLD, expand=True)
             ]
+
+            # Se siamo nella sezione acquisti (senza etichetta extra), aggiungiamo il tasto rapido 📌 Dispensa
+            if ext == "":
+                riga_ctrl.append(
+                    ft.Container(
+                        content=ft.Text("📌 Dispensa", size=10, color="#00897B", weight=ft.FontWeight.BOLD),
+                        bgcolor="#E0F2F1", padding=ft.Padding(6, 3, 6, 3), border_radius=6,
+                        border=bordo_campo_uniforme("#00897B", 1),
+                        on_click=lambda e, ni=item["nome"]: sposta_in_dispensa_rapido(e, ni)
+                    )
+                )
+            elif ext == "[Dispensa]":
+                riga_ctrl.append(
+                    ft.Container(
+                        content=ft.Text("↩️ Togli", size=10, color=ft.Colors.RED_700, weight=ft.FontWeight.BOLD),
+                        bgcolor="#FFEBEE", padding=ft.Padding(6, 3, 6, 3), border_radius=6,
+                        border=bordo_campo_uniforme(ft.Colors.RED_300, 1),
+                        on_click=lambda e, ni=item["nome"]: togli_da_dispensa_rapido(e, ni)
+                    )
+                )
 
             # Mostra la quantità con il badge blu SOLO per gli ingredienti delle ricette
             if stile["mostra_qta"]:
