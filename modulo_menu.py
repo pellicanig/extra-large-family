@@ -1,3 +1,7 @@
+import flet as ft
+import calendar
+import threading
+from datetime import datetime, timedelta
 from modulo_ricette import (
     supabase,
     MESI,
@@ -129,7 +133,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                         cat_aperte.add(m["categoria"])
                     if m.get("subcategoria"):
                         sub_aperte.add((m["categoria"], m["subcategoria"]))
-        log_render(f"[MENU GIORNO] Caricate {len(menu_del_giorno)} voci e {len(ids_ricette_giorno)} ricette per {data_str}")
+            log_render(f"[MENU GIORNO] Caricate {len(menu_del_giorno)} voci e {len(ids_ricette_giorno)} ricette per {data_str}")
         except Exception as ex:
             log_render(f"[ERRORE] carica_dati_giorno_db ({data_str}): {ex}")
 
