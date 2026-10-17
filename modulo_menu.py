@@ -1,7 +1,3 @@
-import flet as ft
-import calendar
-import threading
-from datetime import datetime, timedelta
 from modulo_ricette import (
     supabase,
     MESI,
@@ -12,6 +8,8 @@ from modulo_ricette import (
     SUB_CON_RICETTA,
     COLORI_PASTI,
     CACHE_ANAGRAFICA,
+    ULTIMA_DATA_MENU_ATTIVA,
+    log_render,
     is_valid_uuid,
     apri_dialog_sicuro,
     chiudi_dialog_sicuro,
@@ -21,6 +19,8 @@ from modulo_ricette import (
     aggiorna_flag_preso_db,
     estrai_meta_ricetta,
     normalizza_ingrediente_record,
+    is_ingrediente_dispensa_attivo,
+    imposta_stato_dispensa_ingrediente_db,
     assicura_ingrediente_in_dispensa_mese,
     sincronizza_e_pulisci_dispensa_mese,
     cerca_ingrediente_in_cache_per_nome,
@@ -46,8 +46,10 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
     if not supabase:
         return
 
+    ULTIMA_DATA_MENU_ATTIVA[0] = data_selezionata
     data_str = data_selezionata.strftime("%Y-%m-%d")
     data_vis = data_selezionata.strftime("%d/%m/%Y")
+    log_render(f"[UTENTE] Apertura form Menu del Giorno per {data_vis} ({data_str})")
 
     lista_ingredienti = []
     lista_ricette = []
@@ -127,19 +129,24 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
                         cat_aperte.add(m["categoria"])
                     if m.get("subcategoria"):
                         sub_aperte.add((m["categoria"], m["subcategoria"]))
+        log_render(f"[MENU GIORNO] Caricate {len(menu_del_giorno)} voci e {len(ids_ricette_giorno)} ricette per {data_str}")
         except Exception as ex:
-            print("Errore carica_dati_giorno_db:", ex)
+            log_render(f"[ERRORE] carica_dati_giorno_db ({data_str}): {ex}")
 
     def esegui_azione_db(testo_loading, funzione_db, ricarica_giorno=True):
+        log_render(f"[MENU GIORNO] Azione richiesta su {data_str}: {testo_loading}")
         mostra_loading(testo_loading)
 
         def worker():
             try:
                 funzione_db()
                 modifiche_effettuate[0] = True
+                sincronizza_e_pulisci_dispensa_mese(data_selezionata)
                 if ricarica_giorno:
                     carica_dati_giorno_db(inizializza_aperture=False)
                 disegna_form_da_memoria()
+            except Exception as ex:
+                log_render(f"[ERRORE] esegui_azione_db ({testo_loading}): {ex}")
             finally:
                 nascondi_loading()
 
@@ -269,36 +276,20 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
                 chk_disp_g = ft.Checkbox(
                     label="📌 Dispensa (Base)",
-                    value=bool(ing_info.get("is_dispensa_base", False))
+                    value=is_ingrediente_dispensa_attivo(ing_info)
                 )
 
                 def toggle_disp_giorno(e, info_ref=ing_info):
                     nuovo_stato = bool(e.control.value)
-                    u_def = info_ref.get("unita_default", "g")
-                    is_d = info_ref.get("is_detersivo", False)
-                    tag_det = "|DET" if is_d else ""
-                    tag_disp = "|DISPENSA" if nuovo_stato else ""
-                    nuova_u_db = f"{u_def}{tag_det}{tag_disp}"
                     modifiche_effettuate[0] = True
 
-                    for ig in (CACHE_ANAGRAFICA.get("ingredienti") or []):
-                        if ig.get("nome", "").strip().lower() == info_ref.get("nome", "").strip().lower():
-                            ig["unita_default"] = u_def
-                            ig["is_dispensa_base"] = nuovo_stato
-
                     def w_tg():
-                        ing_id_r = info_ref.get("id")
-                        if not is_valid_uuid(ing_id_r):
-                            ing_id_r = ottieni_o_crea_ing_sicuro(info_ref.get("nome", ""), u_def, is_d)
-                        if is_valid_uuid(ing_id_r):
-                            supabase.table("ingredienti").update({"unita_default": nuova_u_db}).eq("id", ing_id_r).execute()
-                            if nuovo_stato:
-                                assicura_ingrediente_in_dispensa_mese(ing_id_r, data_selezionata)
-                            else:
-                                try:
-                                    supabase.table("menu_giornalieri").delete().eq("categoria", "Dispensa").eq("id_ingrediente", ing_id_r).execute()
-                                except Exception:
-                                    pass
+                        imposta_stato_dispensa_ingrediente_db(
+                            info_ref.get("nome", ""),
+                            info_ref.get("id", ""),
+                            nuovo_stato,
+                            data_selezionata
+                        )
                     threading.Thread(target=w_tg, daemon=True).start()
 
                 chk_disp_g.on_change = toggle_disp_giorno
@@ -632,12 +623,17 @@ def crea_calendario_menu(page: ft.Page):
                 u_clean = str(vv.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
                 q_str = ""
 
-                def del_varie(e, id_v=vv["id"]):
+                def del_varie(e, id_v=vv["id"], nome_log=nome_v):
+                    log_render(f"[UTENTE] Rimozione voce Varie '{nome_log}' del {d_str_g}")
                     if d_str_g in ram_menu["dizionario_menu"]:
                         ram_menu["dizionario_menu"][d_str_g] = [x for x in ram_menu["dizionario_menu"][d_str_g] if x.get("id") != id_v]
                     disegna_vista_da_ram()
                     if is_valid_uuid(id_v):
-                        threading.Thread(target=lambda: (supabase.table("menu_giornalieri").delete().eq("id", id_v).execute(), aggiorna_calendario_menu()), daemon=True).start()
+                        def w_del_v():
+                            supabase.table("menu_giornalieri").delete().eq("id", id_v).execute()
+                            sincronizza_e_pulisci_dispensa_mese(dt_giorno)
+                            aggiorna_calendario_menu()
+                        threading.Thread(target=w_del_v, daemon=True).start()
 
                 righe_varie_ui.append(
                     ft.Row([
@@ -698,17 +694,25 @@ def crea_calendario_menu(page: ft.Page):
                 q_str = f" ({formatta_numero(q_p)} {u_p})" if q_p else ""
                 is_preso = bool(vm.get("preso"))
 
-                def cambia_spunta_mese(e, voce_ref=vm):
+                def cambia_spunta_mese(e, voce_ref=vm, np_log=nome_p):
                     voce_ref["preso"] = bool(e.control.value)
+                    log_render(f"[UTENTE] Spunta '{categoria_db}' per '{np_log}': preso={voce_ref['preso']}")
                     disegna_vista_da_ram()
                     threading.Thread(target=lambda: aggiorna_flag_preso_db(voce_ref["id"], voce_ref["preso"]), daemon=True).start()
 
-                def elimina_voce_mese(e, id_riga=vm["id"]):
+                def elimina_voce_mese(e, id_riga=vm["id"], id_ing_r=vm.get("id_ingrediente"), np_log=nome_p):
+                    log_render(f"[UTENTE] Eliminazione voce '{np_log}' da card '{categoria_db}' ({nome_mese})")
                     chiave_ram = "voci_dispensa_mese" if categoria_db == "Dispensa" else "voci_detersivi_mese"
                     ram_menu[chiave_ram] = [x for x in ram_menu[chiave_ram] if x.get("id") != id_riga]
                     disegna_vista_da_ram()
                     if is_valid_uuid(id_riga):
-                        threading.Thread(target=lambda: (supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute(), aggiorna_calendario_menu()), daemon=True).start()
+                        def w_del_m():
+                            if categoria_db == "Dispensa":
+                                imposta_stato_dispensa_ingrediente_db(np_log, id_ing_r or "", False, data_rif_mese)
+                            else:
+                                supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute()
+                            aggiorna_calendario_menu()
+                        threading.Thread(target=w_del_m, daemon=True).start()
 
                 lista_voci_ui.controls.append(
                     ft.Container(
@@ -866,6 +870,7 @@ def crea_calendario_menu(page: ft.Page):
 
     def aggiorna_calendario_menu():
         data = stato["data"]
+        ULTIMA_DATA_MENU_ATTIVA[0] = data
         badge_loading_cal.visible = True
         try:
             page.update()
@@ -879,6 +884,7 @@ def crea_calendario_menu(page: ft.Page):
                 return
 
             try:
+                log_render(f"[CALENDARIO MENU] Aggiornamento calendario e Dispensa per data riferimento {data.strftime('%d/%m/%Y')}")
                 assicura_cache_anagrafica(forza_ricarica=False)
                 sincronizza_e_pulisci_dispensa_mese(data)
                 data_rif = data.replace(day=1)
@@ -931,8 +937,9 @@ def crea_calendario_menu(page: ft.Page):
                 ram_menu["dizionario_menu"] = dizionario_menu
                 ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
                 ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
+                log_render(f"[CALENDARIO MENU] Caricati {len(dizionario_menu)} giorni con pasti, {len(voci_dispensa_mese)} voci Dispensa, {len(voci_detersivi_mese)} voci Detersivi.")
             except Exception as ex:
-                print("Errore caricamento menu:", ex)
+                log_render(f"[ERRORE] Caricamento calendario menu: {ex}")
             finally:
                 badge_loading_cal.visible = False
                 disegna_vista_da_ram()
