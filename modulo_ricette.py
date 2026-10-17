@@ -1412,51 +1412,76 @@ def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
     m_og_tit = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html_page, flags=re.IGNORECASE)
     if m_og_tit:
         titolo_og = html.unescape(m_og_tit.group(1)).strip()
+    if not titolo_og:
+        m_h1 = re.search(r'<h1[^>]*>(.*?)</h1>', html_page, flags=re.DOTALL | re.IGNORECASE)
+        if m_h1:
+            titolo_og = re.sub(r"<[^>]+>", " ", html.unescape(m_h1.group(1))).strip()
+
+    titolo_pulito_og = re.sub(r"\s*(?:[-|–—]\s*(?:Ricetta|GialloZafferano|Blog|Misya|Cucchiaio|Fatto in casa).*)$", "", titolo_og, flags=re.IGNORECASE).strip()
+
+    # 1. Ricerca ricorsiva nei blocchi JSON-LD (supporta anche @graph annidati e mainEntity dei Blog GialloZafferano)
+    def cerca_recipe_in_json(obj):
+        if isinstance(obj, dict):
+            tipo = obj.get("@type")
+            is_ric = (tipo == "Recipe") or (isinstance(tipo, list) and "Recipe" in tipo)
+            if is_ric and obj.get("recipeIngredient"):
+                return obj
+            for v in obj.values():
+                trovato = cerca_recipe_in_json(v)
+                if trovato:
+                    return trovato
+        elif isinstance(obj, list):
+            for el in obj:
+                trovato = cerca_recipe_in_json(el)
+                if trovato:
+                    return trovato
+        return None
 
     blocchi = re.findall(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_page, flags=re.DOTALL | re.IGNORECASE)
     for b in blocchi:
         try:
             dati = json.loads(b.strip())
-            candidati = dati if isinstance(dati, list) else (dati.get("@graph", [dati]) if isinstance(dati, dict) else [])
-            for item in candidati:
-                if not isinstance(item, dict):
-                    continue
-                tipo = item.get("@type")
-                if ((tipo == "Recipe") or (isinstance(tipo, list) and "Recipe" in tipo)) and item.get("recipeIngredient"):
-                    porzioni_base = 4
-                    yield_val = item.get("recipeYield")
-                    if yield_val:
-                        m_y = re.search(r"(\d+)", str(yield_val[0] if isinstance(yield_val, list) else yield_val))
-                        if m_y and 1 <= int(m_y.group(1)) <= 30:
-                            porzioni_base = int(m_y.group(1))
-                    titolo_ric = html.unescape(str(item.get("name") or titolo_og or "Ricetta")).strip()
-                    img_val = item.get("image")
-                    foto_ric = foto_og
-                    if isinstance(img_val, str) and img_val.startswith("http"):
-                        foto_ric = img_val
-                    elif isinstance(img_val, list) and img_val:
-                        foto_ric = img_val[0] if isinstance(img_val[0], str) else img_val[0].get("url", foto_og)
-                    elif isinstance(img_val, dict):
-                        foto_ric = img_val.get("url", foto_og)
-                    return {
-                        "titolo": titolo_ric,
-                        "porzioni_base": porzioni_base,
-                        "raw_ings": item.get("recipeIngredient", []),
-                        "foto_url": foto_ric,
-                        "url_fonte": url_pagina
-                    }
+            item = cerca_recipe_in_json(dati)
+            if item:
+                porzioni_base = 4
+                yield_val = item.get("recipeYield")
+                if yield_val:
+                    m_y = re.search(r"(\d+)", str(yield_val[0] if isinstance(yield_val, list) else yield_val))
+                    if m_y and 1 <= int(m_y.group(1)) <= 30:
+                        porzioni_base = int(m_y.group(1))
+                titolo_ric = html.unescape(str(item.get("name") or titolo_pulito_og or "Ricetta")).strip()
+                img_val = item.get("image")
+                foto_ric = foto_og
+                if isinstance(img_val, str) and img_val.startswith("http"):
+                    foto_ric = img_val
+                elif isinstance(img_val, list) and img_val:
+                    foto_ric = img_val[0] if isinstance(img_val[0], str) else img_val[0].get("url", foto_og)
+                elif isinstance(img_val, dict):
+                    foto_ric = img_val.get("url", foto_og)
+                return {
+                    "titolo": titolo_ric,
+                    "porzioni_base": porzioni_base,
+                    "raw_ings": item.get("recipeIngredient", []),
+                    "foto_url": foto_ric,
+                    "url_fonte": url_pagina
+                }
         except Exception:
             continue
 
-    righe_li = re.findall(r'<li[^>]*class=["\'][^"\']*(?:wprm-recipe-ingredient|ingredient|gz-ingredient)[^"\']*["\'][^>]*>(.*?)</li>', html_page, flags=re.DOTALL | re.IGNORECASE)
+    # 2. Fallback HTML specifico per GialloZafferano (<dd class="gz-ingredient">) e Blog GialloZafferano (WPRM / Tasty / MV / liste HTML)
+    righe_dd_gz = re.findall(r'<dd[^>]*class=["\'][^"\']*gz-ingredient[^"\']*["\'][^>]*>(.*?)</dd>', html_page, flags=re.DOTALL | re.IGNORECASE)
+    righe_li = righe_dd_gz or re.findall(
+        r'<li[^>]*class=["\'][^"\']*(?:wprm-recipe-ingredient|ingredient|gz-ingredient|tasty-recipes-ingredient|mv-create-ingredients)[^"\']*["\'][^>]*>(.*?)</li>',
+        html_page, flags=re.DOTALL | re.IGNORECASE
+    )
     if not righe_li:
-        m_sez_ing = re.search(r'(?i)<h[234][^>]*>[^<]*ingredienti[^<]*</h[234]>\s*<ul[^>]*>(.*?)</ul>', html_page, flags=re.DOTALL)
+        m_sez_ing = re.search(r'(?i)<h[234][^>]*>[^<]*ingredienti[^<]*</h[234]>\s*(?:<div[^>]*>\s*)*<[uo]l[^>]*>(.*?)</[uo]l>', html_page, flags=re.DOTALL)
         if m_sez_ing:
             righe_li = re.findall(r'<li[^>]*>(.*?)</li>', m_sez_ing.group(1), flags=re.DOTALL)
     if righe_li and len(righe_li) >= 2:
-        raw_ings = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", x)).strip() for x in righe_li]
+        raw_ings = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(x))).strip() for x in righe_li]
         return {
-            "titolo": re.sub(r"\s*[-|].*$", "", titolo_og) or "Ricetta Web",
+            "titolo": titolo_pulito_og or "Ricetta Web",
             "porzioni_base": 4,
             "raw_ings": raw_ings[:15],
             "foto_url": foto_og,
@@ -1483,39 +1508,61 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     t_ai = threading.Thread(target=worker_ai, daemon=True)
     t_ai.start()
 
-    # 2. Ricerca parallela multi-portale
-    q_enc = urllib.parse.quote_plus(query_pulita)
+    # 2. Ricerca parallela multi-portale (con endpoint dedicato sia per GialloZafferano che per Blog GialloZafferano)
+    q_enc_plus = urllib.parse.quote_plus(query_pulita)
+    q_enc_path = urllib.parse.quote(query_pulita)
     portali_ricerca = [
-        ("GialloZafferano", f"https://www.giallozafferano.it/ricerca-ricette/{q_enc}/"),
-        ("Cucchiaio d'Argento", f"https://www.cucchiaio.it/ricerca.html?q={q_enc}"),
-        ("Misya", f"https://www.misya.info/?s={q_enc}"),
-        ("Fatto in casa da Benedetta", f"https://www.fattoincasadabenedetta.it/?s={q_enc}"),
-        ("Sonia Peronaci", f"https://www.soniaperonaci.it/?s={q_enc}"),
-        ("Motore Multi-Sito", f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query_pulita + ' ricetta (site:cucchiaio.it OR site:misya.info OR site:fattoincasadabenedetta.it OR site:soniaperonaci.it OR site:giallozafferano.it)')}")
+        ("GialloZafferano", f"https://www.giallozafferano.it/ricerca-ricette/{q_enc_path}/"),
+        ("Blog GialloZafferano", f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query_pulita + ' ricetta (site:blog.giallozafferano.it OR site:ricette.giallozafferano.it)')}"),
+        ("Cucchiaio d'Argento", f"https://www.cucchiaio.it/ricerca.html?q={q_enc_plus}"),
+        ("Misya", f"https://www.misya.info/?s={q_enc_plus}"),
+        ("Fatto in casa da Benedetta", f"https://www.fattoincasadabenedetta.it/?s={q_enc_plus}"),
+        ("Sonia Peronaci", f"https://www.soniaperonaci.it/?s={q_enc_plus}"),
+        ("Motore Multi-Sito", f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query_pulita + ' ricetta (site:cucchiaio.it OR site:misya.info OR site:fattoincasadabenedetta.it OR site:soniaperonaci.it)')}")
     ]
 
     pattern_links = (
         r'https://(?:ricette|blog)\.giallozafferano\.it/[a-zA-Z0-9\-_/]+\.html|'
-        r'https://blog\.giallozafferano\.it/[a-zA-Z0-9\-_]+/[a-zA-Z0-9\-_]+/?|'
+        r'https://blog\.giallozafferano\.it/[a-zA-Z0-9\-_]+/[a-zA-Z0-9\-_/]+/?|'
         r'https://www\.cucchiaio\.it/ricetta/[a-zA-Z0-9\-_/]+/?|'
         r'https://www\.misya\.info/ricetta/[a-zA-Z0-9\-_]+\.htm|'
         r'https://www\.fattoincasadabenedetta\.it/ricetta/[a-zA-Z0-9\-_]+/?|'
         r'https://www\.soniaperonaci\.it/[a-zA-Z0-9\-_]+/?'
     )
 
+    parole_stop = {"con", "col", "alle", "alla", "agli", "del", "della", "dei", "degli", "delle", "ricetta", "al", "ai", "in", "da", "per"}
     parole_chiave = [
         w.lower() for w in re.findall(r"[a-zA-Zàèéìòù]{3,}", query_pulita)
-        if w.lower() not in {"con", "alle", "alla", "agli", "del", "della", "dei", "ricetta"}
+        if w.lower() not in parole_stop
     ]
-    parole_indesiderate = ["capriolo", "anatra", "cinghiale", "lepre", "astice", "lumache"]
+    slug_ideale = "-".join(re.findall(r"[a-zA-Zàèéìòù]+", query_pulita.lower()))
 
     def calcola_score_link(lk):
-        slug = lk.rstrip("/").split("/")[-1].lower()
-        score = sum(12 for pk in parole_chiave if pk[:4] in slug)
-        for p_bad in parole_indesiderate:
-            if p_bad in slug and p_bad not in low_q:
-                score -= 25
-        score -= len(slug) * 0.03
+        parti_u = [p for p in lk.rstrip("/").split("/") if p]
+        slug = parti_u[-1].replace(".html", "").replace(".htm", "").lower() if parti_u else ""
+        slug_norm = re.sub(r"^ricetta-", "", slug)
+
+        score = 0.0
+        # Bonus altissimo se lo slug corrisponde esattamente alla ricetta cercata (es. 'tagliatelle-al-sugo')
+        if slug_norm == slug_ideale or slug_ideale in slug_norm:
+            score += 45.0
+
+        for pk in parole_chiave:
+            if pk in slug_norm or pk[:4] in slug_norm:
+                score += 15.0
+            else:
+                score -= 10.0
+
+        # Forte penalizzazione se l'URL contiene ingredienti intrusi non richiesti (es. barolo, funghi, salsiccia, tonno)
+        if ha_ingredienti_intrusi_non_richiesti(slug_norm.replace("-", " "), query_ricerca):
+            score -= 80.0
+
+        # Penalizza parole extra nello slug non presenti nella richiesta dell'utente
+        parole_slug = [w for w in slug_norm.split("-") if len(w) >= 4 and w not in parole_stop]
+        for ps in parole_slug:
+            if not any(ps[:4] == pk[:4] or ps in pk or pk in ps for pk in parole_chiave):
+                score -= 12.0
+
         return score
 
     mappa_links_portali = {}
@@ -1525,17 +1572,18 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
         try:
             req = urllib.request.Request(u_s, headers=headers)
             with urllib.request.urlopen(req, timeout=4.5) as resp:
-                html_s = urllib.parse.unquote(html.unescape(resp.read().decode("utf-8", errors="ignore")))
-            esclusioni = ("ricerca", "categoria", "page", "/tag/", "/author/", "/contatti", "/privacy", "/chi-sono", "/video")
+                raw_html = resp.read().decode("utf-8", errors="ignore")
+                html_s = urllib.parse.unquote(html.unescape(raw_html))
+            esclusioni = ("ricerca", "categoria", "page", "/tag/", "/author/", "/contatti", "/privacy", "/chi-sono", "/video", "wp-content", "wp-json", "/feed", "comment")
             trovati = [
-                lk for lk in re.findall(pattern_links, html_s)
+                lk.rstrip("\\").rstrip('"').rstrip("'") for lk in re.findall(pattern_links, html_s)
                 if not any(esc in lk.lower() for esc in esclusioni)
             ]
             trovati_unici = list(dict.fromkeys(trovati))
             trovati_unici.sort(key=calcola_score_link, reverse=True)
             with lock_lk:
                 mappa_links_portali[idx_p] = trovati_unici[:3]
-            log_render(f"[RICERCA WEB] Portale '{nome_p}': trovati {len(trovati_unici)} link candidati")
+            log_render(f"[RICERCA WEB] Portale '{nome_p}': trovati {len(trovati_unici)} link candidati (Top: {trovati_unici[0] if trovati_unici else 'nessuno'})")
         except Exception as ex:
             log_render(f"[RICERCA WEB] Portale '{nome_p}' non raggiungibile o timeout: {ex}")
 
@@ -1545,7 +1593,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     for t in threads_s:
         t.join(timeout=5.0)
 
-    # Costruzione Round-Robin reale tra i vari siti
+    # Costruzione Round-Robin tra i vari siti dando precedenza ai link privi di intrusi
     links_candidati = []
     for round_idx in range(3):
         for idx_p in sorted(mappa_links_portali.keys()):
@@ -1577,29 +1625,44 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
                           ("Fatto in casa da Benedetta" if "benedetta" in link else
                            ("Sonia Peronaci" if "soniaperonaci" in link else "Cucchiaio d'Argento"))))
                     )
+                    tit_r = info["titolo"]
+                    testo_check_intrusi = tit_r + " " + " ".join(x["nome"] for x in ings_validi)
+                    ha_intrusi = ha_ingredienti_intrusi_non_richiesti(testo_check_intrusi, query_ricerca)
+                    match_parole = sum(1 for pk in parole_chiave if pk[:4] in tit_r.lower())
+
                     with lock_lk:
                         risultati_mappa[pos_idx] = {
-                            "titolo": info["titolo"],
+                            "titolo": tit_r,
                             "sito": sito_nome,
                             "url_fonte": link,
                             "foto_url": "",
                             "porzioni_base": info["porzioni_base"] or 4,
                             "ingredienti_base": ings_validi,
-                            "is_gemini": False
+                            "is_gemini": False,
+                            "_ha_intrusi": ha_intrusi,
+                            "_match_parole": match_parole,
+                            "_ordine_rr": pos_idx
                         }
-                    log_render(f"[RICERCA WEB] Estratta ricetta '{info['titolo']}' da {sito_nome} ({len(ings_validi)} ing.)")
+                    log_render(f"[RICERCA WEB] Estratta '{tit_r}' da {sito_nome} ({len(ings_validi)} ing., intrusi={ha_intrusi})")
         except Exception:
             pass
 
-    threads_r = [threading.Thread(target=estrai_da_link, args=(idx_l, lk), daemon=True) for idx_l, lk in enumerate(links_candidati[:8])]
+    threads_r = [threading.Thread(target=estrai_da_link, args=(idx_l, lk), daemon=True) for idx_l, lk in enumerate(links_candidati[:9])]
     for t in threads_r:
         t.start()
     for t in threads_r:
         t.join(timeout=5.0)
 
-    risultati_trovati = [risultati_mappa[k] for k in sorted(risultati_mappa.keys())]
+    tutti_web = list(risultati_mappa.values())
+    # Se ci sono ricette web fedeli (senza intrusi come funghi/barolo/tonno), scarta del tutto quelle con intrusi!
+    web_puliti = [r for r in tutti_web if not r.get("_ha_intrusi")]
+    lista_web_finale = web_puliti if web_puliti else tutti_web
 
-    # Attende Gemini AI e se l'API Google non risponde usa la sintesi intelligente con ingredienti reali
+    # Ordina mettendo in cima le ricette che contengono tutte le parole chiave cercate, mantenendo il round-robin tra siti
+    lista_web_finale.sort(key=lambda x: (-x.get("_match_parole", 0), x.get("_ordine_rr", 0)))
+    risultati_trovati = lista_web_finale
+
+    # Attende Gemini AI e se l'API Google non risponde usa la sintesi intelligente fedele
     t_ai.join(timeout=8.0)
     sol_ai = box_ai_parallelo[0]
     if not sol_ai or not sol_ai.get("ingredienti_base"):
@@ -1609,8 +1672,8 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     sol_ai["is_gemini"] = True
     risultati_trovati.append(sol_ai)
 
-    siti_riepilogo = [r.get("sito", "") for r in risultati_trovati]
-    log_render(f"[RICERCA WEB+AI] Completata per '{query_ricerca}': {len(risultati_trovati)} proposte totali -> {siti_riepilogo}")
+    siti_riepilogo = [f"{r.get('sito', '')}: {r.get('titolo', '')}" for r in risultati_trovati]
+    log_render(f"[RICERCA WEB+AI] Completata per '{query_ricerca}': {len(risultati_trovati)} proposte -> {siti_riepilogo}")
     return risultati_trovati
 
 
