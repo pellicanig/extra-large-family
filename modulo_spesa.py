@@ -15,6 +15,7 @@ from modulo_ricette import (
     assicura_cache_anagrafica,
     generalizza_nome_dispensa,
     is_ingrediente_dispensa_attivo,
+    imposta_stato_dispensa_ingrediente_db,
     sincronizza_e_pulisci_dispensa_mese
 )
 
