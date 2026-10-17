@@ -5,13 +5,16 @@ from datetime import datetime, timedelta
 from modulo_ricette import (
     supabase,
     MESI,
+    log_render,
     is_valid_uuid,
     apri_dialog_sicuro,
     chiudi_dialog_sicuro,
     formatta_numero,
     bordo_campo_uniforme,
     aggiorna_flag_preso_db,
+    assicura_cache_anagrafica,
     generalizza_nome_dispensa,
+    is_ingrediente_dispensa_attivo,
     sincronizza_e_pulisci_dispensa_mese
 )
 
@@ -27,6 +30,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
     stesso_mese_oggi = (data_riferimento.year == oggi_dt.year and data_riferimento.month == oggi_dt.month)
     nome_mese_rif = MESI[data_riferimento.month]
     spuntati_sessione = set()
+    log_render(f"[UTENTE] Apertura popup 'Fai la Spesa' per mese {nome_mese_rif} {data_riferimento.year} (data rif: {data_riferimento.strftime('%d/%m/%Y')})")
 
     if stesso_mese_oggi:
         opzioni_filtro = [
@@ -55,6 +59,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
     riga_bottoni_filtro = ft.Row(wrap=True, spacing=4, run_spacing=4)
 
     def cambia_filtro_spesa(nuova_scelta):
+        log_render(f"[UTENTE] Cambio filtro periodo Spesa -> '{nuova_scelta}'")
         stato_filtro["scelta"] = nuova_scelta
         aggiorna_stile_filtri()
         avvia_calcolo_spesa()
@@ -78,6 +83,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
     dlg_spesa = None
 
     def chiudi_spesa(e=None):
+        log_render(f"[UTENTE] Chiusura popup 'Fai la Spesa' (Modifiche spunte: {modifiche_spunte[0]})")
         chiudi_dialog_sicuro(page, dlg_spesa)
         if modifiche_spunte[0] and on_close_callback:
             on_close_callback()
@@ -166,6 +172,8 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
             txt_periodo_date.value = f"📅 Intervallo ({nome_mese_rif}): {dt_i.strftime('%d/%m/%Y')} → {dt_f.strftime('%d/%m/%Y')}"
 
             try:
+                log_render(f"[SPESA] Avvio calcolo lista spesa per filtro '{scelta}' ({inizio_str} -> {fine_str})")
+                assicura_cache_anagrafica(forza_ricarica=False)
                 sincronizza_e_pulisci_dispensa_mese(data_riferimento)
                 res_m = supabase.table("menu_giornalieri").select(
                     "*, ingredienti(id, nome, unita_default), ricette(id, nome)"
@@ -176,6 +184,14 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     if (r.get("categoria") in ["Dispensa", "Detersivi"] and primo_mese_str <= r.get("data_menu", "") <= fine_mese_str)
                     or (r.get("categoria") not in ["Dispensa", "Detersivi"] and inizio_str <= r.get("data_menu", "") <= fine_str)
                 ]
+
+                # Raccoglie tutti i nomi generalizzati presenti nella Dispensa del mese (es. 'sale', 'olio extravergine d'oliva', ecc.)
+                nomi_gen_dispensa_mese = set()
+                for r_d in righe_valide:
+                    if r_d.get("categoria") == "Dispensa" and r_d.get("ingredienti"):
+                        n_d = (r_d["ingredienti"].get("nome") or "").strip()
+                        if n_d:
+                            nomi_gen_dispensa_mese.add(generalizza_nome_dispensa(n_d).lower())
 
                 ids_ric = list({r["id_ricetta"] for r in righe_valide if is_valid_uuid(r.get("id_ricetta"))})
                 mappa_ri = {}
@@ -199,11 +215,20 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                         nome_ing = ing_obj.get("nome", "Prodotto")
                         u_def_db = str(ing_obj.get("unita_default") or "")
 
-                    is_base_dinamico = ("|DISPENSA" in u_def_db) or (cat_riga == "Dispensa")
+                    nome_disp = generalizza_nome_dispensa(nome_ing)
+                    # Un ingrediente va in Dispensa se: ha |DISPENSA, è nella categoria Dispensa, oppure la sua forma
+                    # generalizzata (es. 'Sale grosso' -> 'Sale') è già attiva in Dispensa!
+                    is_base_dinamico = (
+                        ("|DISPENSA" in u_def_db)
+                        or (cat_riga == "Dispensa")
+                        or (nome_disp.lower() in nomi_gen_dispensa_mese)
+                        or is_ingrediente_dispensa_attivo(ing_obj)
+                    )
                     n_low = nome_ing.strip().lower()
 
-                    if is_base_dinamico:
-                        nome_disp = generalizza_nome_dispensa(nome_ing)
+                    if is_base_dinamico and cat_riga != "Detersivi":
+                        if nome_ing.strip().lower() != nome_disp.lower():
+                            log_render(f"[SPESA] Unificato ingrediente '{nome_ing}' nella voce di Dispensa '{nome_disp}'")
                         chiave = (nome_disp.lower(), "promemoria")
                         somme.setdefault(chiave, {
                             "nome": nome_disp, "qta": 1.0, "unita": "pz",
@@ -253,9 +278,11 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     return (prio, item["nome"].lower())
 
                 dati_aggregati = sorted(list(somme.values()), key=chiave_ordinamento)
+                log_render(f"[SPESA] Calcolo completato: {len(dati_aggregati)} voci aggregate totali ({len(spuntati_sessione)} già prese/in dispensa)")
                 spinner_spesa.visible = False
                 disegna_lista_spesa()
             except Exception as ex:
+                log_render(f"[ERRORE] Calcolo lista spesa: {ex}")
                 spinner_spesa.visible = False
                 colonna_lista.controls.clear()
                 colonna_lista.controls.append(ft.Text(f"Errore calcolo spesa: {ex}", color=ft.Colors.RED_700, size=12))
@@ -279,6 +306,7 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
 
         def toggle_spunta(e, key_ing, item_obj):
             nuovo_stato = bool(e.control.value)
+            log_render(f"[UTENTE] Spunta lista della spesa su '{item_obj.get('nome')}': preso={nuovo_stato}")
             (spuntati_sessione.add if nuovo_stato else spuntati_sessione.discard)(key_ing)
             modifiche_spunte[0] = True
             ids_dir = item_obj.get("ids_menu_diretti") or []
