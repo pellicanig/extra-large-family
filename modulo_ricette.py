@@ -1075,76 +1075,237 @@ def ottieni_lista_modelli_gemini(api_key: str):
     return attivi if attivi else preferiti[:4]
 
 
+_INGREDIENTI_INTRUSI_CHECK = [
+    ("tonno", ["tonno", "tonnata"]),
+    ("acciug", ["acciug", "alici", "puttanesca", "bagna cauda"]),
+    ("fungh", ["fungh", "boscaiola", "porcin", "champignon", "chiodini", "finferli", "mare e monti"]),
+    ("salsicci", ["salsicci", "boscaiola", "campidanese", "norcina", "zola"]),
+    ("gamber", ["gamber", "scoglio", "mare", "pesce", "crostacei", "mari e monti"]),
+    ("vongol", ["vongol", "scoglio", "mare", "pesce"]),
+    ("cozz", ["cozz", "scoglio", "mare", "pesce"]),
+    ("salmon", ["salmon"]),
+    ("pancett", ["pancett", "carbonara", "amatriciana", "gricia", "boscaiola"]),
+    ("guancial", ["guancial", "carbonara", "amatriciana", "gricia"]),
+    ("speck", ["speck", "tirolese", "montagna"]),
+    ("panna", ["panna", "boscaiola", "salmone", "prosciutto", "4 formaggi", "quattro formaggi", "pasticciat"]),
+    ("barolo", ["barolo", "vino rosso", "ubriac"]),
+    ("cinghial", ["cinghial", "cacciagione", "selvaggina"]),
+    ("anatra", ["anatra"]),
+    ("tartuf", ["tartuf", "norcina"]),
+]
+
+
+def ha_ingredienti_intrusi_non_richiesti(testo_da_controllare: str, query_utente: str) -> bool:
+    """Restituisce True se il titolo/ingrediente contiene un ingrediente caratterizzante mai richiesto dall'utente."""
+    t_low = (testo_da_controllare or "").lower()
+    q_low = (query_utente or "").lower()
+    for radice_intruso, parole_autorizzanti in _INGREDIENTI_INTRUSI_CHECK:
+        if radice_intruso in t_low:
+            if not any(pa in q_low for pa in parole_autorizzanti):
+                return True
+    return False
+
+
 def sintetizza_ricetta_ai_locale(query_ricerca: str, risultati_web: list = None):
     """
-    Sintesi intelligente di emergenza se l'API Gemini restituisce errore di quota/rete:
-    costruisce una ricetta pulita partendo dalla query dell'utente e/o dai risultati web trovati.
+    Costruisce una ricetta 100% fedele esclusivamente alle parole digitate dall'utente.
+    NON copia MAI ricette dai siti web per evitare qualsiasi ingrediente intruso (es. funghi, tonno, acciughe).
     """
-    q_clean = (query_ricerca or "Ricetta").strip()
+    q_clean = re.sub(r"\s+", " ", (query_ricerca or "Ricetta").strip())
     low_q = q_clean.lower()
+    is_pronto = any(k in low_q for k in ["pront", "comprat", "barattolo", "scatola", "confezion"])
     ings_sintesi = []
 
-    # 1. Gestione condimenti già pronti (es. 'Pasta col pesto già pronto')
-    if "pront" in low_q or "comprat" in low_q or "barattolo" in low_q or "scatola" in low_q:
-        if any(p in low_q for p in ["pasta", "spaghett", "penne", "fusilli", "trofie", "rigatoni", "farfalle", "mezze maniche"]):
-            ings_sintesi.append({"nome": "Pasta", "qta_base": 350.0, "unita": "g"})
-        elif "ris" in low_q:
-            ings_sintesi.append({"nome": "Riso", "qta_base": 320.0, "unita": "g"})
-        elif "gnocch" in low_q:
-            ings_sintesi.append({"nome": "Gnocchi di patate", "qta_base": 800.0, "unita": "g"})
+    # 1. Individuazione della base (formato di pasta, riso, gnocchi o piatto base)
+    formati_pasta = [
+        ("tagliatelle", "Tagliatelle", 350.0),
+        ("fettuccine", "Fettuccine", 350.0),
+        ("pappardelle", "Pappardelle", 350.0),
+        ("spaghetti", "Spaghetti", 350.0),
+        ("linguine", "Linguine", 350.0),
+        ("bucatini", "Bucatini", 350.0),
+        ("penne", "Penne", 350.0),
+        ("rigatoni", "Rigatoni", 350.0),
+        ("tortiglioni", "Tortiglioni", 350.0),
+        ("mezze maniche", "Mezze maniche", 350.0),
+        ("fusilli", "Fusilli", 350.0),
+        ("farfalle", "Farfalle", 350.0),
+        ("trofie", "Trofie", 350.0),
+        ("orecchiette", "Orecchiette", 350.0),
+        ("cavatelli", "Cavatelli", 350.0),
+        ("paccheri", "Paccheri", 350.0),
+        ("conchiglie", "Conchiglie", 350.0),
+        ("maccheroni", "Maccheroni", 350.0),
+        ("tortellini", "Tortellini", 500.0),
+        ("ravioli", "Ravioli", 500.0),
+        ("gnocchi", "Gnocchi di patate", 800.0),
+        ("lasagn", "Lasagne", 500.0),
+        ("pasta", "Pasta", 350.0),
+        ("risott", "Riso", 320.0),
+        ("riso", "Riso", 320.0),
+        ("polenta", "Farina di mais", 350.0),
+    ]
 
-        m_cond = re.search(r"(?:con|col|al|alla|alle|ai)\s+([a-zA-Zàèéìòù\s]{3,25}?)(?:\s+già|\s+gia|\s+pront|\s+comprat|$)", low_q)
-        nome_cond = m_cond.group(1).strip().capitalize() if m_cond else "Condimento pronto"
+    base_trovata = None
+    for chiave_f, nome_f, qta_f in formati_pasta:
+        if re.search(rf"\b{chiave_f}", low_q):
+            base_trovata = (nome_f, qta_f)
+            break
+
+    if base_trovata:
+        ings_sintesi.append({"nome": base_trovata[0], "qta_base": base_trovata[1], "unita": "g"})
+
+    # 2. Gestione fedele del condimento / piatto richiesto
+    if is_pronto:
         if "pesto" in low_q:
-            nome_cond = "Pesto pronto"
-        elif "ragù" in low_q or "ragu" in low_q:
-            nome_cond = "Ragù pronto"
-        elif "sugo" in low_q:
-            nome_cond = "Sugo pronto"
-        ings_sintesi.append({"nome": nome_cond, "qta_base": 200.0, "unita": "g"})
+            ings_sintesi.append({"nome": "Pesto pronto", "qta_base": 190.0, "unita": "g"})
+        elif "ragù" in low_q or "ragu" in low_q or "bolognese" in low_q:
+            ings_sintesi.append({"nome": "Ragù pronto", "qta_base": 400.0, "unita": "g"})
+        elif "sugo" in low_q or "pomodor" in low_q:
+            ings_sintesi.append({"nome": "Sugo pronto", "qta_base": 400.0, "unita": "g"})
+        else:
+            m_cond = re.search(r"(?:con|col|al|alla|alle|ai)\s+([a-zA-Zàèéìòù\s]{3,25}?)(?:\s+già|\s+gia|\s+pront|\s+comprat|$)", low_q)
+            nome_c = (m_cond.group(1).strip().capitalize() + " pronto") if m_cond else "Condimento pronto"
+            ings_sintesi.append({"nome": nome_c, "qta_base": 250.0, "unita": "g"})
+        if base_trovata:
+            ings_sintesi.append({"nome": "Parmigiano", "qta_base": 0.0, "unita": "q.b."})
         ings_sintesi.append({"nome": "Sale", "qta_base": 0.0, "unita": "q.b."})
 
-    # 2. Se non è un piatto 'già pronto' ma abbiamo risultati web, sintetizza gli ingredienti essenziali dal miglior risultato web
-    if not ings_sintesi and risultati_web:
-        for rw in risultati_web:
-            if not rw.get("is_gemini") and rw.get("ingredienti_base"):
-                porz_w = max(1, int(rw.get("porzioni_base") or 4))
-                fatt = 4.0 / float(porz_w)
-                for ib in rw["ingredienti_base"][:8]:
-                    qb = round(float(ib.get("qta_base") or 0) * fatt, 1)
-                    ings_sintesi.append({
-                        "nome": generalizza_nome_dispensa(ib["nome"]) if is_ingrediente_dispensa_attivo(ib["nome"]) else ib["nome"],
-                        "qta_base": qb,
-                        "unita": ib.get("unita", "g")
-                    })
-                break
+    else:
+        ha_condimento_specifico = False
 
-    # 3. Se anche i portali web non hanno trovato nulla, genera gli ingredienti base dal nome del piatto
-    if not ings_sintesi:
-        if "legumi" in low_q or "zuppa" in low_q or "minestr" in low_q:
-            ings_sintesi = [
-                {"nome": "Legumi misti", "qta_base": 350.0, "unita": "g"},
+        if "pesto" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Pesto alla genovese", "qta_base": 190.0, "unita": "g"},
+                {"nome": "Parmigiano", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ])
+
+        if "ragù" in low_q or "ragu" in low_q or "bolognese" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Carne macinata", "qta_base": 300.0, "unita": "g"},
+                {"nome": "Passata di pomodoro", "qta_base": 400.0, "unita": "g"},
                 {"nome": "Carota", "qta_base": 1.0, "unita": "pz"},
                 {"nome": "Sedano", "qta_base": 1.0, "unita": "pz"},
                 {"nome": "Cipolla", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Parmigiano", "qta_base": 0.0, "unita": "q.b."},
                 {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
                 {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
-            ]
-        else:
-            ings_sintesi = [
-                {"nome": q_clean.capitalize(), "qta_base": 400.0, "unita": "g"},
+            ])
+        elif "sugo" in low_q or "pomodor" in low_q or "arrabbiata" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Passata di pomodoro", "qta_base": 400.0, "unita": "g"},
+                {"nome": "Cipolla" if "arrabbiata" not in low_q else "Aglio", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Basilico" if "arrabbiata" not in low_q else "Peperoncino", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Parmigiano", "qta_base": 0.0, "unita": "q.b."},
                 {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
                 {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
-            ]
+            ])
+
+        if "carbonara" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Guanciale", "qta_base": 150.0, "unita": "g"},
+                {"nome": "Uova", "qta_base": 4.0, "unita": "pz"},
+                {"nome": "Pecorino", "qta_base": 60.0, "unita": "g"},
+                {"nome": "Pepe", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ])
+        elif "amatriciana" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Guanciale", "qta_base": 150.0, "unita": "g"},
+                {"nome": "Passata di pomodoro", "qta_base": 400.0, "unita": "g"},
+                {"nome": "Pecorino", "qta_base": 60.0, "unita": "g"},
+                {"nome": "Peperoncino", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ])
+        elif "bianc" in low_q or "burro" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Burro", "qta_base": 50.0, "unita": "g"},
+                {"nome": "Parmigiano", "qta_base": 60.0, "unita": "g"},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ])
+        elif "aglio" in low_q and "olio" in low_q:
+            ha_condimento_specifico = True
+            ings_sintesi.extend([
+                {"nome": "Aglio", "qta_base": 2.0, "unita": "pz"},
+                {"nome": "Peperoncino", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ])
+
+        # Ingredienti espliciti nominati nella query (solo se presenti nella stringa dell'utente!)
+        extra_espliciti = [
+            ("tonno", "Tonno", 200.0, "g"),
+            ("fungh", "Funghi", 350.0, "g"),
+            ("salsicci", "Salsiccia", 300.0, "g"),
+            ("zucca", "Zucca", 500.0, "g"),
+            ("zucchin", "Zucchine", 400.0, "g"),
+            ("melanzan", "Melanzane", 400.0, "g"),
+            ("peperon", "Peperoni", 400.0, "g"),
+            ("spinac", "Spinaci", 400.0, "g"),
+            ("broccol", "Broccoli", 400.0, "g"),
+            ("cavolfior", "Cavolfiore", 400.0, "g"),
+            ("patat", "Patate", 500.0, "g"),
+            ("lenticchi", "Lenticchie", 300.0, "g"),
+            ("ceci", "Ceci", 300.0, "g"),
+            ("fagiol", "Fagioli", 300.0, "g"),
+            ("pisell", "Piselli", 250.0, "g"),
+            ("legumi", "Legumi misti", 350.0, "g"),
+            ("polpo", "Polpo", 800.0, "g"),
+            ("salmon", "Salmone", 250.0, "g"),
+            ("gamber", "Gamberi", 300.0, "g"),
+            ("vongol", "Vongole", 500.0, "g"),
+            ("cozz", "Cozze", 500.0, "g"),
+            ("pollo", "Petto di pollo", 500.0, "g"),
+            ("tacchino", "Fesa di tacchino", 500.0, "g"),
+            ("carne macinata", "Carne macinata", 400.0, "g"),
+            ("hamburger", "Hamburger", 4.0, "pz"),
+            ("frittata", "Uova", 6.0, "pz"),
+        ]
+        for rad_e, nome_e, qta_e, uni_e in extra_espliciti:
+            if rad_e in low_q and not (rad_e == "peperon" and "peperoncin" in low_q):
+                ha_condimento_specifico = True
+                ings_sintesi.append({"nome": nome_e, "qta_base": qta_e, "unita": uni_e})
+
+        if any(k in low_q for k in ["legumi", "zuppa", "minestr", "lenticchi", "ceci", "fagiol"]):
+            ings_sintesi.extend([
+                {"nome": "Carota", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Sedano", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Cipolla", "qta_base": 1.0, "unita": "pz"},
+            ])
+
+        if not ha_condimento_specifico and not base_trovata:
+            ings_sintesi.append({"nome": q_clean.capitalize(), "qta_base": 400.0, "unita": "g"})
+
+        ings_sintesi.extend([
+            {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
+            {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+        ])
+
+    # Deduplicazione mantenendo l'ordine
+    ings_unici = []
+    visti = set()
+    for item in ings_sintesi:
+        k = item["nome"].strip().lower()
+        if k not in visti:
+            visti.add(k)
+            ings_unici.append(item)
 
     return {
         "titolo": f"✨ {q_clean.capitalize()} (Soluzione AI Gemini)",
         "sito": "🤖 Intelligenza Artificiale Gemini",
-        "preparazione_breve": f"Ingredienti essenziali selezionati e calibrati per '{q_clean}'.",
+        "preparazione_breve": f"Ricetta fedele ed essenziale per preparare '{q_clean}' senza ingredienti estranei.",
         "url_fonte": f"https://www.google.com/search?q={urllib.parse.quote_plus(q_clean + ' ricetta')}",
         "foto_url": "",
         "porzioni_base": 4,
-        "ingredienti_base": ings_sintesi,
+        "ingredienti_base": ings_unici,
         "is_gemini": True
     }
 
@@ -1157,33 +1318,32 @@ def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str =
     api_key = raw_key.replace("GEMINI_API_KEY=", "").strip().strip('"').strip("'")
     if not api_key:
         log_render("[GEMINI AI] ATTENZIONE: GEMINI_API_KEY assente nelle variabili d'ambiente su Render!")
-        return None
+        return sintetizza_ricetta_ai_locale(query_effettiva)
 
     prompt = f"""Sei uno chef di cucina casalinga italiana. L'utente deve fare la spesa per preparare esattamente: "{query_effettiva}".
-Rispetta rigorosamente tutte le indicazioni e varianti scritte nella richiesta "{query_effettiva}" (es. se specifica ingredienti già pronti, varianti, aggiunte o esclusioni).
-Restituisci gli ingredienti semplici ed essenziali per 4 persone.
-Unità ammesse: "g", "kg", "ml", "l", "pz", "fette", "cucchiai", "tazze", "q.b.".
+REGOLE TASSATIVE ED INDEROGABILI:
+1. FEDELTÀ ASSOLUTA AL NOME: Inserisci SOLO ed ESCLUSIVAMENTE gli ingredienti base tradizionali strettamente necessari per "{query_effettiva}".
+2. DIVIETO DI AGGIUNTE NON RICHIESTE: NON aggiungere MAI ingredienti caratterizzanti non scritti dall'utente (es. VIETATO aggiungere funghi, tonno, acciughe, salsiccia, pancetta, speck, gamberi, panna, piselli, vino Barolo se non sono scritti esplicitamente in "{query_effettiva}").
+   - Esempio 1: Se l'utente chiede "Tagliatelle al sugo", usa SOLO: Tagliatelle (350 g), Passata di pomodoro (400 g), Cipolla (1 pz), Basilico (q.b.), Olio extravergine d'oliva (q.b.), Sale (q.b.), Parmigiano (q.b.). Niente funghi o salsiccia!
+   - Esempio 2: Se l'utente chiede "Pasta al pesto", usa SOLO: Pasta (350 g), Pesto alla genovese (190 g), Parmigiano (q.b.), Sale (q.b.). Niente tonno o acciughe!
+3. CONDIMENTI GIÀ PRONTI: Se nella richiesta "{query_effettiva}" compare la parola "pronto/a", "già pronto", "comprato" o "in barattolo" (es. "Pasta al pesto pronto"), metti SOLO la base da cuocere (es. Pasta 350 g) + il condimento già pronto (es. Pesto pronto 190 g) + Sale (q.b.).
+4. Calibra le dosi base per 4 persone. Unità ammesse: "g", "kg", "ml", "l", "pz", "fette", "cucchiai", "tazze", "q.b.".
 Rispondi SOLO con un oggetto JSON valido (senza markdown):
-{{"titolo": "Nome Piatto", "preparazione_breve": "Spiegazione breve in 2 righe", "porzioni_base": 4, "ingredienti_base": [{{"nome": "Pasta", "qta_base": 350, "unita": "g"}}]}}"""
+{{"titolo": "{query_effettiva.capitalize()}", "preparazione_breve": "Spiegazione breve e fedele in 2 righe", "porzioni_base": 4, "ingredienti_base": [{{"nome": "Pasta", "qta_base": 350, "unita": "g"}}]}}"""
 
     candidati_modelli = ottieni_lista_modelli_gemini(api_key)
     for modello_target in candidati_modelli[:4]:
         try:
-            gen_cfg = {"temperature": 0.2, "responseMimeType": "application/json"}
-            if "2.5" in modello_target:
-                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
-
             payload = json.dumps({
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": gen_cfg
+                "generationConfig": {"temperature": 0.1}
             }).encode("utf-8")
 
             url_api = f"https://generativelanguage.googleapis.com/v1beta/models/{modello_target}:generateContent?key={urllib.parse.quote(api_key)}"
             req = urllib.request.Request(url_api, data=payload, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
+            with urllib.request.urlopen(req, timeout=6.0) as resp:
                 risp_json = json.loads(resp.read().decode("utf-8", errors="ignore"))
 
-            # Estrae il testo da tutti i blocchi parts (gestendo anche i modelli 2.5 che mettono il pensiero in parts[0])
             parts_list = risp_json.get("candidates", [{}])[0].get("content", {}).get("parts", [])
             testo_out = ""
             for p_item in reversed(parts_list):
@@ -1202,6 +1362,10 @@ Rispondi SOLO con un oggetto JSON valido (senza markdown):
                     u = "g"
                 n_ing = str(item.get("nome") or "").strip().capitalize()
                 if n_ing:
+                    # Scarta automaticamente eventuali ingredienti intrusi allucinati non richiesti nella query
+                    if ha_ingredienti_intrusi_non_richiesti(n_ing, query_effettiva):
+                        log_render(f"[GEMINI AI] Scartato ingrediente intruso non richiesto '{n_ing}' per '{query_effettiva}'")
+                        continue
                     ings_validi.append({
                         "nome": n_ing,
                         "qta_base": float(item.get("qta_base") or 0),
@@ -1228,13 +1392,14 @@ Rispondi SOLO con un oggetto JSON valido (senza markdown):
                 except Exception:
                     pass
             log_render(f"[GEMINI AI] Fallito modello '{modello_target}': {ex} | Dettaglio: {err_body}")
-            _MODELLI_NON_DISPONIBILI.add(modello_target)
+            if "404" in str(ex) or "400" in str(ex):
+                _MODELLI_NON_DISPONIBILI.add(modello_target)
             if MODELLO_GEMINI_RILEVATO[0] == modello_target:
                 MODELLO_GEMINI_RILEVATO[0] = None
             continue
 
-    log_render(f"[GEMINI AI] Nessun modello API ha risposto per '{query_effettiva}', attivo sintesi AI locale.")
-    return None
+    log_render(f"[GEMINI AI] Uso sintesi fedele locale per '{query_effettiva}'.")
+    return sintetizza_ricetta_ai_locale(query_effettiva)
 
 
 def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
