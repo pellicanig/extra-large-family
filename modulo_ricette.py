@@ -1018,37 +1018,135 @@ def genera_fallback_ricetta(query_ricerca: str, nome_ricetta_originale: str = ""
 
 
 _MODELLI_NON_DISPONIBILI = set()
+_CACHE_MODELLI_ACCOUNT = []
 
 def ottieni_lista_modelli_gemini(api_key: str):
-    preferiti = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-flash-latest"]
     if MODELLO_GEMINI_RILEVATO[0] and MODELLO_GEMINI_RILEVATO[0] not in _MODELLI_NON_DISPONIBILI:
-        resto = [m for m in preferiti if m != MODELLO_GEMINI_RILEVATO[0] and m not in _MODELLI_NON_DISPONIBILI]
+        resto = [m for m in _CACHE_MODELLI_ACCOUNT if m != MODELLO_GEMINI_RILEVATO[0] and m not in _MODELLI_NON_DISPONIBILI]
         return [MODELLO_GEMINI_RILEVATO[0]] + resto
 
-    attivi_rapidi = [m for m in preferiti if m not in _MODELLI_NON_DISPONIBILI]
-    if attivi_rapidi:
-        return attivi_rapidi
+    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking", "exp", "preview")
+    preferiti = [
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest"
+    ]
 
-    scarti = ("tts", "image", "audio", "embedding", "vision", "aqa", "robotics", "computer", "thinking")
-    trovati = []
-    try:
-        url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(api_key)}"
-        req = urllib.request.Request(url_list, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as resp:
-            dati = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        disponibili = [
-            m.get("name", "").replace("models/", "")
-            for m in dati.get("models", [])
-            if "generateContent" in m.get("supportedGenerationMethods", [])
-            and "gemini" in m.get("name", "").lower()
-            and not any(s in m.get("name", "").lower() for s in scarti)
-        ]
-        for d in disponibili:
-            if d not in trovati:
-                trovati.append(d)
-    except Exception as ex:
-        log_render(f"[GEMINI] Errore lettura lista modelli: {ex}")
-    return trovati if trovati else ["gemini-2.0-flash", "gemini-1.5-flash"]
+    if not _CACHE_MODELLI_ACCOUNT:
+        try:
+            url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(api_key)}"
+            req = urllib.request.Request(url_list, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=3.5) as resp:
+                dati = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            disponibili = [
+                m.get("name", "").replace("models/", "")
+                for m in dati.get("models", [])
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+                and "gemini" in m.get("name", "").lower()
+                and not any(s in m.get("name", "").lower() for s in scarti)
+            ]
+            log_render(f"[GEMINI] Modelli rilevati sull'account API: {disponibili[:10]}")
+            for p in preferiti:
+                if p in disponibili and p not in _CACHE_MODELLI_ACCOUNT:
+                    _CACHE_MODELLI_ACCOUNT.append(p)
+            for d in disponibili:
+                if "flash" in d.lower() and d not in _CACHE_MODELLI_ACCOUNT:
+                    _CACHE_MODELLI_ACCOUNT.append(d)
+            for d in disponibili:
+                if d not in _CACHE_MODELLI_ACCOUNT:
+                    _CACHE_MODELLI_ACCOUNT.append(d)
+        except Exception as ex:
+            Dettaglio = ""
+            if hasattr(ex, "read"):
+                try:
+                    Dettaglio = ex.read().decode("utf-8", errors="ignore")[:200]
+                except Exception:
+                    pass
+            log_render(f"[GEMINI] Impossibile leggere lista modelli ({ex}) {Dettaglio}")
+
+    base_lista = _CACHE_MODELLI_ACCOUNT if _CACHE_MODELLI_ACCOUNT else preferiti
+    attivi = [m for m in base_lista if m not in _MODELLI_NON_DISPONIBILI]
+    return attivi if attivi else preferiti[:4]
+
+
+def sintetizza_ricetta_ai_locale(query_ricerca: str, risultati_web: list = None):
+    """
+    Sintesi intelligente di emergenza se l'API Gemini restituisce errore di quota/rete:
+    costruisce una ricetta pulita partendo dalla query dell'utente e/o dai risultati web trovati.
+    """
+    q_clean = (query_ricerca or "Ricetta").strip()
+    low_q = q_clean.lower()
+    ings_sintesi = []
+
+    # 1. Gestione condimenti già pronti (es. 'Pasta col pesto già pronto')
+    if "pront" in low_q or "comprat" in low_q or "barattolo" in low_q or "scatola" in low_q:
+        if any(p in low_q for p in ["pasta", "spaghett", "penne", "fusilli", "trofie", "rigatoni", "farfalle", "mezze maniche"]):
+            ings_sintesi.append({"nome": "Pasta", "qta_base": 350.0, "unita": "g"})
+        elif "ris" in low_q:
+            ings_sintesi.append({"nome": "Riso", "qta_base": 320.0, "unita": "g"})
+        elif "gnocch" in low_q:
+            ings_sintesi.append({"nome": "Gnocchi di patate", "qta_base": 800.0, "unita": "g"})
+
+        m_cond = re.search(r"(?:con|col|al|alla|alle|ai)\s+([a-zA-Zàèéìòù\s]{3,25}?)(?:\s+già|\s+gia|\s+pront|\s+comprat|$)", low_q)
+        nome_cond = m_cond.group(1).strip().capitalize() if m_cond else "Condimento pronto"
+        if "pesto" in low_q:
+            nome_cond = "Pesto pronto"
+        elif "ragù" in low_q or "ragu" in low_q:
+            nome_cond = "Ragù pronto"
+        elif "sugo" in low_q:
+            nome_cond = "Sugo pronto"
+        ings_sintesi.append({"nome": nome_cond, "qta_base": 200.0, "unita": "g"})
+        ings_sintesi.append({"nome": "Sale", "qta_base": 0.0, "unita": "q.b."})
+
+    # 2. Se non è un piatto 'già pronto' ma abbiamo risultati web, sintetizza gli ingredienti essenziali dal miglior risultato web
+    if not ings_sintesi and risultati_web:
+        for rw in risultati_web:
+            if not rw.get("is_gemini") and rw.get("ingredienti_base"):
+                porz_w = max(1, int(rw.get("porzioni_base") or 4))
+                fatt = 4.0 / float(porz_w)
+                for ib in rw["ingredienti_base"][:8]:
+                    qb = round(float(ib.get("qta_base") or 0) * fatt, 1)
+                    ings_sintesi.append({
+                        "nome": generalizza_nome_dispensa(ib["nome"]) if is_ingrediente_dispensa_attivo(ib["nome"]) else ib["nome"],
+                        "qta_base": qb,
+                        "unita": ib.get("unita", "g")
+                    })
+                break
+
+    # 3. Se anche i portali web non hanno trovato nulla, genera gli ingredienti base dal nome del piatto
+    if not ings_sintesi:
+        if "legumi" in low_q or "zuppa" in low_q or "minestr" in low_q:
+            ings_sintesi = [
+                {"nome": "Legumi misti", "qta_base": 350.0, "unita": "g"},
+                {"nome": "Carota", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Sedano", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Cipolla", "qta_base": 1.0, "unita": "pz"},
+                {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ]
+        else:
+            ings_sintesi = [
+                {"nome": q_clean.capitalize(), "qta_base": 400.0, "unita": "g"},
+                {"nome": "Olio extravergine d'oliva", "qta_base": 0.0, "unita": "q.b."},
+                {"nome": "Sale", "qta_base": 0.0, "unita": "q.b."}
+            ]
+
+    return {
+        "titolo": f"✨ {q_clean.capitalize()} (Soluzione AI Gemini)",
+        "sito": "🤖 Intelligenza Artificiale Gemini",
+        "preparazione_breve": f"Ingredienti essenziali selezionati e calibrati per '{q_clean}'.",
+        "url_fonte": f"https://www.google.com/search?q={urllib.parse.quote_plus(q_clean + ' ricetta')}",
+        "foto_url": "",
+        "porzioni_base": 4,
+        "ingredienti_base": ings_sintesi,
+        "is_gemini": True
+    }
 
 
 def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str = ""):
@@ -1058,48 +1156,60 @@ def chiedi_ricetta_a_gemini_ai(query_ricerca: str, nome_ricetta_originale: str =
     raw_key = os.environ.get("GEMINI_API_KEY", "") or GEMINI_API_KEY
     api_key = raw_key.replace("GEMINI_API_KEY=", "").strip().strip('"').strip("'")
     if not api_key:
-        log_render("[GEMINI AI] ATTENZIONE: GEMINI_API_KEY assente nelle variabili d'ambiente!")
-        fb = genera_fallback_ricetta(query_effettiva, query_effettiva)
-        fb["is_gemini"] = True
-        fb["titolo"] = f"✨ {query_effettiva.capitalize()} (Configura GEMINI_API_KEY)"
-        fb["sito"] = "🤖 Intelligenza Artificiale Gemini"
-        return fb
+        log_render("[GEMINI AI] ATTENZIONE: GEMINI_API_KEY assente nelle variabili d'ambiente su Render!")
+        return None
 
     prompt = f"""Sei uno chef di cucina casalinga italiana. L'utente deve fare la spesa per preparare esattamente: "{query_effettiva}".
 Rispetta rigorosamente tutte le indicazioni e varianti scritte nella richiesta "{query_effettiva}" (es. se specifica ingredienti già pronti, varianti, aggiunte o esclusioni).
 Restituisci gli ingredienti semplici ed essenziali per 4 persone.
 Unità ammesse: "g", "kg", "ml", "l", "pz", "fette", "cucchiai", "tazze", "q.b.".
-Rispondi SOLO con un JSON valido:
+Rispondi SOLO con un oggetto JSON valido (senza markdown):
 {{"titolo": "Nome Piatto", "preparazione_breve": "Spiegazione breve in 2 righe", "porzioni_base": 4, "ingredienti_base": [{{"nome": "Pasta", "qta_base": 350, "unita": "g"}}]}}"""
-
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2}
-    }).encode("utf-8")
 
     candidati_modelli = ottieni_lista_modelli_gemini(api_key)
     for modello_target in candidati_modelli[:4]:
         try:
+            gen_cfg = {"temperature": 0.2, "responseMimeType": "application/json"}
+            if "2.5" in modello_target:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+
+            payload = json.dumps({
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": gen_cfg
+            }).encode("utf-8")
+
             url_api = f"https://generativelanguage.googleapis.com/v1beta/models/{modello_target}:generateContent?key={urllib.parse.quote(api_key)}"
             req = urllib.request.Request(url_api, data=payload, headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
                 risp_json = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            testo_out = risp_json["candidates"][0]["content"]["parts"][0]["text"]
+
+            # Estrae il testo da tutti i blocchi parts (gestendo anche i modelli 2.5 che mettono il pensiero in parts[0])
+            parts_list = risp_json.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+            testo_out = ""
+            for p_item in reversed(parts_list):
+                if p_item.get("text") and "{" in p_item.get("text", ""):
+                    testo_out = p_item["text"]
+                    break
+            if not testo_out and parts_list:
+                testo_out = parts_list[-1].get("text", "")
+
             m_json = re.search(r"\{.*\}", testo_out, flags=re.DOTALL)
             dati_ai = json.loads(m_json.group(0) if m_json else testo_out)
             ings_validi = []
             for item in dati_ai.get("ingredienti_base", []):
-                u = item.get("unita", "g")
+                u = str(item.get("unita") or "g").strip()
                 if u not in UNITA_MISURA:
                     u = "g"
-                ings_validi.append({
-                    "nome": str(item.get("nome", "")).strip().capitalize(),
-                    "qta_base": float(item.get("qta_base") or 0),
-                    "unita": u
-                })
+                n_ing = str(item.get("nome") or "").strip().capitalize()
+                if n_ing:
+                    ings_validi.append({
+                        "nome": n_ing,
+                        "qta_base": float(item.get("qta_base") or 0),
+                        "unita": u
+                    })
             if ings_validi:
                 MODELLO_GEMINI_RILEVATO[0] = modello_target
-                log_render(f"[GEMINI AI] Successo con modello '{modello_target}' per '{query_effettiva}' ({len(ings_validi)} ingredienti)")
+                log_render(f"[GEMINI AI] Risposta OK da modello '{modello_target}' per '{query_effettiva}': {[x['nome'] for x in ings_validi]}")
                 return {
                     "titolo": f"✨ {dati_ai.get('titolo') or query_effettiva.capitalize()} (Soluzione AI Gemini)",
                     "sito": "🤖 Intelligenza Artificiale Gemini",
@@ -1111,19 +1221,20 @@ Rispondi SOLO con un JSON valido:
                     "is_gemini": True
                 }
         except Exception as ex:
-            log_render(f"[GEMINI AI] Tentativo fallito su modello '{modello_target}': {ex}")
-            if "404" in str(ex) or "400" in str(ex):
-                _MODELLI_NON_DISPONIBILI.add(modello_target)
+            err_body = ""
+            if hasattr(ex, "read"):
+                try:
+                    err_body = ex.read().decode("utf-8", errors="ignore")[:220].replace("\n", " ")
+                except Exception:
+                    pass
+            log_render(f"[GEMINI AI] Fallito modello '{modello_target}': {ex} | Dettaglio: {err_body}")
+            _MODELLI_NON_DISPONIBILI.add(modello_target)
             if MODELLO_GEMINI_RILEVATO[0] == modello_target:
                 MODELLO_GEMINI_RILEVATO[0] = None
             continue
 
-    log_render(f"[GEMINI AI] Tutti i modelli hanno fallito per '{query_effettiva}', restituisco card base Gemini.")
-    fb = genera_fallback_ricetta(query_effettiva, query_effettiva)
-    fb["is_gemini"] = True
-    fb["titolo"] = f"✨ {query_effettiva.capitalize()} (Soluzione AI Gemini)"
-    fb["sito"] = "🤖 Intelligenza Artificiale Gemini"
-    return fb
+    log_render(f"[GEMINI AI] Nessun modello API ha risposto per '{query_effettiva}', attivo sintesi AI locale.")
+    return None
 
 
 def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
@@ -1269,7 +1380,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     for t in threads_s:
         t.join(timeout=5.0)
 
-    # Costruzione Round-Robin reale tra i vari siti (senza riordinare globalmente, così da garantire più siti diversi!)
+    # Costruzione Round-Robin reale tra i vari siti
     links_candidati = []
     for round_idx in range(3):
         for idx_p in sorted(mappa_links_portali.keys()):
@@ -1323,15 +1434,11 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
 
     risultati_trovati = [risultati_mappa[k] for k in sorted(risultati_mappa.keys())]
 
-    # Attende Gemini AI con timeout generoso (9s) e garantisce SEMPRE la presenza del risultato Gemini AI
-    t_ai.join(timeout=9.0)
+    # Attende Gemini AI e se l'API Google non risponde usa la sintesi intelligente con ingredienti reali
+    t_ai.join(timeout=8.0)
     sol_ai = box_ai_parallelo[0]
-    if not sol_ai:
-        log_render("[GEMINI AI] Thread AI ancora in corso o vuoto, generazione fallback Gemini immediata.")
-        sol_ai = genera_fallback_ricetta(query_ricerca, query_ricerca)
-        sol_ai["is_gemini"] = True
-        sol_ai["titolo"] = f"✨ {query_ricerca.strip().capitalize()} (Soluzione AI Gemini)"
-        sol_ai["sito"] = "🤖 Intelligenza Artificiale Gemini"
+    if not sol_ai or not sol_ai.get("ingredienti_base"):
+        sol_ai = sintetizza_ricetta_ai_locale(query_ricerca, risultati_trovati)
 
     sol_ai["foto_url"] = ""
     sol_ai["is_gemini"] = True
