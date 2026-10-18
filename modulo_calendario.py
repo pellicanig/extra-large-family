@@ -23,7 +23,7 @@ GIORNI = ["LUN", "MAR", "MER", "GIO", "VEN", "SAB", "DOM"]
 def crea_calendario(page: ft.Page):
     stato = {
         "data": datetime.now(), 
-        "vista": "Mese",
+        "vista": "Settimana",
         "filtro_categoria": [],
         "filtro_familiare": []
     }
