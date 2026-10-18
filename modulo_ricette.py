@@ -1490,8 +1490,8 @@ def estrai_info_complete_da_pagina_ricetta(html_page, url_pagina):
     return None
 
 
-def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_originale: str = ""):
-    log_render(f"[RICERCA WEB+AI] Avvio ricerca multi-sito per query: '{query_ricerca}' (originale: '{nome_ricetta_originale}')")
+def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_originale: str = "", on_progress_callback=None):
+    log_render(f"[RICERCA WEB+AI] Avvio ricerca progressiva multi-sito per query: '{query_ricerca}' (originale: '{nome_ricetta_originale}')")
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "it-IT,it;q=0.9"
@@ -1501,14 +1501,53 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
     query_pulita = re.sub(r"(?i)\b(il|la|lo|è|gia|già|pronto|pronta|comprato|comprata)\b", " ", query_pulita)
     query_pulita = re.sub(r"\s+", " ", query_pulita).strip() or query_ricerca.strip()
 
-    # 1. Avvia Gemini AI in parallelo passando la query esatta digitata dall'utente
+    risultati_mappa = {}
+    links_gia_avviati = set()
+    threads_estrazione = []
     box_ai_parallelo = [None]
+    lock_lk = threading.Lock()
+
+    def costruisci_lista_attuale(includi_fallback_ai=False):
+        with lock_lk:
+            tutti_web = list(risultati_mappa.values())
+            sol_ai_curr = box_ai_parallelo[0]
+        web_puliti = [r for r in tutti_web if not r.get("_ha_intrusi")]
+        lista_w = list(web_puliti if web_puliti else tutti_web)
+        lista_w.sort(key=lambda x: (-x.get("_match_parole", 0), x.get("_ordine_rr", 0)))
+
+        if sol_ai_curr and sol_ai_curr.get("ingredienti_base"):
+            copia_ai = dict(sol_ai_curr)
+            copia_ai["foto_url"] = ""
+            copia_ai["is_gemini"] = True
+            lista_w.append(copia_ai)
+        elif includi_fallback_ai:
+            fb_ai = sintetizza_ricetta_ai_locale(query_ricerca, lista_w)
+            fb_ai["foto_url"] = ""
+            fb_ai["is_gemini"] = True
+            lista_w.append(fb_ai)
+        return lista_w
+
+    def notifica_progresso():
+        if on_progress_callback:
+            try:
+                lista_parziale = costruisci_lista_attuale(includi_fallback_ai=False)
+                if lista_parziale:
+                    on_progress_callback(lista_parziale)
+            except Exception:
+                pass
+
+    # 1. Avvia Gemini AI in parallelo e notifica subito appena risponde
     def worker_ai():
-        box_ai_parallelo[0] = chiedi_ricetta_a_gemini_ai(query_ricerca, query_ricerca)
+        res_ai = chiedi_ricetta_a_gemini_ai(query_ricerca, query_ricerca)
+        with lock_lk:
+            box_ai_parallelo[0] = res_ai
+        if res_ai:
+            notifica_progresso()
+
     t_ai = threading.Thread(target=worker_ai, daemon=True)
     t_ai.start()
 
-    # 2. Ricerca parallela multi-portale (con endpoint dedicato sia per GialloZafferano che per Blog GialloZafferano)
+    # 2. Ricerca parallela multi-portale con estrazione immediata appena ogni sito risponde
     q_enc_plus = urllib.parse.quote_plus(query_pulita)
     q_enc_path = urllib.parse.quote(query_pulita)
     portali_ricerca = [
@@ -1543,7 +1582,6 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
         slug_norm = re.sub(r"^ricetta-", "", slug)
 
         score = 0.0
-        # Bonus altissimo se lo slug corrisponde esattamente alla ricetta cercata (es. 'tagliatelle-al-sugo')
         if slug_norm == slug_ideale or slug_ideale in slug_norm:
             score += 45.0
 
@@ -1553,11 +1591,9 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
             else:
                 score -= 10.0
 
-        # Forte penalizzazione se l'URL contiene ingredienti intrusi non richiesti (es. barolo, funghi, salsiccia, tonno)
         if ha_ingredienti_intrusi_non_richiesti(slug_norm.replace("-", " "), query_ricerca):
             score -= 80.0
 
-        # Penalizza parole extra nello slug non presenti nella richiesta dell'utente
         parole_slug = [w for w in slug_norm.split("-") if len(w) >= 4 and w not in parole_stop]
         for ps in parole_slug:
             if not any(ps[:4] == pk[:4] or ps in pk or pk in ps for pk in parole_chiave):
@@ -1565,49 +1601,10 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
 
         return score
 
-    mappa_links_portali = {}
-    lock_lk = threading.Lock()
-
-    def cerca_su_portale(idx_p, nome_p, u_s):
-        try:
-            req = urllib.request.Request(u_s, headers=headers)
-            with urllib.request.urlopen(req, timeout=4.5) as resp:
-                raw_html = resp.read().decode("utf-8", errors="ignore")
-                html_s = urllib.parse.unquote(html.unescape(raw_html))
-            esclusioni = ("ricerca", "categoria", "page", "/tag/", "/author/", "/contatti", "/privacy", "/chi-sono", "/video", "wp-content", "wp-json", "/feed", "comment")
-            trovati = [
-                lk.rstrip("\\").rstrip('"').rstrip("'") for lk in re.findall(pattern_links, html_s)
-                if not any(esc in lk.lower() for esc in esclusioni)
-            ]
-            trovati_unici = list(dict.fromkeys(trovati))
-            trovati_unici.sort(key=calcola_score_link, reverse=True)
-            with lock_lk:
-                mappa_links_portali[idx_p] = trovati_unici[:3]
-            log_render(f"[RICERCA WEB] Portale '{nome_p}': trovati {len(trovati_unici)} link candidati (Top: {trovati_unici[0] if trovati_unici else 'nessuno'})")
-        except Exception as ex:
-            log_render(f"[RICERCA WEB] Portale '{nome_p}' non raggiungibile o timeout: {ex}")
-
-    threads_s = [threading.Thread(target=cerca_su_portale, args=(i, np, u), daemon=True) for i, (np, u) in enumerate(portali_ricerca)]
-    for t in threads_s:
-        t.start()
-    for t in threads_s:
-        t.join(timeout=5.0)
-
-    # Costruzione Round-Robin tra i vari siti dando precedenza ai link privi di intrusi
-    links_candidati = []
-    for round_idx in range(3):
-        for idx_p in sorted(mappa_links_portali.keys()):
-            lista_p = mappa_links_portali[idx_p]
-            if round_idx < len(lista_p):
-                lk = lista_p[round_idx]
-                if lk not in links_candidati:
-                    links_candidati.append(lk)
-
-    risultati_mappa = {}
-    def estrai_da_link(pos_idx, link):
+    def estrai_da_link(ordine_rr, link):
         try:
             req_r = urllib.request.Request(link, headers=headers)
-            with urllib.request.urlopen(req_r, timeout=4.5) as resp_r:
+            with urllib.request.urlopen(req_r, timeout=4.0) as resp_r:
                 html_r = resp_r.read().decode("utf-8", errors="ignore")
             info = estrai_info_complete_da_pagina_ricetta(html_r, link)
             if info and info.get("raw_ings"):
@@ -1631,7 +1628,7 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
                     match_parole = sum(1 for pk in parole_chiave if pk[:4] in tit_r.lower())
 
                     with lock_lk:
-                        risultati_mappa[pos_idx] = {
+                        risultati_mappa[link] = {
                             "titolo": tit_r,
                             "sito": sito_nome,
                             "url_fonte": link,
@@ -1641,36 +1638,55 @@ def cerca_ricette_su_internet_dettagliate(query_ricerca: str, nome_ricetta_origi
                             "is_gemini": False,
                             "_ha_intrusi": ha_intrusi,
                             "_match_parole": match_parole,
-                            "_ordine_rr": pos_idx
+                            "_ordine_rr": ordine_rr
                         }
-                    log_render(f"[RICERCA WEB] Estratta '{tit_r}' da {sito_nome} ({len(ings_validi)} ing., intrusi={ha_intrusi})")
+                    log_render(f"[RICERCA PROGRESSIVA] Pronta subito '{tit_r}' da {sito_nome} ({len(ings_validi)} ing., intrusi={ha_intrusi})")
+                    notifica_progresso()
         except Exception:
             pass
 
-    threads_r = [threading.Thread(target=estrai_da_link, args=(idx_l, lk), daemon=True) for idx_l, lk in enumerate(links_candidati[:9])]
-    for t in threads_r:
+    def cerca_su_portale(idx_p, nome_p, u_s):
+        try:
+            req = urllib.request.Request(u_s, headers=headers)
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                raw_html = resp.read().decode("utf-8", errors="ignore")
+                html_s = urllib.parse.unquote(html.unescape(raw_html))
+            esclusioni = ("ricerca", "categoria", "page", "/tag/", "/author/", "/contatti", "/privacy", "/chi-sono", "/video", "wp-content", "wp-json", "/feed", "comment")
+            trovati = [
+                lk.rstrip("\\").rstrip('"').rstrip("'") for lk in re.findall(pattern_links, html_s)
+                if not any(esc in lk.lower() for esc in esclusioni)
+            ]
+            trovati_unici = list(dict.fromkeys(trovati))
+            trovati_unici.sort(key=calcola_score_link, reverse=True)
+            log_render(f"[RICERCA WEB] Portale '{nome_p}': trovati {len(trovati_unici)} link (Top: {trovati_unici[0] if trovati_unici else 'nessuno'})")
+
+            # Avvia SUBITO l'estrazione delle migliori 2 ricette di questo portale senza attendere gli altri siti!
+            for rank_idx, lk in enumerate(trovati_unici[:2]):
+                with lock_lk:
+                    if lk in links_gia_avviati or len(links_gia_avviati) >= 10:
+                        continue
+                    links_gia_avviati.add(lk)
+                ordine_rr = rank_idx * 10 + idx_p
+                t_ext = threading.Thread(target=estrai_da_link, args=(ordine_rr, lk), daemon=True)
+                with lock_lk:
+                    threads_estrazione.append(t_ext)
+                t_ext.start()
+        except Exception as ex:
+            log_render(f"[RICERCA WEB] Portale '{nome_p}' non raggiungibile o timeout: {ex}")
+
+    threads_s = [threading.Thread(target=cerca_su_portale, args=(i, np, u), daemon=True) for i, (np, u) in enumerate(portali_ricerca)]
+    for t in threads_s:
         t.start()
-    for t in threads_r:
-        t.join(timeout=5.0)
+    for t in threads_s:
+        t.join(timeout=4.2)
 
-    tutti_web = list(risultati_mappa.values())
-    # Se ci sono ricette web fedeli (senza intrusi come funghi/barolo/tonno), scarta del tutto quelle con intrusi!
-    web_puliti = [r for r in tutti_web if not r.get("_ha_intrusi")]
-    lista_web_finale = web_puliti if web_puliti else tutti_web
+    with lock_lk:
+        t_ext_list = list(threads_estrazione)
+    for t in t_ext_list:
+        t.join(timeout=3.5)
 
-    # Ordina mettendo in cima le ricette che contengono tutte le parole chiave cercate, mantenendo il round-robin tra siti
-    lista_web_finale.sort(key=lambda x: (-x.get("_match_parole", 0), x.get("_ordine_rr", 0)))
-    risultati_trovati = lista_web_finale
-
-    # Attende Gemini AI e se l'API Google non risponde usa la sintesi intelligente fedele
-    t_ai.join(timeout=8.0)
-    sol_ai = box_ai_parallelo[0]
-    if not sol_ai or not sol_ai.get("ingredienti_base"):
-        sol_ai = sintetizza_ricetta_ai_locale(query_ricerca, risultati_trovati)
-
-    sol_ai["foto_url"] = ""
-    sol_ai["is_gemini"] = True
-    risultati_trovati.append(sol_ai)
+    t_ai.join(timeout=5.0)
+    risultati_trovati = costruisci_lista_attuale(includi_fallback_ai=True)
 
     siti_riepilogo = [f"{r.get('sito', '')}: {r.get('titolo', '')}" for r in risultati_trovati]
     log_render(f"[RICERCA WEB+AI] Completata per '{query_ricerca}': {len(risultati_trovati)} proposte -> {siti_riepilogo}")
