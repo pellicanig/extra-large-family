@@ -481,7 +481,7 @@ def crea_calendario_menu(page: ft.Page):
     btn_giorno = ft.Container(content=ft.Text("Giorno", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Giorno"))
     btn_settimana = ft.Container(content=ft.Text("Settimana", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Settimana"))
     btn_mese = ft.Container(content=ft.Text("Mese", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Mese"))
-    box_bottoni_vista = ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5, visible=True)
+    box_bottoni_vista = ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5, visible=False)
 
     def toggle_modalita_semplificata(e):
         stato["semplificata"] = bool(switch_semplificata.value)
