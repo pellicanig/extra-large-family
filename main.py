@@ -195,10 +195,12 @@ def main(page: ft.Page):
     page.route = "/"
     route_change(None)
 
-import inspect, fastapi
-if "openapi_prefix" not in inspect.signature(fastapi.FastAPI.__init__).parameters:
-    _orig_fastapi_init = fastapi.FastAPI.__init__
-    fastapi.FastAPI.__init__ = lambda self, *a, openapi_prefix="", **kw: _orig_fastapi_init(self, *a, **kw)
+import fastapi
+_orig_fastapi_init = fastapi.FastAPI.__init__
+def _patched_fastapi_init(self, *args, **kwargs):
+    kwargs.pop("openapi_prefix", None)
+    return _orig_fastapi_init(self, *args, **kwargs)
+fastapi.FastAPI.__init__ = _patched_fastapi_init
 
 if __name__ == "__main__":
     porta = int(os.environ.get("PORT", 8080))
