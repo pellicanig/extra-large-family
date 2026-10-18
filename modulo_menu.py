@@ -468,7 +468,7 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 # CALENDARIO DEI MENU (SINCRONIZZAZIONE CACHE AUTOMATICA + VARIE BIVALENTE)
 # ==========================================================
 def crea_calendario_menu(page: ft.Page):
-    stato = {"data": datetime.now(), "vista": "Mese", "semplificata": False}
+    stato = {"data": datetime.now(), "vista": "Mese", "semplificata": True}
     oggi = datetime.now()
     ram_menu = {"dizionario_menu": {}, "voci_dispensa_mese": [], "voci_detersivi_mese": []}
 
