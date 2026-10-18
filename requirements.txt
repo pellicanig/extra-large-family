@@ -2,4 +2,4 @@ flet>=1.0.0
 supabase
 python-dotenv
 flet-web
-fastapi==0.114.2
+
