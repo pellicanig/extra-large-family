@@ -2483,7 +2483,7 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                     lbl_det_status.value = f"🌐 Ricerca automatica '{stato_popup['query_web']}'..."
                     disegna_popup_da_ram()
 
-                    stato_popup["risultati_web"] = cerca_ricette_su_internet_dettagliate(stato_popup["query_web"], stato_popup["nome_ricetta"])
+                    stato_popup["risultati_web"] = cerca_ricette_su_internet_dettagliate(stato_popup["query_web"], stato_popup["nome_ricetta"], on_progress_callback=lambda lp: (stato_popup.update({"risultati_web": lp}), setattr(lbl_det_status, "value", f"⚡ Trovate {len(lp)} proposte (ricerca in corso...)"), disegna_popup_da_ram()))
                     stato_popup["ultima_query_cercata"] = stato_popup["query_web"]
                     stato_popup["idx_web"] = 0
                     stato_popup["ricerca_in_corso"] = False
