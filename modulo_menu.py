@@ -490,7 +490,7 @@ def crea_calendario_menu(page: ft.Page):
         aggiorna_calendario_menu()
 
     lbl_semplificata = ft.Text("⚡ Semplificata", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
-    switch_semplificata = ft.Switch(value=False, on_change=toggle_modalita_semplificata)
+    switch_semplificata = ft.Switch(value=True, on_change=toggle_modalita_semplificata)
     box_switch_semplificata = ft.Container(
         content=ft.Row([lbl_semplificata, switch_semplificata], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor="#FFF3E0", padding=ft.Padding(8, 2, 6, 2), border_radius=15, border=bordo_campo_uniforme("#FFB74D")
