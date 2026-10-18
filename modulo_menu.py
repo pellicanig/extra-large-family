@@ -496,7 +496,7 @@ def crea_calendario_menu(page: ft.Page):
         bgcolor="#FFF3E0", padding=ft.Padding(8, 2, 6, 2), border_radius=15, border=bordo_campo_uniforme("#FFB74D")
     )
 
-    layer_mese = ft.Column(spacing=0, visible=True)
+    layer_mese = ft.Column(spacing=0, visible=False)
     layer_settimana = ft.Column(spacing=0, visible=False)
     layer_giorno = ft.Column(spacing=0, visible=False)
     layer_semplificata = ft.Column(spacing=8, visible=False)
@@ -867,6 +867,16 @@ def crea_calendario_menu(page: ft.Page):
                             righe_p.append(ft.Text(f"  • {x['ingredienti']['nome']} ({formatta_numero(x.get('quantita') or 0)} {u_c})", size=12))
                     layer_giorno.controls.append(ft.Container(content=ft.Column(righe_p, spacing=2), bgcolor=ft.Colors.WHITE, padding=8, border_radius=8, border=bordo_standard(), on_click=lambda e: apri_giorno_selezionato(data)))
 
+        if not is_semplificata:
+          layer_attivo = layer_mese if vista == "Mese" else (layer_settimana if vista == "Settimana" else layer_giorno)
+          layer_attivo.controls.append(
+              ft.Column([
+                  ft.Divider(height=6, color="#CFD8DC"),
+                  crea_card_mensile_tutto_schermo("Dispensa", "📦", "Dispensa", "#00897B", ram_menu["voci_dispensa_mese"], data),
+                  crea_card_mensile_tutto_schermo("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", ram_menu["voci_detersivi_mese"], data)
+              ], spacing=8)
+          )
+        
         try:
             page.update()
         except Exception:
@@ -966,6 +976,7 @@ def crea_calendario_menu(page: ft.Page):
         on_click=lambda e: apri_popup_fai_la_spesa(page, stato["data"], aggiorna_calendario_menu)
     )
 
+    disegna_vista_da_ram()
     aggiorna_calendario_menu()
 
     return ft.Container(
