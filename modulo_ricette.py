@@ -2238,6 +2238,8 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             termini_modificati = (qs.lower() != stato_popup["nome_ricetta"].strip().lower())
             stato_popup["query_web"] = qs
             stato_popup["persone_web"] = int(max(1, parse_qta(box_p_web.textfield.value) or 8))
+            stato_popup["risultati_web"] = []
+            stato_popup["idx_web"] = 0
             stato_popup["ricerca_in_corso"] = True
             banner_det.visible = True
             lbl_det_status.value = f"🌐 Ricerca multi-sito e Gemini AI per '{qs}'..."
@@ -2245,15 +2247,30 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
             render_anteprima()
             page.update()
 
+            def on_prog_manuale(lista_parziale):
+                aveva_ris = len(stato_popup["risultati_web"]) > 0
+                stato_popup["risultati_web"] = lista_parziale
+                if punta_su_gemini or termini_modificati:
+                    if any(r.get("is_gemini") for r in lista_parziale):
+                        stato_popup["idx_web"] = trova_indice_gemini(lista_parziale)
+                elif not aveva_ris:
+                    stato_popup["idx_web"] = 0
+                lbl_det_status.value = f"⚡ Trovate {len(lista_parziale)} proposte (ricerca altri siti in corso...)"
+                render_anteprima()
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
             def w_s():
                 try:
-                    ris = cerca_ricette_su_internet_dettagliate(qs, qs)
+                    ris = cerca_ricette_su_internet_dettagliate(qs, qs, on_progress_callback=on_prog_manuale)
                     stato_popup["risultati_web"] = ris
                     stato_popup["ultima_query_cercata"] = qs
                     if punta_su_gemini or termini_modificati:
                         stato_popup["idx_web"] = trova_indice_gemini(ris)
                         log_render(f"[RICERCA WEB+AI] Selezionato automaticamente risultato Gemini AI (indice {stato_popup['idx_web']})")
-                    else:
+                    elif stato_popup["idx_web"] >= len(ris):
                         stato_popup["idx_web"] = 0
                 finally:
                     stato_popup["ricerca_in_corso"] = False
@@ -2280,7 +2297,9 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
 
         def render_anteprima():
             box_anteprima.controls.clear()
-            if stato_popup["ricerca_in_corso"]:
+            r_list = stato_popup["risultati_web"]
+            # Mostra solo lo spinner se la ricerca è appena partita e non è ancora arrivata la prima ricetta
+            if stato_popup["ricerca_in_corso"] and not r_list:
                 box_anteprima.controls.append(
                     ft.Container(
                         content=ft.Row([
@@ -2292,7 +2311,6 @@ def apri_popup_dettaglio_ricetta_semplificata(page: ft.Page, id_voce_menu: str, 
                 )
                 return
 
-            r_list = stato_popup["risultati_web"]
             if not r_list:
                 return
             idx = min(stato_popup["idx_web"], len(r_list) - 1)
