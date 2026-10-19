@@ -747,6 +747,12 @@ def crea_calendario_menu(page: ft.Page):
             ft.Container(content=ft.Column([barra_titolo, lista_voci_ui], spacing=6), expand=1, bgcolor="#F4F6F9", padding=8, border_radius=8, border=bordo_campo_uniforme(colore_tema, 1.5))
         ], spacing=6)
 
+    btn_fai_la_spesa = ft.Container(
+        content=ft.Row([ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.WHITE, size=20), ft.Text("FAI LA SPESA (Somma Ingredienti & Dispensa)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=13)], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+        bgcolor=ft.Colors.GREEN_700, padding=12, border_radius=8,
+        on_click=lambda e: apri_popup_fai_la_spesa(page, stato["data"], aggiorna_calendario_menu)
+    )
+    
     def disegna_vista_da_ram():
         vista, data, is_semplificata = stato["vista"], stato["data"], stato["semplificata"]
 
@@ -773,6 +779,7 @@ def crea_calendario_menu(page: ft.Page):
                 ft.Row([cards_g[3], cards_g[4], cards_g[5]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
                 ft.Row([cards_g[6]], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
                 ft.Divider(height=6, color="#CFD8DC"),
+                btn_fai_la_spesa,
                 crea_card_mensile_tutto_schermo("Dispensa", "📦", "Dispensa", "#00897B", ram_menu["voci_dispensa_mese"], data),
                 crea_card_mensile_tutto_schermo("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", ram_menu["voci_detersivi_mese"], data)
             ])
@@ -868,14 +875,15 @@ def crea_calendario_menu(page: ft.Page):
                     layer_giorno.controls.append(ft.Container(content=ft.Column(righe_p, spacing=2), bgcolor=ft.Colors.WHITE, padding=8, border_radius=8, border=bordo_standard(), on_click=lambda e: apri_giorno_selezionato(data)))
 
         if not is_semplificata:
-          layer_attivo = layer_mese if vista == "Mese" else (layer_settimana if vista == "Settimana" else layer_giorno)
-          layer_attivo.controls.append(
-              ft.Column([
-                  ft.Divider(height=6, color="#CFD8DC"),
-                  crea_card_mensile_tutto_schermo("Dispensa", "📦", "Dispensa", "#00897B", ram_menu["voci_dispensa_mese"], data),
-                  crea_card_mensile_tutto_schermo("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", ram_menu["voci_detersivi_mese"], data)
-              ], spacing=8)
-          )
+            layer_attivo = layer_mese if vista == "Mese" else (layer_settimana if vista == "Settimana" else layer_giorno)
+            layer_attivo.controls.append(
+                ft.Column([
+                    ft.Divider(height=6, color="#CFD8DC"),
+                    btn_fai_la_spesa,
+                    crea_card_mensile_tutto_schermo("Dispensa", "📦", "Dispensa", "#00897B", ram_menu["voci_dispensa_mese"], data),
+                    crea_card_mensile_tutto_schermo("Detersivi e Varie", "🧼", "Detersivi", "#546E7A", ram_menu["voci_detersivi_mese"], data)
+                ], spacing=8)
+            )
         
         try:
             page.update()
@@ -970,16 +978,10 @@ def crea_calendario_menu(page: ft.Page):
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True, run_spacing=8
     )
 
-    btn_fai_la_spesa = ft.Container(
-        content=ft.Row([ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.WHITE, size=20), ft.Text("FAI LA SPESA (Somma Ingredienti & Dispensa)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=13)], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-        bgcolor=ft.Colors.GREEN_700, padding=12, border_radius=8,
-        on_click=lambda e: apri_popup_fai_la_spesa(page, stato["data"], aggiorna_calendario_menu)
-    )
-
     disegna_vista_da_ram()
     aggiorna_calendario_menu()
 
     return ft.Container(
-        content=ft.Column([header, area_dinamica, ft.Divider(height=10, color="#EEEEEE"), btn_fai_la_spesa], spacing=10, scroll=ft.ScrollMode.AUTO),
+        content=ft.Column([header, area_dinamica], spacing=10, scroll=ft.ScrollMode.AUTO),
         padding=5, expand=True
     )
