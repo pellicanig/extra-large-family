@@ -421,15 +421,30 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     )
                 )
 
+            ha_ricette = bool(item.get("dettagli_uso"))
             riga_ctrl = [
                 ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                 ft.Container(
                     content=ft.Row([
-                        ft.Text(item["nome"], size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if item.get("dettagli_uso") else ft.Colors.BLACK, expand=True),
-                        *([ft.Text(f"({len(item['dettagli_uso'])} ric.)", size=10, color=ft.Colors.GREY_600)] if item.get("dettagli_uso") else [])
-                    ], spacing=4),
-                    expand=True, padding=ft.Padding(0, 6, 0, 6),
-                    on_click=lambda e, it=item: mostra_popup_ricette_ingrediente(it)
+                        ft.Text(
+                            item["nome"],
+                            size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.BLUE_900 if ha_ricette else ft.Colors.BLACK,
+                            style=ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE) if ha_ricette else None,
+                            expand=True
+                        ),
+                        *([
+                            ft.Container(
+                                content=ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD),
+                                bgcolor="#E3F2FD", padding=ft.Padding(5, 2, 5, 2), border_radius=8,
+                                border=bordo_campo_uniforme("#90CAF9", 1)
+                            )
+                        ] if ha_ricette else [])
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=True, padding=ft.Padding(4, 5, 4, 5), border_radius=5,
+                    ink=ha_ricette,
+                    on_click=(lambda e, it=item: mostra_popup_ricette_ingrediente(it)) if ha_ricette else None
                 )
             ]
 
@@ -483,14 +498,34 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                 ext = item.get("etichetta_extra", "")
                 mostra_q = (ext == "")
                 q_finale = formatta_qta_finale(item["qta"], item["unita"]) if mostra_q else ""
+                ha_ric_preso = bool(item.get("dettagli_uso"))
+                
                 colonna_lista.controls.append(
                     ft.Container(
                         content=ft.Row([
                             ft.Checkbox(value=True, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                             ft.Container(
-                                content=ft.Text(f"✓ {item['nome']}", size=12, color=ft.Colors.GREY_600, italic=True),
-                                expand=True, padding=ft.Padding(0, 4, 0, 4),
-                                on_click=lambda e, it=item: mostra_popup_ricette_ingrediente(it)
+                                content=ft.Row([
+                                    ft.Text(
+                                        f"✓ {item['nome']}",
+                                        size=12,
+                                        color=ft.Colors.BLUE_800 if ha_ric_preso else ft.Colors.GREY_600,
+                                        italic=True,
+                                        style=ft.TextStyle(decoration=ft.TextDecoration.UNDERLINE) if ha_ric_preso else None,
+                                        expand=True
+                                    ),
+                                    *([
+                                        ft.Container(
+                                            content=ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD),
+                                            bgcolor="#E3F2FD", padding=ft.Padding(5, 2, 5, 2), border_radius=8,
+                                            border=bordo_campo_uniforme("#90CAF9", 1)
+                                        )
+                                    ] if ha_ric_preso else [])
+                                ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                expand=True, padding=ft.Padding(4, 3, 4, 3), border_radius=5,
+                                ink=ha_ric_preso,
+                                directo=None,
+                                on_click=(lambda e, it=item: mostra_popup_ricette_ingrediente(it)) if ha_ric_preso else None
                             ),
                             *([ft.Text(q_finale, size=11, color=ft.Colors.GREY_600)] if mostra_q else [])
                         ], spacing=4),
