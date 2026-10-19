@@ -147,11 +147,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 txt_fine.error_text = None
                 page.update()
 
-        txt_data = ft.TextField(label="Data", hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, text_size=13, on_change=formatta_data_input, text_align=ft.TextAlign.CENTER, expand=True)
-        txt_inizio = ft.TextField(label="Inizio", hint_text="HH:MM", value=inizio_iniziale, text_size=13, on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER, expand=True)
-        txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, text_size=13, on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, expand=True)
+        txt_data = ft.TextField(label="Data", hint_text="GG/MM/AAAA", value=data_visualizzata_iniziale, text_size=12, dense=True, content_padding=ft.Padding(4, 10, 4, 10), on_change=formatta_data_input, text_align=ft.TextAlign.CENTER, expand=5)
+        txt_inizio = ft.TextField(label="Inizio", hint_text="HH:MM", value=inizio_iniziale, text_size=12, dense=True, content_padding=ft.Padding(2, 10, 2, 10), on_change=formatta_ora_inizio, text_align=ft.TextAlign.CENTER, expand=3)
+        txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, text_size=12, dense=True, content_padding=ft.Padding(2, 10, 2, 10), on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, expand=3)
         
-        riga_date_orari = ft.Row([txt_data, txt_inizio, txt_fine], spacing=5)
+        riga_date_orari = ft.Row([txt_data, txt_inizio, txt_fine], spacing=4)
         txt_note = ft.TextField(label="Note aggiuntive", hint_text="Eventuali dettagli...", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
