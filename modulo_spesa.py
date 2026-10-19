@@ -421,15 +421,32 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                     )
                 )
 
+            ha_ricette = bool(item.get("dettagli_uso"))
             riga_ctrl = [
                 ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                 ft.Container(
                     content=ft.Row([
-                        ft.Text(item["nome"], size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if item.get("dettagli_uso") else ft.Colors.BLACK, expand=True),
-                        *([ft.Text(f"({len(item['dettagli_uso'])} ric.)", size=10, color=ft.Colors.GREY_600)] if item.get("dettagli_uso") else [])
-                    ], spacing=4),
-                    expand=True, padding=ft.Padding(0, 6, 0, 6),
-                    on_click=lambda e, it=item: mostra_popup_ricette_ingrediente(it)
+                        ft.Text(
+                            item["nome"],
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.BLUE_900 if ha_ricette else ft.Colors.BLACK,
+                            expand=True
+                        ),
+                        *([
+                            ft.Container(
+                                content=ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                bgcolor=ft.Colors.BLUE_700, padding=ft.Padding(5, 2, 5, 2), border_radius=6
+                            )
+                        ] if ha_ricette else [])
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    expand=True,
+                    bgcolor="#E3F2FD" if ha_ricette else None,
+                    padding=ft.Padding(6, 4, 6, 4) if ha_ricette else ft.Padding(0, 6, 0, 6),
+                    border_radius=6,
+                    border=bordo_campo_uniforme("#1976D2", 1) if ha_ricette else None,
+                    ink=ha_ricette,
+                    on_click=(lambda e, it=item: mostra_popup_ricette_ingrediente(it)) if ha_ricette else None
                 )
             ]
 
@@ -488,9 +505,17 @@ def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_
                         content=ft.Row([
                             ft.Checkbox(value=True, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
                             ft.Container(
-                                content=ft.Text(f"✓ {item['nome']}", size=12, color=ft.Colors.GREY_600, italic=True),
-                                expand=True, padding=ft.Padding(0, 4, 0, 4),
-                                on_click=lambda e, it=item: mostra_popup_ricette_ingrediente(it)
+                                content=ft.Row([
+                                    ft.Text(f"✓ {item['nome']}", size=12, color=ft.Colors.BLUE_900 if item.get("dettagli_uso") else ft.Colors.GREY_600, italic=True, expand=True),
+                                    *([ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD)] if item.get("dettagli_uso") else [])
+                                ], spacing=4),
+                                expand=True,
+                                bgcolor="#E3F2FD" if item.get("dettagli_uso") else None,
+                                padding=ft.Padding(6, 3, 6, 3) if item.get("dettagli_uso") else ft.Padding(0, 4, 0, 4),
+                                border_radius=6,
+                                border=bordo_campo_uniforme("#90CAF9", 1) if item.get("dettagli_uso") else None,
+                                ink=bool(item.get("dettagli_uso")),
+                                on_click=(lambda e, it=item: mostra_popup_ricette_ingrediente(it)) if item.get("dettagli_uso") else None
                             ),
                             *([ft.Text(q_finale, size=11, color=ft.Colors.GREY_600)] if mostra_q else [])
                         ], spacing=4),
