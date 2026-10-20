@@ -6,6 +6,7 @@ from modulo_ricette import (
     supabase,
     MESI,
     GIORNI_ESTESI,
+    CACHE_ANAGRAFICA,
     log_render,
     is_valid_uuid,
     apri_dialog_sicuro,
@@ -24,6 +25,426 @@ from modulo_ricette import (
 # ==========================================================
 # MOTORE INTELLIGENTE "FAI LA SPESA"
 # ==========================================================
+
+def apri_popup_usi_ingrediente(page: ft.Page, nome_i: str, usi_raw: list, tot_str: str = ""):
+    usi = sorted(usi_raw or [], key=lambda x: (x.get("data_menu", ""), x.get("categoria", "")))
+    righe_dettaglio = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, tight=True)
+    if not usi:
+        righe_dettaglio.controls.append(
+            ft.Container(
+                content=ft.Text("Prodotto non associato a ricette nel periodo selezionato.", size=12, color=ft.Colors.GREY_700, italic=True),
+                padding=8
+            )
+        )
+    else:
+        for u_info in usi:
+            d_raw = u_info.get("data_menu", "")
+            try:
+                dt_u = datetime.strptime(d_raw, "%Y-%m-%d")
+                data_leggibile = f"{GIORNI_ESTESI[dt_u.weekday()]} {dt_u.strftime('%d/%m')}"
+            except Exception:
+                data_leggibile = d_raw
+            cat_u = u_info.get("categoria", "")
+            icona_cat = "☀️" if cat_u == "Pranzo" else ("🌙" if cat_u == "Cena" else "📝")
+            righe_dettaglio.controls.append(
+                ft.Container(
+                    content=ft.Row([
+                        ft.Column([
+                            ft.Text(f"📅 {data_leggibile} ({icona_cat} {cat_u})", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                            ft.Text(f"🍲 {u_info.get('ricetta', '')}", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK)
+                        ], spacing=2, expand=True),
+                        ft.Container(
+                            content=ft.Text(u_info.get("qta_str", ""), size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                            bgcolor=ft.Colors.TEAL_700, padding=ft.Padding(8, 4, 8, 4), border_radius=6
+                        )
+                    ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor="#F5F7FA", padding=8, border_radius=6, border=bordo_campo_uniforme("#CFD8DC")
+                )
+            )
+
+    dlg_uso = None
+    dlg_uso = ft.AlertDialog(
+        title=ft.Text(f"🔍 {nome_i}{tot_str}", size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+        content=ft.Container(content=righe_dettaglio, width=330, height=min(360, max(90, len(usi) * 62))),
+        actions=[
+            ft.Container(
+                content=ft.Text("Chiudi", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                bgcolor=ft.Colors.BLUE_900, padding=ft.Padding(14, 8, 14, 8), border_radius=6,
+                on_click=lambda e: chiudi_dialog_sicuro(page, dlg_uso)
+            )
+        ],
+        shape=ft.RoundedRectangleBorder(radius=10), content_padding=10
+    )
+    apri_dialog_sicuro(page, dlg_uso)
+
+
+def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=None, on_ridisegna_ram_fn=None):
+    spuntati_sessione = set()
+    stato_filtro = {"scelta": None, "mese_anno": None}
+    dati_aggregati = []
+
+    spinner_spesa = ft.ProgressRing(width=16, height=16, stroke_width=2.5, color=ft.Colors.WHITE, visible=False)
+    riga_bottoni_filtro = ft.Row(wrap=True, spacing=6, run_spacing=6)
+    txt_periodo_date = ft.Text("", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD)
+    txt_riepilogo = ft.Text("", size=11, color="#E8F5E9", weight=ft.FontWeight.BOLD)
+    colonna_ingredienti_ui = ft.Column(spacing=4)
+
+    def normalizza_qta_unita(qta, unita):
+        u = str(unita or "pz").replace("|DET", "").replace("|DISPENSA", "").lower().strip()
+        q = float(qta or 0)
+        if u == "kg":
+            return q * 1000.0, "g"
+        if u == "l":
+            return q * 1000.0, "ml"
+        return q, u
+
+    def formatta_qta_finale(qta_tot, unita_base):
+        if unita_base == "g" and qta_tot >= 1000:
+            return f"{formatta_numero(qta_tot / 1000.0)} kg"
+        if unita_base == "ml" and qta_tot >= 1000:
+            return f"{formatta_numero(qta_tot / 1000.0)} l"
+        if unita_base == "q.b." or qta_tot == 0:
+            return "q.b."
+        return f"{formatta_numero(qta_tot)} {unita_base}"
+
+    def aggiorna_opzioni_e_stile_filtri(data_riferimento: datetime):
+        oggi_dt = datetime.now()
+        stesso_mese_oggi = (data_riferimento.year == oggi_dt.year and data_riferimento.month == oggi_dt.month)
+        nome_mese_rif = MESI[data_riferimento.month]
+        chiave_ma = (data_riferimento.year, data_riferimento.month)
+
+        if stesso_mese_oggi:
+            opzioni = ["Da oggi a fine mese", "Prossimi 7 giorni", "Solo giorno sel.", f"Tutto {nome_mese_rif}"]
+            def_scelta = "Da oggi a fine mese"
+        else:
+            opzioni = [f"Tutto {nome_mese_rif}", "Dal giorno sel. a fine mese", "7 giorni dal giorno sel.", "Solo giorno sel."]
+            def_scelta = f"Tutto {nome_mese_rif}"
+
+        if stato_filtro["mese_anno"] != chiave_ma or stato_filtro["scelta"] not in opzioni:
+            stato_filtro["mese_anno"] = chiave_ma
+            stato_filtro["scelta"] = def_scelta
+
+        riga_bottoni_filtro.controls.clear()
+        for opz in opzioni:
+            att = (stato_filtro["scelta"] == opz)
+            riga_bottoni_filtro.controls.append(
+                ft.Container(
+                    content=ft.Text(opz, size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN_900 if att else ft.Colors.WHITE),
+                    bgcolor=ft.Colors.WHITE if att else "#1B5E20",
+                    padding=ft.Padding(10, 5, 10, 5),
+                    border_radius=14,
+                    border=bordo_campo_uniforme(ft.Colors.WHITE, 1.5 if att else 1),
+                    ink=True,
+                    on_click=lambda e, sc=opz: cambia_filtro(sc)
+                )
+            )
+
+    def cambia_filtro(nuova_scelta):
+        stato_filtro["scelta"] = nuova_scelta
+        ricalcola_spesa_inline()
+
+    def disegna_lista_inline():
+        colonna_ingredienti_ui.controls.clear()
+        data_riferimento = get_data_fn()
+
+        da_comprare, gia_presi = [], []
+        for item in dati_aggregati:
+            if item.get("etichetta_extra") in ["[Dispensa]", "[Detersivi]"]:
+                continue
+            k_id = f"{item['nome'].lower()}_{item['unita']}"
+            (gia_presi if k_id in spuntati_sessione else da_comprare).append((k_id, item))
+
+        txt_riepilogo.value = f"Ingredienti da acquistare: {len(da_comprare)}  |  Già presi: {len(gia_presi)}"
+
+        def toggle_spunta(e, key_ing, item_obj):
+            nuovo_stato = bool(e.control.value)
+            (spuntati_sessione.add if nuovo_stato else spuntati_sessione.discard)(key_ing)
+            ids_dir = item_obj.get("ids_menu_diretti") or []
+            if ids_dir:
+                threading.Thread(target=lambda: [aggiorna_flag_preso_db(mid, nuovo_stato) for mid in ids_dir], daemon=True).start()
+            disegna_lista_inline()
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def sposta_in_dispensa_rapido(e, nome_ing):
+            spinner_spesa.visible = True
+            try:
+                page.update()
+            except Exception:
+                pass
+            def w_sposta():
+                imposta_stato_dispensa_ingrediente_db(nome_ing, "", True, data_riferimento)
+                if on_refresh_menu_fn:
+                    on_refresh_menu_fn()
+                else:
+                    ricalcola_spesa_inline()
+            threading.Thread(target=w_sposta, daemon=True).start()
+
+        if not da_comprare and not gia_presi:
+            colonna_ingredienti_ui.controls.append(
+                ft.Container(
+                    content=ft.Text("Nessun ingrediente da acquistare per il periodo selezionato.", size=11, color=ft.Colors.GREY_600, italic=True),
+                    padding=8
+                )
+            )
+        else:
+            for k_id, item in da_comprare:
+                ha_ricette = bool(item.get("dettagli_uso"))
+                q_finale = formatta_qta_finale(item["qta"], item["unita"])
+                tot_str = f" — Totale: {q_finale}"
+
+                colonna_ingredienti_ui.controls.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Checkbox(value=False, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Text(item["nome"], size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if ha_ricette else ft.Colors.BLACK, expand=True),
+                                    *([
+                                        ft.Container(
+                                            content=ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                            bgcolor=ft.Colors.BLUE_700, padding=ft.Padding(5, 2, 5, 2), border_radius=6
+                                        )
+                                    ] if ha_ricette else [])
+                                ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                expand=True,
+                                bgcolor="#E3F2FD" if ha_ricette else None,
+                                padding=ft.Padding(6, 4, 6, 4) if ha_ricette else ft.Padding(0, 6, 0, 6),
+                                border_radius=6,
+                                border=bordo_campo_uniforme("#1976D2", 1) if ha_ricette else None,
+                                ink=ha_ricette,
+                                on_click=(lambda e, it=item, ts=tot_str: apri_popup_usi_ingrediente(page, it["nome"], it.get("dettagli_uso"), ts)) if ha_ricette else None
+                            ),
+                            ft.Container(
+                                content=ft.Text("📌 Dispensa", size=10, color="#00897B", weight=ft.FontWeight.BOLD),
+                                bgcolor="#E0F2F1", padding=ft.Padding(6, 3, 6, 3), border_radius=6,
+                                border=bordo_campo_uniforme("#00897B", 1),
+                                ink=True,
+                                on_click=lambda e, ni=item["nome"]: sposta_in_dispensa_rapido(e, ni)
+                            ),
+                            ft.Container(
+                                content=ft.Text(q_finale, size=12, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                bgcolor=ft.Colors.BLUE_900, padding=ft.Padding(8, 3, 8, 3), border_radius=8
+                            )
+                        ], spacing=4),
+                        bgcolor=ft.Colors.WHITE, padding=ft.Padding(6, 2, 8, 2), border_radius=6,
+                        border=bordo_campo_uniforme("#90CAF9")
+                    )
+                )
+
+            if gia_presi:
+                colonna_ingredienti_ui.controls.append(ft.Text("✅ GIÀ PRESI:", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700))
+                for k_id, item in gia_presi:
+                    ha_ric = bool(item.get("dettagli_uso"))
+                    q_finale = formatta_qta_finale(item["qta"], item["unita"])
+                    tot_str = f" — Totale: {q_finale}"
+                    colonna_ingredienti_ui.controls.append(
+                        ft.Container(
+                            content=ft.Row([
+                                ft.Checkbox(value=True, on_change=lambda e, k=k_id, it=item: toggle_spunta(e, k, it)),
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Text(f"✓ {item['nome']}", size=12, color=ft.Colors.BLUE_900 if ha_ric else ft.Colors.GREY_600, italic=True, expand=True),
+                                        *([ft.Text(f"🍲 {len(item['dettagli_uso'])} 🔎", size=9, color=ft.Colors.BLUE_800, weight=ft.FontWeight.BOLD)] if ha_ric else [])
+                                    ], spacing=4),
+                                    expand=True,
+                                    bgcolor="#E3F2FD" if ha_ric else None,
+                                    padding=ft.Padding(6, 3, 6, 3) if ha_ric else ft.Padding(0, 4, 0, 4),
+                                    border_radius=6,
+                                    border=bordo_campo_uniforme("#90CAF9", 1) if ha_ric else None,
+                                    ink=ha_ric,
+                                    on_click=(lambda e, it=item, ts=tot_str: apri_popup_usi_ingrediente(page, it["nome"], it.get("dettagli_uso"), ts)) if ha_ric else None
+                                ),
+                                ft.Text(q_finale, size=11, color=ft.Colors.GREY_600)
+                            ], spacing=4),
+                            bgcolor="#EEEEEE", padding=ft.Padding(6, 1, 8, 1), border_radius=6
+                        )
+                    )
+
+    def ricalcola_spesa_inline():
+        if not supabase:
+            return
+        data_riferimento = get_data_fn()
+        aggiorna_opzioni_e_stile_filtri(data_riferimento)
+        spinner_spesa.visible = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        def worker():
+            nonlocal dati_aggregati
+            oggi_dt = datetime.now()
+            scelta = stato_filtro["scelta"]
+            nome_mese_rif = MESI[data_riferimento.month]
+            ultimo_gg_rif = calendar.monthrange(data_riferimento.year, data_riferimento.month)[1]
+
+            if scelta == "Da oggi a fine mese":
+                dt_i = oggi_dt
+                dt_f = oggi_dt.replace(day=calendar.monthrange(oggi_dt.year, oggi_dt.month)[1])
+            elif scelta == "Dal giorno sel. a fine mese":
+                dt_i = data_riferimento
+                dt_f = data_riferimento.replace(day=ultimo_gg_rif)
+            elif scelta == "Prossimi 7 giorni":
+                dt_i = oggi_dt
+                dt_f = oggi_dt + timedelta(days=6)
+            elif scelta == "7 giorni dal giorno sel.":
+                dt_i = data_riferimento
+                dt_f = data_riferimento + timedelta(days=6)
+            elif scelta == "Solo giorno sel.":
+                dt_i = data_riferimento
+                dt_f = data_riferimento
+            else:
+                dt_i = data_riferimento.replace(day=1)
+                dt_f = data_riferimento.replace(day=ultimo_gg_rif)
+
+            inizio_str = dt_i.strftime("%Y-%m-%d")
+            fine_str = dt_f.strftime("%Y-%m-%d")
+            primo_mese_str = data_riferimento.replace(day=1).strftime("%Y-%m-%d")
+            fine_mese_str = data_riferimento.replace(day=ultimo_gg_rif).strftime("%Y-%m-%d")
+            txt_periodo_date.value = f"📅 Intervallo ({nome_mese_rif}): {dt_i.strftime('%d/%m/%Y')} → {dt_f.strftime('%d/%m/%Y')}"
+
+            try:
+                assicura_cache_anagrafica(forza_ricarica=False)
+                res_m = supabase.table("menu_giornalieri").select(
+                    "*, ingredienti(id, nome, unita_default), ricette(id, nome)"
+                ).gte("data_menu", min(inizio_str, primo_mese_str)).lte("data_menu", max(fine_str, fine_mese_str)).execute()
+
+                righe_valide = [
+                    r for r in (res_m.data or [])
+                    if (r.get("categoria") in ["Dispensa", "Detersivi"] and primo_mese_str <= r.get("data_menu", "") <= fine_mese_str)
+                    or (r.get("categoria") not in ["Dispensa", "Detersivi"] and inizio_str <= r.get("data_menu", "") <= fine_str)
+                ]
+
+                nomi_gen_dispensa_mese = set()
+                for r_d in righe_valide:
+                    if r_d.get("categoria") == "Dispensa" and r_d.get("ingredienti"):
+                        n_d = (r_d["ingredienti"].get("nome") or "").strip()
+                        if n_d:
+                            nomi_gen_dispensa_mese.add(generalizza_nome_dispensa(n_d).lower())
+
+                ids_ric = list({r["id_ricetta"] for r in righe_valide if is_valid_uuid(r.get("id_ricetta"))})
+                mappa_ri = {}
+                if ids_ric:
+                    res_ri = supabase.table("ricette_ingredienti").select(
+                        "*, ingredienti(id, nome, unita_default)"
+                    ).in_("id_ricetta", ids_ric).limit(5000).execute()
+                    for ri in (res_ri.data or []):
+                        mappa_ri.setdefault(ri["id_ricetta"], []).append(ri)
+
+                somme = {}
+                usi_dispensa_map = {}
+
+                def aggiungi_voce(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_riga="", preso_riga=False, data_menu_str="", nome_ricetta_orig=""):
+                    if not ing_obj:
+                        return
+                    nome_ing = ing_obj if isinstance(ing_obj, str) else ing_obj.get("nome", "Prodotto")
+                    u_def_db = "" if isinstance(ing_obj, str) else str(ing_obj.get("unita_default") or "")
+                    nome_disp = generalizza_nome_dispensa(nome_ing)
+                    is_base_dinamico = (
+                        ("|DISPENSA" in u_def_db)
+                        or (cat_riga == "Dispensa")
+                        or (nome_disp.lower() in nomi_gen_dispensa_mese)
+                        or is_ingrediente_dispensa_attivo(ing_obj)
+                    )
+                    n_low = nome_ing.strip().lower()
+                    q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
+
+                    if is_base_dinamico and cat_riga != "Detersivi":
+                        chiave = (nome_disp.lower(), "promemoria")
+                        somme.setdefault(chiave, {
+                            "nome": nome_disp, "qta": 1.0, "unita": "pz",
+                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]",
+                            "dettagli_uso": []
+                        })
+                    else:
+                        chiave = (n_low, u_base)
+                        somme.setdefault(chiave, {
+                            "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
+                            "ids_menu_diretti": [], "preso_db": False,
+                            "etichetta_extra": "[Detersivi]" if cat_riga == "Detersivi" else "",
+                            "dettagli_uso": []
+                        })
+                        somme[chiave]["qta"] += q_norm
+                        if id_menu_rif:
+                            somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
+
+                    if data_menu_str and cat_riga not in ["Dispensa", "Detersivi"]:
+                        det = {
+                            "data_menu": data_menu_str,
+                            "categoria": cat_riga,
+                            "ricetta": nome_ricetta_orig or f"Voce diretta ({cat_riga})",
+                            "qta_str": formatta_qta_finale(q_norm, u_base)
+                        }
+                        somme[chiave]["dettagli_uso"].append(det)
+                        if is_base_dinamico:
+                            usi_dispensa_map.setdefault(nome_disp.lower(), []).append(det)
+
+                    if preso_riga:
+                        somme[chiave]["preso_db"] = True
+
+                for m in righe_valide:
+                    cat = m.get("categoria") or ""
+                    d_m_str = m.get("data_menu") or ""
+                    is_preso_db = bool(m.get("preso"))
+                    if m.get("id_ingrediente") and m.get("ingredienti"):
+                        aggiungi_voce(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"], cat, is_preso_db, d_m_str, "")
+                    elif m.get("id_ricetta"):
+                        nome_r_m = (m.get("ricette") or {}).get("nome") or "Ricetta"
+                        for ri in mappa_ri.get(m["id_ricetta"], []):
+                            if ri.get("ingredienti"):
+                                aggiungi_voce(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db, d_m_str, nome_r_m)
+
+                CACHE_ANAGRAFICA["usi_dispensa_periodo"] = usi_dispensa_map
+                for v in somme.values():
+                    if v["preso_db"]:
+                        spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
+
+                dati_aggregati = sorted(list(somme.values()), key=lambda x: x["nome"].lower())
+                spinner_spesa.visible = False
+                disegna_lista_inline()
+                if on_ridisegna_ram_fn:
+                    on_ridisegna_ram_fn()
+                else:
+                    page.update()
+            except Exception as ex:
+                log_render(f"[ERRORE] ricalcola_spesa_inline: {ex}")
+                spinner_spesa.visible = False
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    barra_filtri_header = ft.Container(
+        content=ft.Column([
+            ft.Row([
+                ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.WHITE, size=18),
+                ft.Text("🛒 LISTA DELLA SPESA — Filtra periodo:", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE, expand=True),
+                spinner_spesa
+            ], spacing=6),
+            riga_bottoni_filtro,
+            ft.Row([txt_periodo_date, txt_riepilogo], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, wrap=True)
+        ], spacing=6),
+        bgcolor=ft.Colors.GREEN_700, padding=10, border_radius=6
+    )
+
+    barra_titolo_ing = ft.Container(
+        content=ft.Text("🥩 INGREDIENTI DA COMPRARE (SOMMA RICETTE DEL PERIODO)", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+        bgcolor="#1565C0", padding=ft.Padding(10, 6, 10, 6), border_radius=6
+    )
+
+    contenitore_spesa = ft.Container(
+        content=ft.Column([barra_filtri_header, barra_titolo_ing, colonna_ingredienti_ui], spacing=6),
+        bgcolor="#F4F6F9", padding=8, border_radius=8, border=bordo_campo_uniforme("#1565C0", 1.5)
+    )
+    contenitore_spesa.ricalcola = ricalcola_spesa_inline
+    return contenitore_spesa
+
+
 def apri_popup_fai_la_spesa(page: ft.Page, data_riferimento: datetime, on_close_callback=None):
     if not supabase:
         return
