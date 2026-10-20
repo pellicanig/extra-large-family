@@ -23,9 +23,8 @@ from modulo_ricette import (
 
 
 # ==========================================================
-# MOTORE INTELLIGENTE "FAI LA SPESA"
+# POPUP DETTAGLIO RICETTE PER INGREDIENTE
 # ==========================================================
-
 def apri_popup_usi_ingrediente(page: ft.Page, nome_i: str, usi_raw: list, tot_str: str = ""):
     usi = sorted(usi_raw or [], key=lambda x: (x.get("data_menu", ""), x.get("categoria", "")))
     righe_dettaglio = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, tight=True)
@@ -78,6 +77,9 @@ def apri_popup_usi_ingrediente(page: ft.Page, nome_i: str, usi_raw: list, tot_st
     apri_dialog_sicuro(page, dlg_uso)
 
 
+# ==========================================================
+# PANNELLO SPESA INLINE (INTEGRATO NELLA PAGINA DEL MENU)
+# ==========================================================
 def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=None, on_ridisegna_ram_fn=None):
     spuntati_sessione = set()
     stato_filtro = {"scelta": None, "mese_anno": None}
