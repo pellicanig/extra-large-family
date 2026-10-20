@@ -40,7 +40,7 @@ from modulo_ricette import (
     apri_popup_aggiungi_piatto_semplificato,
     apri_popup_aggiungi_voce_diretta
 )
-from modulo_spesa import apri_popup_fai_la_spesa, crea_pannello_spesa_inline, apri_popup_usi_ingrediente
+from modulo_spesa import crea_pannello_spesa_inline, apri_popup_usi_ingrediente
 
 
 # ==========================================================
@@ -786,6 +786,10 @@ def crea_calendario_menu(page: ft.Page):
         layer_giorno.visible = (not is_semplificata and vista == "Giorno")
 
         dizionario_menu = ram_menu["dizionario_menu"]
+        layer_semplificata.controls.clear()
+        layer_mese.controls.clear()
+        layer_settimana.controls.clear()
+        layer_giorno.controls.clear()
 
         if is_semplificata:
             lunedi = data - timedelta(days=data.weekday())
@@ -926,27 +930,58 @@ def crea_calendario_menu(page: ft.Page):
                 return
 
             try:
-                log_render(f"[CALENDARIO MENU] Aggiornamento calendario e Dispensa per data riferimento {data.strftime('%d/%m/%Y')}")
+                log_render(f"[CALENDARIO MENU] Aggiornamento rapido calendario e Spesa per {data.strftime('%d/%m/%Y')}")
                 assicura_cache_anagrafica(forza_ricarica=False)
-                sincronizza_e_pulisci_dispensa_mese(data)
                 data_rif = data.replace(day=1)
                 inizio_f = (data_rif - timedelta(days=10)).strftime("%Y-%m-%d")
                 fine_f = (data_rif + timedelta(days=42)).strftime("%Y-%m-%d")
                 primo_mese_corr = data.replace(day=1).strftime("%Y-%m-%d")
                 ultimo_mese_corr = data.replace(day=calendar.monthrange(data.year, data.month)[1]).strftime("%Y-%m-%d")
 
+                # 1. UNICA QUERY per menu_giornalieri
                 res = supabase.table("menu_giornalieri").select(
                     "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
                 ).gte("data_menu", inizio_f).lte("data_menu", fine_f).execute()
+                righe_finestra = res.data or []
+
+                # 2. UNICA QUERY per ricette_ingredienti (valida per conteggi, sync dispensa e spesa!)
+                ids_ric_vis = list({r["id_ricetta"] for r in righe_finestra if is_valid_uuid(r.get("id_ricetta"))})
+                mappa_ri_finestra = {}
+                lista_ri_finestra = []
+                if ids_ric_vis:
+                    res_ri = supabase.table("ricette_ingredienti").select(
+                        "*, ingredienti(id, nome, unita_default)"
+                    ).in_("id_ricetta", ids_ric_vis).limit(5000).execute()
+                    lista_ri_finestra = res_ri.data or []
+                    for ri in lista_ri_finestra:
+                        rid = str(ri.get("id_ricetta"))
+                        mappa_ri_finestra.setdefault(rid, []).append(ri)
+                    for rid in ids_ric_vis:
+                        CACHE_ANAGRAFICA["conteggio_ing_ricette"][str(rid)] = len(mappa_ri_finestra.get(str(rid), []))
+
+                # 3. Sincronizza Dispensa in RAM (0 query SELECT!) e ricarica solo se ha aggiunto/tolto voci
+                ha_mod_disp = sincronizza_e_pulisci_dispensa_mese(
+                    data,
+                    righe_mese_precaricate=righe_finestra,
+                    res_ri_precaricate=lista_ri_finestra
+                )
+                if ha_mod_disp:
+                    res_disp_agg = supabase.table("menu_giornalieri").select(
+                        "*, ricette(id, nome, portata_default), ingredienti(id, nome, unita_default)"
+                    ).eq("categoria", "Dispensa").gte("data_menu", primo_mese_corr).lte("data_menu", ultimo_mese_corr).execute()
+                    righe_finestra = [
+                        r for r in righe_finestra
+                        if not (r.get("categoria") == "Dispensa" and primo_mese_corr <= r.get("data_menu", "") <= ultimo_mese_corr)
+                    ] + (res_disp_agg.data or [])
+
+                CACHE_ANAGRAFICA["righe_menu_finestra"] = righe_finestra
+                CACHE_ANAGRAFICA["mappa_ri_finestra"] = mappa_ri_finestra
 
                 dizionario_menu, voci_dispensa_mese, voci_detersivi_mese = {}, [], []
                 visti_disp, visti_det = set(), set()
-                ids_ric_vis = set()
 
-                for riga in (res.data or []):
+                for riga in righe_finestra:
                     cat_r, d_str = riga.get("categoria"), riga["data_menu"]
-                    if is_valid_uuid(riga.get("id_ricetta")):
-                        ids_ric_vis.add(riga["id_ricetta"])
                     if cat_r == "Dispensa" and primo_mese_corr <= d_str <= ultimo_mese_corr:
                         k_disp = str(riga.get("id_ingrediente") or riga.get("id"))
                         if k_disp not in visti_disp:
@@ -973,9 +1008,6 @@ def crea_calendario_menu(page: ft.Page):
                             if not gia_su_db:
                                 dizionario_menu.setdefault(d_k, []).append(item_old)
 
-                if ids_ric_vis:
-                    aggiorna_conteggio_ricette_visibili(list(ids_ric_vis))
-
                 ram_menu["dizionario_menu"] = dizionario_menu
                 ram_menu["voci_dispensa_mese"] = voci_dispensa_mese
                 ram_menu["voci_detersivi_mese"] = voci_detersivi_mese
@@ -983,9 +1015,9 @@ def crea_calendario_menu(page: ft.Page):
             except Exception as ex:
                 log_render(f"[ERRORE] Caricamento calendario menu: {ex}")
             finally:
-             badge_loading_cal.visible = False
-             disegna_vista_da_ram()
-             btn_fai_la_spesa.ricalcola()
+                badge_loading_cal.visible = False
+                btn_fai_la_spesa.ricalcola(usa_cache_ram=True, ridisegna_menu=False)
+                disegna_vista_da_ram()
 
         threading.Thread(target=worker_calendario, daemon=True).start()
 
