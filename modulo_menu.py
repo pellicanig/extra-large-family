@@ -40,7 +40,7 @@ from modulo_ricette import (
     apri_popup_aggiungi_piatto_semplificato,
     apri_popup_aggiungi_voce_diretta
 )
-from modulo_spesa import apri_popup_fai_la_spesa
+from modulo_spesa import apri_popup_fai_la_spesa, crea_pannello_spesa_inline, apri_popup_usi_ingrediente
 
 
 # ==========================================================
@@ -718,11 +718,30 @@ def crea_calendario_menu(page: ft.Page):
                             aggiorna_calendario_menu()
                         threading.Thread(target=w_del_m, daemon=True).start()
 
+                usi_disp = (CACHE_ANAGRAFICA.get("usi_dispensa_periodo") or {}).get(nome_p.strip().lower(), []) if categoria_db == "Dispensa" else []
+                ha_usi_d = len(usi_disp) > 0
                 lista_voci_ui.controls.append(
                     ft.Container(
                         content=ft.Row([
                             ft.Checkbox(value=is_preso, on_change=cambia_spunta_mese),
-                            ft.Text(f"{'✓ Presente: ' if is_preso else ''}{nome_p}{q_str}", size=12, weight=ft.FontWeight.NORMAL if is_preso else ft.FontWeight.BOLD, color=ft.Colors.GREY_600 if is_preso else ft.Colors.BLACK, italic=is_preso, expand=True),
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Text(f"{'✓ Presente: ' if is_preso else ''}{nome_p}{q_str}", size=12, weight=ft.FontWeight.NORMAL if is_preso else ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if ha_usi_d else (ft.Colors.GREY_600 if is_preso else ft.Colors.BLACK), italic=is_preso, expand=True),
+                                    *([
+                                        ft.Container(
+                                            content=ft.Text(f"🍲 {len(usi_disp)} 🔎", size=9, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                                            bgcolor=ft.Colors.BLUE_700, padding=ft.Padding(5, 2, 5, 2), border_radius=6
+                                        )
+                                    ] if ha_usi_d else [])
+                                ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                expand=True,
+                                bgcolor="#E3F2FD" if ha_usi_d else None,
+                                padding=ft.Padding(6, 3, 6, 3) if ha_usi_d else ft.Padding(0, 4, 0, 4),
+                                border_radius=6,
+                                border=bordo_campo_uniforme("#1976D2", 1) if ha_usi_d else None,
+                                ink=ha_usi_d,
+                                on_click=(lambda e, np_c=nome_p, u_c=usi_disp: apri_popup_usi_ingrediente(page, np_c, u_c, " (Dispensa)")) if ha_usi_d else None
+                            ),
                             ft.GestureDetector(content=ft.Icon(ft.Icons.CLOSE, size=16, color=ft.Colors.RED_700), on_tap=elimina_voce_mese)
                         ], spacing=4),
                         bgcolor="#EEEEEE" if is_preso else ft.Colors.WHITE, padding=ft.Padding(6, 2, 10, 2), border_radius=6,
@@ -747,11 +766,12 @@ def crea_calendario_menu(page: ft.Page):
             ft.Container(content=ft.Column([barra_titolo, lista_voci_ui], spacing=6), expand=1, bgcolor="#F4F6F9", padding=8, border_radius=8, border=bordo_campo_uniforme(colore_tema, 1.5))
         ], spacing=6)
 
-    btn_fai_la_spesa = ft.Container(
-        content=ft.Row([ft.Icon(ft.Icons.SHOPPING_CART, color=ft.Colors.WHITE, size=20), ft.Text("FAI LA SPESA (Somma Ingredienti & Dispensa)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=13)], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
-        bgcolor=ft.Colors.GREEN_700, padding=12, border_radius=8,
-        on_click=lambda e: apri_popup_fai_la_spesa(page, stato["data"], aggiorna_calendario_menu)
-    )
+    btn_fai_la_spesa = crea_pannello_spesa_inline(
+         page,
+         lambda: stato["data"],
+         lambda: aggiorna_calendario_menu(),
+         lambda: disegna_vista_da_ram()
+     )
     
     def disegna_vista_da_ram():
         vista, data, is_semplificata = stato["vista"], stato["data"], stato["semplificata"]
@@ -963,8 +983,9 @@ def crea_calendario_menu(page: ft.Page):
             except Exception as ex:
                 log_render(f"[ERRORE] Caricamento calendario menu: {ex}")
             finally:
-                badge_loading_cal.visible = False
-                disegna_vista_da_ram()
+             badge_loading_cal.visible = False
+             disegna_vista_da_ram()
+             btn_fai_la_spesa.ricalcola()
 
         threading.Thread(target=worker_calendario, daemon=True).start()
 
