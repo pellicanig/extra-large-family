@@ -515,22 +515,19 @@ def assicura_ingrediente_in_dispensa_mese(id_ingrediente: str, data_rif: datetim
         log_render(f"[ERRORE] assicura_ingrediente_in_dispensa_mese: {ex}")
 
 
-def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
+def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None, righe_mese_precaricate: list = None, res_ri_precaricate: list = None) -> bool:
     """
-    Sincronizza in modo bidirezionale la Dispensa per il mese di data_rif:
-    1. Legge tutte le ricette e gli ingredienti pianificati nel mese.
-    2. Individua tutti gli ingredienti marcati come Dispensa (o le cui varianti generalizzate sono in Dispensa).
-    3. Rimuove automaticamente dalla Dispensa del mese gli ingredienti derivati da ricette che sono state
-       eliminate, modificate o i cui ingredienti non sono più presenti/flaggati nel mese (preservando le voci manuali).
-    4. Generalizza i nomi (es. 'Sale grosso' -> 'Sale'), elimina i doppioni e aggiunge i mancanti.
+    Sincronizza in modo bidirezionale la Dispensa per il mese di data_rif.
+    Restituisce True se ha effettuato modifiche (insert/update/delete) sulla tabella menu_giornalieri.
     """
     if not supabase:
-        return
+        return False
     dt = data_rif or ULTIMA_DATA_MENU_ATTIVA[0] or datetime.now()
     ULTIMA_DATA_MENU_ATTIVA[0] = dt
     primo_mese = dt.replace(day=1).strftime("%Y-%m-%d")
     ultimo_gg = calendar.monthrange(dt.year, dt.month)[1]
     fine_mese = dt.replace(day=ultimo_gg).strftime("%Y-%m-%d")
+    ha_modificato_db = False
 
     try:
         log_render(f"[SYNC DISPENSA] Avvio sincronizzazione Dispensa per il mese {dt.strftime('%m/%Y')} ({primo_mese} -> {fine_mese})")
@@ -540,14 +537,18 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
             for i in lista_ing_cache if (i.get("is_dispensa_base") or "|DISPENSA" in str(i.get("unita_default") or "")) and i.get("nome")
         }
 
-        res_mese = (
-            supabase.table("menu_giornalieri")
-            .select("*, ingredienti(id, nome, unita_default)")
-            .gte("data_menu", primo_mese)
-            .lte("data_menu", fine_mese)
-            .execute()
-        )
-        righe_mese = res_mese.data or []
+        if righe_mese_precaricate is not None:
+            righe_mese = [r for r in righe_mese_precaricate if primo_mese <= r.get("data_menu", "") <= fine_mese]
+        else:
+            res_mese = (
+                supabase.table("menu_giornalieri")
+                .select("*, ingredienti(id, nome, unita_default)")
+                .gte("data_menu", primo_mese)
+                .lte("data_menu", fine_mese)
+                .execute()
+            )
+            righe_mese = res_mese.data or []
+
         righe_dispensa = [r for r in righe_mese if r.get("categoria") == "Dispensa"]
         ids_ricette_mese = list({
             r["id_ricetta"] for r in righe_mese
@@ -568,13 +569,18 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
                         richiesti_da_ricette.add(nome_gen_p)
 
         if ids_ricette_mese:
-            res_ri = (
-                supabase.table("ricette_ingredienti")
-                .select("*, ingredienti(id, nome, unita_default)")
-                .in_("id_ricetta", ids_ricette_mese)
-                .execute()
-            )
-            for ri in (res_ri.data or []):
+            if res_ri_precaricate is not None:
+                set_ids_ric_m = {str(x) for x in ids_ricette_mese}
+                lista_ri_mese = [ri for ri in res_ri_precaricate if str(ri.get("id_ricetta")) in set_ids_ric_m]
+            else:
+                res_ri = (
+                    supabase.table("ricette_ingredienti")
+                    .select("*, ingredienti(id, nome, unita_default)")
+                    .in_("id_ricetta", ids_ricette_mese)
+                    .execute()
+                )
+                lista_ri_mese = res_ri.data or []
+            for ri in lista_ri_mese:
                 ing_d = ri.get("ingredienti") or {}
                 nome_i = (ing_d.get("nome") or "").strip()
                 if not nome_i:
@@ -613,6 +619,7 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
                 for r_del in righe_g:
                     try:
                         supabase.table("menu_giornalieri").delete().eq("id", r_del["id"]).execute()
+                        ha_modificato_db = True
                         log_render(f"[SYNC DISPENSA] Rimosso '{nome_gen}' dalla Dispensa di {dt.strftime('%m/%Y')} (non più presente nelle ricette del mese)")
                     except Exception as ex:
                         log_render(f"[ERRORE] Eliminazione riga dispensa obsoleta '{nome_gen}': {ex}")
@@ -638,6 +645,7 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
                         "quantita": 0,
                         "unita_misura": "pz"
                     }).eq("id", riga_principale["id"]).execute()
+                    ha_modificato_db = True
                     log_render(f"[SYNC DISPENSA] Normalizzata voce Dispensa -> '{nome_gen}' (Preso: {preso_unificato})")
                 except Exception as ex:
                     log_render(f"[ERRORE] Normalizzazione riga dispensa '{nome_gen}': {ex}")
@@ -646,6 +654,7 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
                 if r_dup["id"] != riga_principale["id"]:
                     try:
                         supabase.table("menu_giornalieri").delete().eq("id", r_dup["id"]).execute()
+                        ha_modificato_db = True
                         log_render(f"[SYNC DISPENSA] Eliminato duplicato Dispensa per '{nome_gen}'")
                     except Exception:
                         pass
@@ -669,10 +678,13 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None):
                     log_render(f"[SYNC DISPENSA] Inserito nuovo ingrediente '{nome_req}' in Dispensa ({dt.strftime('%m/%Y')})")
         if nuove_righe_disp:
             supabase.table("menu_giornalieri").insert(nuove_righe_disp).execute()
+            ha_modificato_db = True
 
         log_render(f"[SYNC DISPENSA] Completata per {dt.strftime('%m/%Y')}: {len(visti_canonici)} ingredienti attivi in Dispensa.")
+        return ha_modificato_db
     except Exception as ex:
         log_render(f"[ERRORE] sincronizza_e_pulisci_dispensa_mese: {ex}")
+        return False
 
 
 
@@ -2749,9 +2761,6 @@ def apri_popup_aggiungi_piatto_semplificato(page: ft.Page, data_target: datetime
                 voce_ottimistica["in_salvataggio"] = False
                 if res_ins.data:
                     voce_ottimistica["id"] = res_ins.data[0]["id"]
-
-                aggiorna_conteggio_ricette_visibili([id_ric])
-                sincronizza_e_pulisci_dispensa_mese(data_target)
             except Exception as ex:
                 log_render(f"[ERRORE] Inserimento piatto '{nome_pulito}': {ex}")
                 voce_ottimistica["in_salvataggio"] = False
