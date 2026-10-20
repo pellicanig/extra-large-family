@@ -143,7 +143,7 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
 
     def cambia_filtro(nuova_scelta):
         stato_filtro["scelta"] = nuova_scelta
-        ricalcola_spesa_inline()
+        ricalcola_spesa_inline(usa_cache_ram=True, ridisegna_menu=True)
 
     def disegna_lista_inline():
         colonna_ingredienti_ui.controls.clear()
@@ -265,18 +265,13 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                         )
                     )
 
-    def ricalcola_spesa_inline():
+    def ricalcola_spesa_inline(usa_cache_ram=False, ridisegna_menu=True):
         if not supabase:
             return
         data_riferimento = get_data_fn()
         aggiorna_opzioni_e_stile_filtri(data_riferimento)
-        spinner_spesa.visible = True
-        try:
-            page.update()
-        except Exception:
-            pass
 
-        def worker():
+        def esegui_calcolo(righe_sorgente, mappa_ri_sorgente):
             nonlocal dati_aggregati
             oggi_dt = datetime.now()
             scelta = stato_filtro["scelta"]
@@ -308,109 +303,132 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
             fine_mese_str = data_riferimento.replace(day=ultimo_gg_rif).strftime("%Y-%m-%d")
             txt_periodo_date.value = f"📅 Intervallo ({nome_mese_rif}): {dt_i.strftime('%d/%m/%Y')} → {dt_f.strftime('%d/%m/%Y')}"
 
+            righe_valide = [
+                r for r in (righe_sorgente or [])
+                if (r.get("categoria") in ["Dispensa", "Detersivi"] and primo_mese_str <= r.get("data_menu", "") <= fine_mese_str)
+                or (r.get("categoria") not in ["Dispensa", "Detersivi"] and inizio_str <= r.get("data_menu", "") <= fine_str)
+            ]
+
+            nomi_gen_dispensa_mese = set()
+            for r_d in righe_valide:
+                if r_d.get("categoria") == "Dispensa" and r_d.get("ingredienti"):
+                    n_d = (r_d["ingredienti"].get("nome") or "").strip()
+                    if n_d:
+                        nomi_gen_dispensa_mese.add(generalizza_nome_dispensa(n_d).lower())
+
+            somme = {}
+            usi_dispensa_map = {}
+
+            def aggiungi_voce(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_riga="", preso_riga=False, data_menu_str="", nome_ricetta_orig=""):
+                if not ing_obj:
+                    return
+                nome_ing = ing_obj if isinstance(ing_obj, str) else ing_obj.get("nome", "Prodotto")
+                u_def_db = "" if isinstance(ing_obj, str) else str(ing_obj.get("unita_default") or "")
+                nome_disp = generalizza_nome_dispensa(nome_ing)
+                is_base_dinamico = (
+                    ("|DISPENSA" in u_def_db)
+                    or (cat_riga == "Dispensa")
+                    or (nome_disp.lower() in nomi_gen_dispensa_mese)
+                    or is_ingrediente_dispensa_attivo(ing_obj)
+                )
+                n_low = nome_ing.strip().lower()
+                q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
+
+                if is_base_dinamico and cat_riga != "Detersivi":
+                    chiave = (nome_disp.lower(), "promemoria")
+                    somme.setdefault(chiave, {
+                        "nome": nome_disp, "qta": 1.0, "unita": "pz",
+                        "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]",
+                        "dettagli_uso": []
+                    })
+                else:
+                    chiave = (n_low, u_base)
+                    somme.setdefault(chiave, {
+                        "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
+                        "ids_menu_diretti": [], "preso_db": False,
+                        "etichetta_extra": "[Detersivi]" if cat_riga == "Detersivi" else "",
+                        "dettagli_uso": []
+                    })
+                    somme[chiave]["qta"] += q_norm
+                    if id_menu_rif:
+                        somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
+
+                if data_menu_str and cat_riga not in ["Dispensa", "Detersivi"]:
+                    det = {
+                        "data_menu": data_menu_str,
+                        "categoria": cat_riga,
+                        "ricetta": nome_ricetta_orig or f"Voce diretta ({cat_riga})",
+                        "qta_str": formatta_qta_finale(q_norm, u_base)
+                    }
+                    somme[chiave]["dettagli_uso"].append(det)
+                    if is_base_dinamico:
+                        usi_dispensa_map.setdefault(nome_disp.lower(), []).append(det)
+
+                if preso_riga:
+                    somme[chiave]["preso_db"] = True
+
+            for m in righe_valide:
+                cat = m.get("categoria") or ""
+                d_m_str = m.get("data_menu") or ""
+                is_preso_db = bool(m.get("preso"))
+                if m.get("id_ingrediente") and m.get("ingredienti"):
+                    aggiungi_voce(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"], cat, is_preso_db, d_m_str, "")
+                elif m.get("id_ricetta"):
+                    nome_r_m = (m.get("ricette") or {}).get("nome") or "Ricetta"
+                    for ri in mappa_ri_sorgente.get(str(m["id_ricetta"]), []):
+                        if ri.get("ingredienti"):
+                            aggiungi_voce(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db, d_m_str, nome_r_m)
+
+            CACHE_ANAGRAFICA["usi_dispensa_periodo"] = usi_dispensa_map
+            for v in somme.values():
+                if v["preso_db"]:
+                    spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
+
+            dati_aggregati = sorted(list(somme.values()), key=lambda x: x["nome"].lower())
+            spinner_spesa.visible = False
+            disegna_lista_inline()
+            if ridisegna_menu and on_ridisegna_ram_fn:
+                on_ridisegna_ram_fn()
+
+        # PERCORSO VELOCE IN RAM (0ms, 0 query a Supabase!)
+        if usa_cache_ram and CACHE_ANAGRAFICA.get("righe_menu_finestra") is not None:
+            esegui_calcolo(
+                CACHE_ANAGRAFICA.get("righe_menu_finestra") or [],
+                CACHE_ANAGRAFICA.get("mappa_ri_finestra") or {}
+            )
+            return
+
+        spinner_spesa.visible = True
+        try:
+            page.update()
+        except Exception:
+            pass
+
+        def worker():
             try:
+                ultimo_gg_rif = calendar.monthrange(data_riferimento.year, data_riferimento.month)[1]
+                primo_mese_str = data_riferimento.replace(day=1).strftime("%Y-%m-%d")
+                fine_mese_str = data_riferimento.replace(day=ultimo_gg_rif).strftime("%Y-%m-%d")
                 assicura_cache_anagrafica(forza_ricarica=False)
                 res_m = supabase.table("menu_giornalieri").select(
                     "*, ingredienti(id, nome, unita_default), ricette(id, nome)"
-                ).gte("data_menu", min(inizio_str, primo_mese_str)).lte("data_menu", max(fine_str, fine_mese_str)).execute()
-
-                righe_valide = [
-                    r for r in (res_m.data or [])
-                    if (r.get("categoria") in ["Dispensa", "Detersivi"] and primo_mese_str <= r.get("data_menu", "") <= fine_mese_str)
-                    or (r.get("categoria") not in ["Dispensa", "Detersivi"] and inizio_str <= r.get("data_menu", "") <= fine_str)
-                ]
-
-                nomi_gen_dispensa_mese = set()
-                for r_d in righe_valide:
-                    if r_d.get("categoria") == "Dispensa" and r_d.get("ingredienti"):
-                        n_d = (r_d["ingredienti"].get("nome") or "").strip()
-                        if n_d:
-                            nomi_gen_dispensa_mese.add(generalizza_nome_dispensa(n_d).lower())
-
-                ids_ric = list({r["id_ricetta"] for r in righe_valide if is_valid_uuid(r.get("id_ricetta"))})
+                ).gte("data_menu", primo_mese_str).lte("data_menu", fine_mese_str).execute()
+                righe_db = res_m.data or []
+                ids_ric = list({r["id_ricetta"] for r in righe_db if is_valid_uuid(r.get("id_ricetta"))})
                 mappa_ri = {}
                 if ids_ric:
                     res_ri = supabase.table("ricette_ingredienti").select(
                         "*, ingredienti(id, nome, unita_default)"
                     ).in_("id_ricetta", ids_ric).limit(5000).execute()
                     for ri in (res_ri.data or []):
-                        mappa_ri.setdefault(ri["id_ricetta"], []).append(ri)
-
-                somme = {}
-                usi_dispensa_map = {}
-
-                def aggiungi_voce(ing_obj, qta_ing, unita_ing, id_menu_rif="", cat_riga="", preso_riga=False, data_menu_str="", nome_ricetta_orig=""):
-                    if not ing_obj:
-                        return
-                    nome_ing = ing_obj if isinstance(ing_obj, str) else ing_obj.get("nome", "Prodotto")
-                    u_def_db = "" if isinstance(ing_obj, str) else str(ing_obj.get("unita_default") or "")
-                    nome_disp = generalizza_nome_dispensa(nome_ing)
-                    is_base_dinamico = (
-                        ("|DISPENSA" in u_def_db)
-                        or (cat_riga == "Dispensa")
-                        or (nome_disp.lower() in nomi_gen_dispensa_mese)
-                        or is_ingrediente_dispensa_attivo(ing_obj)
-                    )
-                    n_low = nome_ing.strip().lower()
-                    q_norm, u_base = normalizza_qta_unita(qta_ing, unita_ing)
-
-                    if is_base_dinamico and cat_riga != "Detersivi":
-                        chiave = (nome_disp.lower(), "promemoria")
-                        somme.setdefault(chiave, {
-                            "nome": nome_disp, "qta": 1.0, "unita": "pz",
-                            "ids_menu_diretti": [], "preso_db": False, "etichetta_extra": "[Dispensa]",
-                            "dettagli_uso": []
-                        })
-                    else:
-                        chiave = (n_low, u_base)
-                        somme.setdefault(chiave, {
-                            "nome": nome_ing.capitalize(), "qta": 0.0, "unita": u_base,
-                            "ids_menu_diretti": [], "preso_db": False,
-                            "etichetta_extra": "[Detersivi]" if cat_riga == "Detersivi" else "",
-                            "dettagli_uso": []
-                        })
-                        somme[chiave]["qta"] += q_norm
-                        if id_menu_rif:
-                            somme[chiave]["ids_menu_diretti"].append(id_menu_rif)
-
-                    if data_menu_str and cat_riga not in ["Dispensa", "Detersivi"]:
-                        det = {
-                            "data_menu": data_menu_str,
-                            "categoria": cat_riga,
-                            "ricetta": nome_ricetta_orig or f"Voce diretta ({cat_riga})",
-                            "qta_str": formatta_qta_finale(q_norm, u_base)
-                        }
-                        somme[chiave]["dettagli_uso"].append(det)
-                        if is_base_dinamico:
-                            usi_dispensa_map.setdefault(nome_disp.lower(), []).append(det)
-
-                    if preso_riga:
-                        somme[chiave]["preso_db"] = True
-
-                for m in righe_valide:
-                    cat = m.get("categoria") or ""
-                    d_m_str = m.get("data_menu") or ""
-                    is_preso_db = bool(m.get("preso"))
-                    if m.get("id_ingrediente") and m.get("ingredienti"):
-                        aggiungi_voce(m["ingredienti"], m.get("quantita") or 0, m.get("unita_misura"), m["id"], cat, is_preso_db, d_m_str, "")
-                    elif m.get("id_ricetta"):
-                        nome_r_m = (m.get("ricette") or {}).get("nome") or "Ricetta"
-                        for ri in mappa_ri.get(m["id_ricetta"], []):
-                            if ri.get("ingredienti"):
-                                aggiungi_voce(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db, d_m_str, nome_r_m)
-
-                CACHE_ANAGRAFICA["usi_dispensa_periodo"] = usi_dispensa_map
-                for v in somme.values():
-                    if v["preso_db"]:
-                        spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
-
-                dati_aggregati = sorted(list(somme.values()), key=lambda x: x["nome"].lower())
-                spinner_spesa.visible = False
-                disegna_lista_inline()
-                if on_ridisegna_ram_fn:
-                    on_ridisegna_ram_fn()
-                else:
+                        mappa_ri.setdefault(str(ri["id_ricetta"]), []).append(ri)
+                CACHE_ANAGRAFICA["righe_menu_finestra"] = righe_db
+                CACHE_ANAGRAFICA["mappa_ri_finestra"] = mappa_ri
+                esegui_calcolo(righe_db, mappa_ri)
+                try:
                     page.update()
+                except Exception:
+                    pass
             except Exception as ex:
                 log_render(f"[ERRORE] ricalcola_spesa_inline: {ex}")
                 spinner_spesa.visible = False
