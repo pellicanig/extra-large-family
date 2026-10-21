@@ -547,7 +547,19 @@ CLIENT_JS_CODE = """
         }
     }
 
-    async function sincronizzaSottoscrizione EBadge() {
+    async function attendiSwAttivo(reg) {
+        let sw = reg.installing || reg.waiting || reg.active;
+        if (sw && sw.state !== 'activated') {
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 2000);
+                sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') { clearTimeout(timer); resolve(); }
+                });
+            });
+        }
+    }
+
+    async function sincronizzaSottoscrizioneEBadge() {
         try {
             const r = await fetch('/api/notifiche/status', { cache: 'no-store' });
             const cfg = await r.json();
@@ -555,12 +567,10 @@ CLIENT_JS_CODE = """
 
             if (!('serviceWorker' in navigator) || !('PushManager' in window) || !cfg.vapid_public) return;
 
-            // Registra SW dedicato sullo scope /notifiche-push/ così Flet non lo sovrascrive mai
-            const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/notifiche-push/' });
-            await navigator.serviceWorker.ready;
+            const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
+            await attendiSwAttivo(reg);
 
-            // Se l'app sul telefono ha già il permesso notifiche attivo, si auto-registra in background!
-            if ('Notification' in window && Notification.permission === 'granted') {
+            if ('Notification' in window && Notification.permission === 'granted' && reg.pushManager) {
                 let sub = await reg.pushManager.getSubscription();
                 if (sub && sub.options && sub.options.applicationServerKey) {
                     const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
@@ -602,9 +612,6 @@ CLIENT_JS_CODE = """
 })();
 """
 
-# Rimuovo lo spazio nel nome funzione JS sopra:
-CLIENT_JS_CODE = CLIENT_JS_CODE.replace("sincronizzaSottoscrizione EBadge", "sincronizzaSottoscrizioneEBadge")
-
 PAGINA_ATTIVA_HTML = """<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -614,7 +621,8 @@ PAGINA_ATTIVA_HTML = """<!DOCTYPE html>
 <style>
 body { font-family: system-ui, sans-serif; background: #EEF2F6; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 15px; box-sizing: border-box; }
 .card { background: white; padding: 24px; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); max-width: 360px; width: 100%; text-align: center; }
-button { background: #0D47A1; color: white; border: none; padding: 14px 20px; border-radius: 8px; font-size: 15px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 12px; }
+button, .btn-link { display: block; box-sizing: border-box; text-decoration: none; background: #0D47A1; color: white; border: none; padding: 14px 20px; border-radius: 8px; font-size: 15px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 12px; }
+.btn-home { background: #2E7D32; display: none; }
 .ok { color: #2E7D32; font-weight: bold; }
 .err { color: #C62828; font-weight: bold; }
 </style>
@@ -622,8 +630,9 @@ button { background: #0D47A1; color: white; border: none; padding: 14px 20px; bo
 <body>
 <div class="card">
     <h3 style="margin-top:0;color:#0D47A1;">🔔 Notifiche & Badge ELF</h3>
-    <p id="status" style="font-size:14px;color:#444;"> Attivazione automatica in corso...</p>
-    <button id="btn" onclick="attivaTutto()">📲 ATTIVA NOTIFICHE E BADGE</button>
+    <p id="status" style="font-size:14px;color:#444;">Premi il pulsante qui sotto per registrare questo telefono e ricevere subito una notifica di prova.</p>
+    <button id="btn" onclick="attivaTutto()">📲 ATTIVA E INVIA PROVA</button>
+    <a id="btnHome" class="btn-link btn-home" href="/">⬅️ TORNA ALL'APP</a>
 </div>
 <script>
 function urlBase64ToUint8Array(base64String) {
@@ -633,12 +642,25 @@ function urlBase64ToUint8Array(base64String) {
     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
+async function attendiSwAttivo(reg) {
+    let sw = reg.installing || reg.waiting || reg.active;
+    if (sw && sw.state !== 'activated') {
+        await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 2000);
+            sw.addEventListener('statechange', () => {
+                if (sw.state === 'activated') { clearTimeout(timer); resolve(); }
+            });
+        });
+    }
+}
+
 async function attivaTutto() {
     const st = document.getElementById('status');
     const btn = document.getElementById('btn');
+    const btnHome = document.getElementById('btnHome');
     btn.disabled = true;
     st.className = "";
-    st.innerText = "⏳ Registrazione notifiche push e badge sul telefono...";
+    st.innerText = "⏳ Registrazione dispositivo su Supabase in corso...";
     try {
         const perm = await Notification.requestPermission();
         if (perm !== 'granted') {
@@ -647,13 +669,12 @@ async function attivaTutto() {
             btn.disabled = false;
             return;
         }
-        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/notifiche-push/' });
-        await navigator.serviceWorker.ready;
+        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
+        await attendiSwAttivo(reg);
 
         const cfgResp = await fetch('/api/notifiche/status', { cache: 'no-store' });
         const cfg = await cfgResp.json();
 
-        // Rimuove eventuale iscrizione precedente con chiave diversa
         const oldSub = await reg.pushManager.getSubscription();
         if (oldSub) {
             try { await oldSub.unsubscribe(); } catch (e) {}
@@ -672,26 +693,21 @@ async function attivaTutto() {
         const out = await resSub.json();
 
         if ('setAppBadge' in navigator) {
-            if (out.residui > 0) await navigator.setAppBadge(out.residui).catch(()=>{});
-            else await navigator.clearAppBadge().catch(()=>{});
+            const numBadge = out.residui > 0 ? out.residui : 1;
+            navigator.setAppBadge(numBadge).catch(()=>{});
         }
         st.className = "ok";
-        st.innerText = "✅ Notifiche e Badge attivati! Ritorno all'app...";
-        setTimeout(() => { window.location.replace("/"); }, 900);
+        st.innerText = "✅ Dispositivo registrato! Ti abbiamo appena inviato una notifica di prova (Impegni residui oggi: " + out.residui + ").";
+        btn.style.display = "none";
+        btnHome.style.display = "block";
+        setTimeout(() => { window.location.href = "/"; }, 1500);
     } catch (e) {
         st.className = "err";
         st.innerText = "Errore attivazione: " + e.message;
         btn.disabled = false;
+        btnHome.style.display = "block";
     }
 }
-
-window.addEventListener('load', () => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-        attivaTutto();
-    } else {
-        document.getElementById('status').innerText = "Premi il pulsante qui sotto per attivare le notifiche 15 min prima di inizio e fine impegno e il contatore sull'icona.";
-    }
-});
 </script>
 </body>
 </html>
@@ -702,7 +718,6 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
     if supabase_client is not None:
         _STATO["supabase"] = supabase_client
 
-    # Carica SUBITO chiavi VAPID e sottoscrizioni da Supabase prima ancora che la pagina venga aperta
     _carica_o_inizializza_config_db()
 
     with _LOCK:
@@ -743,6 +758,25 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "vapid_public": _STATO["vapid_public"]
         })
 
+    @app.get("/api/notifiche/test")
+    async def get_test_push():
+        _controlla_impegni_oggi()
+        residui = _STATO["residui_attuali"]
+        badge_test = residui if residui > 0 else 1
+        ora_str = _ora_italia().strftime("%H:%M")
+        _invia_push_a_tutti({
+            "title": f"🔔 Test Notifica ELF ({ora_str})",
+            "body": f"Le notifiche funzionano! Impegni residui di oggi: {residui} (Badge test: {badge_test})",
+            "badge_count": badge_test,
+            "tag": f"elf-test-{int(time.time())}"
+        })
+        return JSONResponse({
+            "ok": True,
+            "dispositivi_raggiunti": len(_STATO["subscriptions"]),
+            "impegni_residui_oggi": residui,
+            "badge_inviato": badge_test
+        })
+
     @app.post("/api/notifiche/subscribe")
     async def post_subscribe(req: fastapi.Request):
         payload = await req.json()
@@ -756,7 +790,6 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 id_db = esistente.get("id_db") if esistente else None
                 if not id_db and _STATO["supabase"]:
                     try:
-                        # Verifica se l'endpoint è già presente su Supabase
                         res_ex = _STATO["supabase"].table("menu_giornalieri").select("id, subcategoria").eq("data_menu", "1970-01-01").eq("categoria", "SYS_SUB").execute()
                         for r_s in (res_ex.data or []):
                             try:
@@ -788,12 +821,13 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
             if send_test:
                 residui = _STATO["residui_attuali"]
+                badge_init = residui if residui > 0 else 1
                 threading.Thread(
                     target=_invia_push_singolo,
                     args=(sub_obj, {
                         "title": "✅ Notifiche ELF Attive",
                         "body": f"📅 Impegni residui di oggi: {residui}\nRiceverai un avviso 15 min prima di inizio e fine impegno.",
-                        "badge_count": residui,
+                        "badge_count": badge_init,
                         "tag": "elf-welcome-test"
                     }),
                     daemon=True
@@ -805,9 +839,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
     async def inietta_script_notifiche(request: fastapi.Request, call_next):
         path = request.url.path
         if path in ["/", "/index.html", "/flutter_service_worker.js"]:
-            # Rimuove gli header di cache condizionale così i telefoni con l'app già installata
-            # ricevono sempre il file aggiornato (200 OK) invece di 304 Not Modified
-             request.scope["headers"] = [
+            request.scope["headers"] = [
                 (k, v) for k, v in request.scope.get("headers", [])
                 if k.lower() not in (b"if-none-match", b"if-modified-since", b"accept-encoding")
             ]
@@ -818,7 +850,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = b"// v-elf-push-3\ntry { importScripts('/sw-notifiche.js'); } catch(e) {}\n"
+            prefisso = b"// v-elf-push-4\ntry { importScripts('/sw-notifiche.js'); } catch(e) {}\n"
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
