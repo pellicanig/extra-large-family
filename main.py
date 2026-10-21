@@ -193,7 +193,6 @@ def main(page: ft.Page):
                         center_title=True,
                         toolbar_height=70,
                         actions=[
-                            actions=[
                             ft.PopupMenuButton(
                                 items=[
                                     ft.PopupMenuItem(
