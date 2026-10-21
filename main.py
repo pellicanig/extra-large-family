@@ -182,7 +182,7 @@ def main(page: ft.Page):
                     content=ft.Text("Ricevi una notifica 15 minuti prima dell'inizio e della fine degli impegni e visualizza il contatore sull'icona dell'app.", size=13),
                     actions=[
                         ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
-                        ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva, url_target="_self")
+                        ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva)
                     ]
                 )
                 try:
