@@ -146,26 +146,43 @@ def main(page: ft.Page):
             bgcolor="#EEF2F6", padding=4
         )
 
+        txt_menu_notifiche = ft.Text(
+            value="🔕 Silenzia Notifiche" if modulo_notifiche.is_notifiche_attive() else "🔔 Attiva Notifiche",
+            weight=ft.FontWeight.BOLD,
+            color=ft.Colors.RED_700 if modulo_notifiche.is_notifiche_attive() else ft.Colors.GREEN_800
+        )
+
+        def aggiorna_testo_menu_notifiche():
+            att = modulo_notifiche.is_notifiche_attive()
+            txt_menu_notifiche.value = "🔕 Silenzia Notifiche" if att else "🔔 Attiva Notifiche"
+            txt_menu_notifiche.color = ft.Colors.RED_700 if att else ft.Colors.GREEN_800
+
+        page.aggiorna_menu_notifiche = aggiorna_testo_menu_notifiche
+        modulo_notifiche.registra_pagina(page)
+
         def gestisci_click_notifiche():
             if modulo_notifiche.is_notifiche_attive():
                 modulo_notifiche.imposta_silenzioso(True)
+                aggiorna_testo_menu_notifiche()
                 snack = ft.SnackBar(content=ft.Text("🔕 Notifiche silenziate."))
                 page.overlay.append(snack)
                 snack.open = True
-                route_change(None)
+                page.update()
             elif modulo_notifiche.ha_dispositivi_registrati():
                 modulo_notifiche.imposta_silenzioso(False)
+                aggiorna_testo_menu_notifiche()
                 snack = ft.SnackBar(content=ft.Text("🔔 Notifiche riattivate!"))
                 page.overlay.append(snack)
                 snack.open = True
-                route_change(None)
+                page.update()
             else:
+                url_attiva = f"{RENDER_URL.rstrip('/')}/api/notifiche/pagina-attiva"
                 dlg_n = ft.AlertDialog(
-                    title=ft.Text("🔔 Attiva Notifiche Push & Vocali", size=16, weight=ft.FontWeight.BOLD),
-                    content=ft.Text("Attiva gli avvisi parlanti 15 minuti prima dell'inizio e della fine degli impegni e il contatore sull'icona dell'app.", size=13),
+                    title=ft.Text("🔔 Attiva Notifiche", size=16, weight=ft.FontWeight.BOLD),
+                    content=ft.Text("Ricevi una notifica 15 minuti prima dell'inizio e della fine degli impegni e visualizza il contatore sull'icona dell'app.", size=13),
                     actions=[
                         ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
-                        ft.TextButton("📲 Attiva su questo Telefono", url="/api/notifiche/pagina-attiva")
+                        ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva, url_target="_self")
                     ]
                 )
                 try:
@@ -174,7 +191,7 @@ def main(page: ft.Page):
                     page.overlay.append(dlg_n)
                     dlg_n.open = True
                     page.update()
-        
+
         page.views.append(
             ft.View(
                 route="/",
@@ -200,11 +217,7 @@ def main(page: ft.Page):
                                         on_click=lambda _: naviga("/famiglia")
                                     ),
                                     ft.PopupMenuItem(
-                                        content=ft.Text(
-                                            value="🔕 Silenzia Notifiche" if modulo_notifiche.is_notifiche_attive() else "🔔 Attiva Notifiche",
-                                            weight=ft.FontWeight.BOLD,
-                                            color=ft.Colors.RED_700 if modulo_notifiche.is_notifiche_attive() else ft.Colors.GREEN_800
-                                        ),
+                                        content=txt_menu_notifiche,
                                         on_click=lambda _: gestisci_click_notifiche()
                                     )
                                 ]
