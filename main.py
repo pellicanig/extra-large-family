@@ -7,6 +7,8 @@ from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
 import modulo_menu
+import modulo_notifiche
+
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -83,8 +85,10 @@ def main(page: ft.Page):
         return
 
     # ⚡ SINCRONIZZAZIONE SELETTIVA PER AZZERARE LA LATENZA ⚡
+    # ⚡ SINCRONIZZAZIONE SELETTIVA PER AZZERARE LA LATENZA ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
+            modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
         elif messaggio == "aggiorna_menu":
@@ -142,6 +146,35 @@ def main(page: ft.Page):
             bgcolor="#EEF2F6", padding=4
         )
 
+        def gestisci_click_notifiche():
+            if modulo_notifiche.is_notifiche_attive():
+                modulo_notifiche.imposta_silenzioso(True)
+                snack = ft.SnackBar(content=ft.Text("🔕 Notifiche silenziate."))
+                page.overlay.append(snack)
+                snack.open = True
+                route_change(None)
+            elif modulo_notifiche.ha_dispositivi_registrati():
+                modulo_notifiche.imposta_silenzioso(False)
+                snack = ft.SnackBar(content=ft.Text("🔔 Notifiche riattivate!"))
+                page.overlay.append(snack)
+                snack.open = True
+                route_change(None)
+            else:
+                dlg_n = ft.AlertDialog(
+                    title=ft.Text("🔔 Attiva Notifiche Push & Vocali", size=16, weight=ft.FontWeight.BOLD),
+                    content=ft.Text("Attiva gli avvisi parlanti 15 minuti prima dell'inizio e della fine degli impegni e il contatore sull'icona dell'app.", size=13),
+                    actions=[
+                        ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
+                        ft.TextButton("📲 Attiva su questo Telefono", url="/api/notifiche/pagina-attiva")
+                    ]
+                )
+                try:
+                    page.open(dlg_n)
+                except Exception:
+                    page.overlay.append(dlg_n)
+                    dlg_n.open = True
+                    page.update()
+        
         page.views.append(
             ft.View(
                 route="/",
@@ -160,11 +193,20 @@ def main(page: ft.Page):
                         center_title=True,
                         toolbar_height=70,
                         actions=[
+                            actions=[
                             ft.PopupMenuButton(
                                 items=[
                                     ft.PopupMenuItem(
                                         content=ft.Text(value="Gestione Famiglia"),
                                         on_click=lambda _: naviga("/famiglia")
+                                    ),
+                                    ft.PopupMenuItem(
+                                        content=ft.Text(
+                                            value="🔕 Silenzia Notifiche" if modulo_notifiche.is_notifiche_attive() else "🔔 Attiva Notifiche",
+                                            weight=ft.FontWeight.BOLD,
+                                            color=ft.Colors.RED_700 if modulo_notifiche.is_notifiche_attive() else ft.Colors.GREEN_800
+                                        ),
+                                        on_click=lambda _: gestisci_click_notifiche()
                                     )
                                 ]
                             )
@@ -199,7 +241,8 @@ import fastapi
 _orig_fastapi_init = fastapi.FastAPI.__init__
 def _patched_fastapi_init(self, *args, **kwargs):
     kwargs.pop("openapi_prefix", None)
-    return _orig_fastapi_init(self, *args, **kwargs)
+    _orig_fastapi_init(self, *args, **kwargs)
+    modulo_notifiche.collega_api_fastapi(self, supabase)
 fastapi.FastAPI.__init__ = _patched_fastapi_init
 
 if __name__ == "__main__":
