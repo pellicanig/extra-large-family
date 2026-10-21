@@ -4,7 +4,6 @@ import json
 import time
 import base64
 import threading
-import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import fastapi
@@ -26,14 +25,13 @@ _STATO = {
     "vapid_public": "",
     "vapid_private": "",
     "silenziato": False,
-    "subscriptions": {},      # endpoint -> dict subscription
+    "subscriptions": {},        # endpoint -> {"id_db": ..., "sub": ...}
     "notifiche_inviate": set(), # (data_str, id_imp, tipo)
     "data_corrente": "",
     "residui_attuali": 0,
     "ultimo_residui_push": -1,
-    "ultimo_messaggio_vocale": {"id": 0, "testo": ""},
-    "cache_famiglia": {},     # id -> nome
-    "cache_categorie": {},    # id -> nome
+    "cache_famiglia": {},       # id -> nome
+    "cache_categorie": {},      # id -> nome
     "ultimo_sync_anagrafica": 0,
     "scheduler_avviato": False,
     "evento_ricalcolo": threading.Event()
@@ -70,21 +68,33 @@ def _genera_chiavi_vapid():
 
 def _carica_o_inizializza_config_db():
     sb = _STATO["supabase"]
+    pub_env = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
+    priv_env = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
+
+    if pub_env and priv_env:
+        _STATO["vapid_public"] = pub_env
+        _STATO["vapid_private"] = priv_env
+
     if not sb:
+        if not _STATO["vapid_public"]:
+            _STATO["vapid_public"], _STATO["vapid_private"] = _genera_chiavi_vapid()
         return
+
     try:
         res = sb.table("menu_giornalieri").select("id, categoria, subcategoria, preso").eq("data_menu", "1970-01-01").in_("categoria", ["SYS_VAPID", "SYS_SUB"]).execute()
         righe = res.data or []
-        vapid_trovato = False
+        riga_vapid_id = None
+
         for r in righe:
             cat = r.get("categoria")
             sub_txt = r.get("subcategoria") or ""
             if cat == "SYS_VAPID" and sub_txt:
-                dati_v = json.loads(sub_txt)
-                _STATO["vapid_public"] = dati_v.get("pub", "")
-                _STATO["vapid_private"] = dati_v.get("priv", "")
+                riga_vapid_id = r["id"]
                 _STATO["silenziato"] = bool(r.get("preso"))
-                vapid_trovato = bool(_STATO["vapid_public"] and _STATO["vapid_private"])
+                if not (_STATO["vapid_public"] and _STATO["vapid_private"]):
+                    dati_v = json.loads(sub_txt)
+                    _STATO["vapid_public"] = dati_v.get("pub", "")
+                    _STATO["vapid_private"] = dati_v.get("priv", "")
             elif cat == "SYS_SUB" and sub_txt:
                 try:
                     s_obj = json.loads(sub_txt)
@@ -94,17 +104,24 @@ def _carica_o_inizializza_config_db():
                 except Exception:
                     pass
 
-        if not vapid_trovato:
-            pub_k = os.environ.get("VAPID_PUBLIC_KEY", "").strip()
-            priv_k = os.environ.get("VAPID_PRIVATE_KEY", "").strip()
-            if not (pub_k and priv_k):
-                pub_k, priv_k = _genera_chiavi_vapid()
+        if not (_STATO["vapid_public"] and _STATO["vapid_private"]):
+            pub_k, priv_k = _genera_chiavi_vapid()
             _STATO["vapid_public"] = pub_k
             _STATO["vapid_private"] = priv_k
+            print("==========================================================", flush=True)
+            print("[NOTIFICHE RENDER] Chiavi VAPID generate automaticamente:", flush=True)
+            print(f"VAPID_PUBLIC_KEY={pub_k}", flush=True)
+            print(f"VAPID_PRIVATE_KEY={priv_k}", flush=True)
+            print("==========================================================", flush=True)
+
+        payload_vapid = json.dumps({"pub": _STATO["vapid_public"], "priv": _STATO["vapid_private"]})
+        if riga_vapid_id:
+            sb.table("menu_giornalieri").update({"subcategoria": payload_vapid}).eq("id", riga_vapid_id).execute()
+        else:
             sb.table("menu_giornalieri").insert({
                 "data_menu": "1970-01-01",
                 "categoria": "SYS_VAPID",
-                "subcategoria": json.dumps({"pub": pub_k, "priv": priv_k}),
+                "subcategoria": payload_vapid,
                 "quantita": 0,
                 "unita_misura": "pz",
                 "preso": False
@@ -160,7 +177,8 @@ def _invia_push_a_tutti(payload_dict: dict):
                 data=data_str,
                 vapid_private_key=_STATO["vapid_private"],
                 vapid_claims={"sub": "mailto:notifiche@extralargefamily.it"},
-                ttl=3600
+                ttl=3600,
+                headers={"Urgency": "high"}
             )
         except WebPushException as ex:
             if ex.response is not None and ex.response.status_code in [404, 410]:
@@ -235,9 +253,12 @@ def _controlla_impegni_oggi():
                 eventi_oggi.append(imp)
 
     residui = 0
+    notifiche_da_inviare = []
+
     for ev in eventi_oggi:
         id_ev = str(ev.get("id"))
-        titolo = ev.get("titolo") or "Impegno"
+        titolo = (ev.get("titolo") or "Impegno").strip()
+        note = (ev.get("note") or "").strip()
         ora_i_str = ev.get("ora_inizio")
         ora_f_str = ev.get("ora_fine")
         min_i = _calcola_minuti(ora_i_str)
@@ -245,7 +266,7 @@ def _controlla_impegni_oggi():
         if min_i >= 0 and min_f < 0:
             min_f = min(min_i + 60, 1439)
 
-        # Calcolo impegni residui rispetto all'orario attuale
+        # Impegno residuo rispetto all'orario attuale (finché non è terminato)
         fine_effettiva = min_f if min_f >= 0 else 1439
         if fine_effettiva > minuti_ora:
             residui += 1
@@ -254,49 +275,51 @@ def _controlla_impegni_oggi():
             continue
 
         ids_fam = [str(f["id_familiare"]) for f in (ev.get("impegni_familiari") or []) if f.get("id_familiare")]
-        nomi_fam = ", ".join([_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam if _STATO["cache_famiglia"].get(fid)]) or "Tutta la famiglia"
-        nome_cat = _STATO["cache_categorie"].get(str(ev.get("id_categoria")), "Impegno")
+        nomi_lista = [_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam if _STATO["cache_famiglia"].get(fid)]
+        chi_testo = ", ".join(nomi_lista) if nomi_lista else "Tutta la famiglia"
+        nome_cat = _STATO["cache_categorie"].get(str(ev.get("id_categoria")), "IMPEGNO")
         ora_i_vis = str(ora_i_str)[:5]
         ora_f_vis = str(ora_f_str)[:5] if ora_f_str else f"{(min_f // 60):02d}:{(min_f % 60):02d}"
+        riga_note = f"\n📝 {note}" if note else ""
 
-        # 1. Notifica 15 minuti prima dell'INIZIO
+        # 1. Notifica parlante (Chi e Cosa) 15 minuti prima dell'INIZIO
         diff_start = minuti_ora - (min_i - 15)
         chiave_start = (oggi_str, id_ev, "start15")
         if 0 <= diff_start <= 2 and chiave_start not in _STATO["notifiche_inviate"]:
             _STATO["notifiche_inviate"].add(chiave_start)
-            testo_voce = f"Attenzione: tra 15 minuti, alle {ora_i_vis}, inizia {titolo} per {nomi_fam}."
-            _STATO["ultimo_messaggio_vocale"] = {"id": int(time.time()), "testo": testo_voce}
-            _invia_push_a_tutti({
-                "title": f"⏰ Tra 15 min inizia: {titolo}",
-                "body": f"👥 {nomi_fam}\n🕒 Ore {ora_i_vis} - {ora_f_vis} ({nome_cat})",
-                "voice": testo_voce,
-                "badge_count": residui,
+            notifiche_da_inviare.append({
+                "title": f"⏰ Tra 15 min ({ora_i_vis}) • {chi_testo}",
+                "body": f"📌 [{nome_cat}] {titolo}\n🕒 Orario: {ora_i_vis} - {ora_f_vis}{riga_note}",
                 "tag": f"start_{id_ev}_{oggi_str}"
             })
 
-        # 2. Notifica 15 minuti prima della FINE
+        # 2. Notifica parlante (Chi e Cosa) 15 minuti prima della FINE
         if min_f >= 0:
             diff_end = minuti_ora - (min_f - 15)
             chiave_end = (oggi_str, id_ev, "end15")
             if 0 <= diff_end <= 2 and chiave_end not in _STATO["notifiche_inviate"]:
                 _STATO["notifiche_inviate"].add(chiave_end)
-                testo_voce = f"Avviso: tra 15 minuti, alle {ora_f_vis}, termina {titolo} di {nomi_fam}."
-                _STATO["ultimo_messaggio_vocale"] = {"id": int(time.time()), "testo": testo_voce}
-                _invia_push_a_tutti({
-                    "title": f"🏁 Tra 15 min termina: {titolo}",
-                    "body": f"👥 {nomi_fam}\n🕒 Fine prevista ore {ora_f_vis} ({nome_cat})",
-                    "voice": testo_voce,
-                    "badge_count": residui,
+                notifiche_da_inviare.append({
+                    "title": f"🏁 Termina tra 15 min ({ora_f_vis}) • {chi_testo}",
+                    "body": f"📌 [{nome_cat}] {titolo}\n🕒 Fine prevista: ore {ora_f_vis}{riga_note}",
                     "tag": f"end_{id_ev}_{oggi_str}"
                 })
 
     _STATO["residui_attuali"] = residui
+
+    for notif in notifiche_da_inviare:
+        notif["badge_count"] = residui
+        _invia_push_a_tutti(notif)
+
+    # Se il numero di impegni residui è cambiato (es. ne è terminato uno o ne è stato aggiunto uno),
+    # aggiorna silenziosamente il badge sull'icona dell'app anche a telefono chiuso!
     if residui != _STATO["ultimo_residui_push"]:
         _STATO["ultimo_residui_push"] = residui
-        _invia_push_a_tutti({
-            "badge_only": True,
-            "badge_count": residui
-        })
+        if not notifiche_da_inviare:
+            _invia_push_a_tutti({
+                "badge_only": True,
+                "badge_count": residui
+            })
 
 
 def _loop_scheduler():
@@ -339,32 +362,23 @@ self.addEventListener('push', (event) => {
         tag: data.tag || 'elf-notif',
         renotify: true,
         requireInteraction: true,
-        data: { voice: data.voice || data.body || '', url: '/?speak=' + encodeURIComponent(data.voice || data.title) }
+        data: { url: '/' }
     };
-
-    const notifyClients = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-        clients.forEach((c) => c.postMessage({ type: 'ELF_SPEAK', voice: data.voice || data.title, badge_count: badgeCount }));
-    });
 
     event.waitUntil(Promise.all([
         badgePromise,
-        notifyClients,
         self.registration.showNotification(data.title, options)
     ]));
 });
 
 self.addEventListener('notificationclick', (event) => {
     event.notification.close();
-    const targetUrl = (event.notification.data && event.notification.data.url) ? event.notification.data.url : '/';
     event.waitUntil(
         self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
             for (const client of clientList) {
-                if ('focus' in client) {
-                    client.postMessage({ type: 'ELF_SPEAK', voice: event.notification.data.voice || '' });
-                    return client.focus();
-                }
+                if ('focus' in client) return client.focus();
             }
-            if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
+            if (self.clients.openWindow) return self.clients.openWindow('/');
         })
     );
 });
@@ -374,18 +388,6 @@ CLIENT_JS_CODE = """
 (function() {
     if (window.__elfNotifInit) return;
     window.__elfNotifInit = true;
-    let lastVocalId = 0;
-
-    function parlaItaliano(testo) {
-        if (!testo || !('speechSynthesis' in window)) return;
-        try {
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(testo);
-            u.lang = 'it-IT';
-            u.rate = 1.0;
-            window.speechSynthesis.speak(u);
-        } catch (e) {}
-    }
 
     function aggiornaBadgeLocale(n) {
         if (typeof n !== 'number') return;
@@ -395,36 +397,19 @@ CLIENT_JS_CODE = """
         }
     }
 
-    const params = new URLSearchParams(window.location.search);
-    if (params.has('speak')) {
-        const msg = params.get('speak');
-        setTimeout(() => parlaItaliano(msg), 600);
-        window.history.replaceState({}, document.title, '/');
-    }
-
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/sw-notifiche.js').catch(()=>{});
-        navigator.serviceWorker.addEventListener('message', (event) => {
-            if (event.data && event.data.type === 'ELF_SPEAK') {
-                if (typeof event.data.badge_count === 'number') aggiornaBadgeLocale(event.data.badge_count);
-                parlaItaliano(event.data.voice);
-            }
-        });
     }
 
-    async function syncStatoServer() {
+    async function syncBadge() {
         try {
             const r = await fetch('/api/notifiche/status', { cache: 'no-store' });
             const d = await r.json();
             aggiornaBadgeLocale(d.residui);
-            if (!d.silenziato && d.vocal && d.vocal.id && d.vocal.id !== lastVocalId) {
-                if (lastVocalId !== 0) parlaItaliano(d.vocal.testo);
-                lastVocalId = d.vocal.id;
-            }
         } catch (e) {}
     }
-    syncStatoServer();
-    setInterval(syncStatoServer, 30000);
+    syncBadge();
+    setInterval(syncBadge, 45000);
 })();
 """
 
@@ -443,8 +428,8 @@ button { background: #0D47A1; color: white; border: none; padding: 14px 20px; bo
 </head>
 <body>
 <div class="card">
-    <h3 style="margin-top:0;color:#0D47A1;">🔔 Notifiche Vocali & Badge ELF</h3>
-    <p id="status" style="font-size:14px;color:#444;">Premi il pulsante qui sotto per attivare su questo telefono le notifiche 15 min prima di inizio/fine impegno e il contatore sull'icona.</p>
+    <h3 style="margin-top:0;color:#0D47A1;">🔔 Notifiche Push & Badge ELF</h3>
+    <p id="status" style="font-size:14px;color:#444;">Premi il pulsante qui sotto per ricevere su questo telefono le notifiche (15 min prima di inizio e fine impegno) e il contatore degli impegni residui sull'icona anche ad app chiusa.</p>
     <button id="btn" onclick="attivaTutto()">📲 CONFERMA E ATTIVA ORA</button>
 </div>
 <script>
@@ -459,16 +444,11 @@ async function attivaTutto() {
     const st = document.getElementById('status');
     const btn = document.getElementById('btn');
     btn.disabled = true;
-    st.innerText = "⏳ Configurazione notifiche e permessi in corso...";
+    st.innerText = "⏳ Attivazione notifiche push in corso...";
     try {
-        if ('speechSynthesis' in window) {
-            const u = new SpeechSynthesisUtterance("Notifiche vocali Extra Large Family attivate.");
-            u.lang = 'it-IT';
-            window.speechSynthesis.speak(u);
-        }
         const perm = await Notification.requestPermission();
         if (perm !== 'granted') {
-            st.innerText = "⚠️ Permesso notifiche negato nelle impostazioni del telefono/browser.";
+            st.innerText = "⚠️ Permesso notifiche negato nelle impostazioni del telefono.";
             btn.disabled = false;
             return;
         }
@@ -490,8 +470,8 @@ async function attivaTutto() {
             else await navigator.clearAppBadge();
         }
         st.className = "ok";
-        st.innerText = "✅ Notifiche Push, Voce e Badge attivate con successo! Ritorno all'app...";
-        setTimeout(() => { window.location.href = "/"; }, 1200);
+        st.innerText = "✅ Notifiche e Badge attivati! Ritorno all'app...";
+        setTimeout(() => { window.location.href = "/"; }, 1000);
     } catch (e) {
         st.innerText = "Errore attivazione: " + e.message;
         btn.disabled = false;
@@ -531,8 +511,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "silenziato": _STATO["silenziato"],
             "dispositivi": len(_STATO["subscriptions"]),
             "residui": _STATO["residui_attuali"],
-            "vapid_public": _STATO["vapid_public"],
-            "vocal": _STATO["ultimo_messaggio_vocale"]
+            "vapid_public": _STATO["vapid_public"]
         })
 
     @app.post("/api/notifiche/subscribe")
@@ -563,26 +542,26 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
     @app.middleware("http")
     async def inietta_script_notifiche(request: fastapi.Request, call_next):
-         path = request.url.path
-         response = await call_next(request)
-         if path == "/flutter_service_worker.js" and response.status_code == 200:
-             body = b""
-             async for chunk in response.body_iterator:
-                 body += chunk
-             prefisso = b"try { importScripts('/sw-notifiche.js'); } catch(e) {}\n"
-             nuovo_body = prefisso + body
-             headers = dict(response.headers)
-             headers["content-length"] = str(len(nuovo_body))
-             headers["cache-control"] = "no-cache"
-             return Response(content=nuovo_body, status_code=200, headers=headers, media_type="application/javascript")
-         elif path == "/" and "text/html" in response.headers.get("content-type", ""):
-             body = b""
-             async for chunk in response.body_iterator:
-                 body += chunk
-             tag_script = b'<script src="/api/notifiche/client.js" defer></script></body>'
-             if b"/api/notifiche/client.js" not in body and b"</body>" in body:
-                 body = body.replace(b"</body>", tag_script, 1)
-             headers = dict(response.headers)
-             headers["content-length"] = str(len(body))
-             return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
-         return response
+        path = request.url.path
+        response = await call_next(request)
+        if path == "/flutter_service_worker.js" and response.status_code == 200:
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+            prefisso = b"try { importScripts('/sw-notifiche.js'); } catch(e) {}\n"
+            nuovo_body = prefisso + body
+            headers = dict(response.headers)
+            headers["content-length"] = str(len(nuovo_body))
+            headers["cache-control"] = "no-cache"
+            return Response(content=nuovo_body, status_code=200, headers=headers, media_type="application/javascript")
+        elif path == "/" and "text/html" in response.headers.get("content-type", ""):
+            body = b""
+            async for chunk in response.body_iterator:
+                body += chunk
+            tag_script = b'<script src="/api/notifiche/client.js" defer></script></body>'
+            if b"/api/notifiche/client.js" not in body and b"</body>" in body:
+                body = body.replace(b"</body>", tag_script, 1)
+            headers = dict(response.headers)
+            headers["content-length"] = str(len(body))
+            return Response(content=body, status_code=response.status_code, headers=headers, media_type="text/html")
+        return response
