@@ -490,11 +490,14 @@ def _controlla_impegni_oggi():
 
     if residui != _STATO["ultimo_residui_push"]:
         _STATO["ultimo_residui_push"] = residui
-        if not notifiche_da_inviare:
-            _invia_push_a_tutti({
-                "badge_only": True,
-                "badge_count": residui
-            })
+        # Invia sempre il badge aggiornato a tutti i dispositivi indipendentemente dalle notifiche testuali
+        _invia_push_a_tutti({
+            "badge_only": True,
+            "badge_count": residui,
+            "title": f"📅 Impegni residui: {residui}" if residui > 0 else "✅ Nessun impegno residuo",
+            "body": "Aggiornamento contatore icona",
+            "tag": "elf-badge-sync"
+        })
 
 
 def _loop_scheduler():
@@ -525,8 +528,12 @@ self.addEventListener('push', (event) => {
         clients.forEach((c) => c.postMessage({ type: 'ELF_BADGE', badge_count: badgeCount }));
     }).catch(()=>{});
 
-    if (data.badge_only && !data.title) {
-        event.waitUntil(Promise.all([badgePromise, notifyClients]));
+    if (data.badge_only) {
+        event.waitUntil(Promise.all([
+            badgePromise,
+            notifyClients,
+            self.registration.getNotifications({ tag: 'elf-badge-sync' }).then((ns) => ns.forEach((n) => n.close())).catch(()=>{})
+        ]));
         return;
     }
 
