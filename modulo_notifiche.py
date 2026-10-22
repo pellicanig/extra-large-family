@@ -218,7 +218,7 @@ def _associa_device_a_pagina(did: str, ep: str, client_ua: str):
     if not did:
         return
     morti = set()
-     pagine = list(_STATO["pagine_attive"])
+    pagine = list(_STATO["pagine_attive"])
     # Se c'è già una pagina con questo did, aggiorna l'endpoint
     for p in pagine:
         try:
