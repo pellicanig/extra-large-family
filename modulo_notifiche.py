@@ -350,6 +350,35 @@ def forza_ricalcolo_impegni():
     threading.Thread(target=_ricalcolo_immediato, daemon=True).start()
 
 
+def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
+    if not webpush:
+        return 500, "Libreria pywebpush non installata"
+    if not _STATO["vapid_private"]:
+        return 500, "Chiave VAPID_PRIVATE_KEY mancante"
+    try:
+        ep = sub_info.get("endpoint", "")
+        parsed = urllib.parse.urlparse(ep)
+        aud = f"{parsed.scheme}://{parsed.netloc}" if (parsed.scheme and parsed.netloc) else ""
+        claims = {"sub": "mailto:notifiche@extralargefamily.it"}
+        if aud:
+            claims["aud"] = aud
+
+        webpush(
+            subscription_info=sub_info,
+            data=json.dumps(payload_dict),
+            vapid_private_key=_STATO["vapid_private"],
+            vapid_claims=claims,
+            ttl=3600,
+            headers={"Urgency": "high"}
+        )
+        return 201, "OK"
+    except WebPushException as ex:
+        code = ex.response.status_code if ex.response is not None else 500
+        return code, f"HTTP {code}"
+    except Exception as ex:
+        return 500, str(ex)
+
+
 def _invia_push_a_tutti(payload_dict: dict):
     def _background_send():
         if not webpush or not _STATO["vapid_private"] or not _STATO["subscriptions"]:
