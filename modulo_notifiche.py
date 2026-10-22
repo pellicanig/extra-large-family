@@ -972,18 +972,7 @@ async function attivaDispositivo() {
     const btnAttiva = document.getElementById('btnAttiva');
     btnAttiva.disabled = true;
     st.className = '';
-    st.innerText = '⏳ Richiesta permesso notifiche in corso...';
-
-    try {
-        const did = getDeviceId();
-        const perm = await Notification.requestPermission();
-        if (perm !== 'granted') {
-            st.className = 'err';
-            st.innerText = '⚠️ Permesso negato. Per attivare le notifiche, consenti il permesso quando richiesto dal browser.';
-            btnAttiva.disabled = false;
-            return;
-        }
-        st.innerText = '⏳ Registrazione dispositivo in corso...';
+    st.innerText = '⏳ Attivazione dispositivo in corso...';
 
     try {
         const did = getDeviceId();
