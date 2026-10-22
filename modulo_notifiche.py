@@ -296,7 +296,14 @@ def imposta_silenzioso(valore: bool, page=None):
 def forza_ricalcolo_impegni():
     _STATO["ultimo_sync_anagrafica"] = 0
     _STATO["evento_ricalcolo"].set()
-    threading.Thread(target=_controlla_impegni_oggi, daemon=True).start()
+    def _forza_immediato():
+        _controlla_impegni_oggi()
+        # Forza l'invio immediato del badge aggiornato a tutti i dispositivi connessi
+        _invia_push_a_tutti({
+            "badge_only": True,
+            "badge_count": _STATO["residui_attuali"]
+        })
+    threading.Thread(target=_forza_immediato, daemon=True).start()
 
 
 def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
