@@ -374,43 +374,43 @@ def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
         return 201, "OK"
     except WebPushException as ex:
         code = ex.response.status_code if ex.response is not None else 500
-        return code, f"HTTP {code}"
+        body_err = ""
+        if ex.response is not None and hasattr(ex.response, "text"):
+            body_err = (ex.response.text or "")[:140]
+        print(f"[NOTIFICHE] WebPushException ({code}): {ex} | {body_err}", flush=True)
+        return code, f"HTTP {code}: {body_err or str(ex)}"
     except Exception as ex:
+        print(f"[NOTIFICHE] Errore invio push: {ex}", flush=True)
         return 500, str(ex)
 
 
 def _invia_push_a_tutti(payload_dict: dict):
-    def _background_send():
-        if not webpush or not _STATO["vapid_private"] or not _STATO["subscriptions"]:
-            return
-        da_rimuovere = []
+    if not webpush or not _STATO["vapid_private"] or not _STATO["subscriptions"]:
+        return
+
+    da_rimuovere = []
+    with _LOCK:
+        items = list(_STATO["subscriptions"].items())
+
+    for ep, info in items:
+        if not info.get("attivo", True):
+            continue
+        code, _ = _invia_push_singolo(info["sub"], payload_dict)
+        if code in [401, 403, 404, 410]:
+            da_rimuovere.append((ep, info.get("id_db"), info.get("device_id")))
+
+    if da_rimuovere:
         with _LOCK:
-            items = list(_STATO["subscriptions"].items())
-
-        for ep, info in items:
-            if not info.get("attivo", True):
-                continue
-            try:
-                code, _ = _invia_push_singolo(info["sub"], payload_dict)
-                if code in [401, 403, 404, 410]:
-                    da_rimuovere.append((ep, info.get("id_db"), info.get("device_id")))
-            except Exception:
-                pass
-
-        if da_rimuovere:
-            with _LOCK:
-                for ep, id_db, did in da_rimuovere:
-                    _STATO["subscriptions"].pop(ep, None)
-                    if did:
-                        _STATO["stato_device"].pop(did, None)
-                    if id_db and _STATO["supabase"]:
-                        try:
-                            _STATO["supabase"].table("menu_giornalieri").delete().eq("id", id_db).execute()
-                        except Exception:
-                            pass
-            _aggiorna_ui_pagine()
-
-    threading.Thread(target=_background_send, daemon=True).start()
+            for ep, id_db, did in da_rimuovere:
+                _STATO["subscriptions"].pop(ep, None)
+                if did:
+                    _STATO["stato_device"].pop(did, None)
+                if id_db and _STATO["supabase"]:
+                    try:
+                        _STATO["supabase"].table("menu_giornalieri").delete().eq("id", id_db).execute()
+                    except Exception:
+                        pass
+        _aggiorna_ui_pagine()
 
 
 def _controlla_impegni_oggi(forza_push_badge: bool = False):
