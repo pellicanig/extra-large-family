@@ -147,13 +147,13 @@ def main(page: ft.Page):
         )
 
         txt_menu_notifiche = ft.Text(
-            value="🔕 Silenzia Notifiche" if modulo_notifiche.is_notifiche_attive() else "🔔 Attiva Notifiche",
+            value="🔕 Silenzia Notifiche" if modulo_notifiche.is_notifiche_attive(page) else "🔔 Attiva Notifiche",
             weight=ft.FontWeight.BOLD,
-            color=ft.Colors.RED_700 if modulo_notifiche.is_notifiche_attive() else ft.Colors.GREEN_800
+            color=ft.Colors.RED_700 if modulo_notifiche.is_notifiche_attive(page) else ft.Colors.GREEN_800
         )
 
         def aggiorna_testo_menu_notifiche():
-            att = modulo_notifiche.is_notifiche_attive()
+            att = modulo_notifiche.is_notifiche_attive(page)
             txt_menu_notifiche.value = "🔕 Silenzia Notifiche" if att else "🔔 Attiva Notifiche"
             txt_menu_notifiche.color = ft.Colors.RED_700 if att else ft.Colors.GREEN_800
 
@@ -161,36 +161,41 @@ def main(page: ft.Page):
         modulo_notifiche.registra_pagina(page)
 
         def gestisci_click_notifiche():
-            if modulo_notifiche.is_notifiche_attive():
-                modulo_notifiche.imposta_silenzioso(True)
+            url_attiva = f"{RENDER_URL.rstrip('/')}/api/notifiche/pagina-attiva"
+            attivo_qui = modulo_notifiche.is_notifiche_attive(page)
+
+            def silenzia_qui(e):
+                dlg_n.open = False
+                modulo_notifiche.imposta_silenzioso(True, page)
                 aggiorna_testo_menu_notifiche()
-                snack = ft.SnackBar(content=ft.Text("🔕 Notifiche silenziate."))
+                snack = ft.SnackBar(content=ft.Text("🔕 Notifiche silenziate su questo dispositivo."))
                 page.overlay.append(snack)
                 snack.open = True
                 page.update()
-            elif modulo_notifiche.ha_dispositivi_registrati():
-                modulo_notifiche.imposta_silenzioso(False)
-                aggiorna_testo_menu_notifiche()
-                snack = ft.SnackBar(content=ft.Text("🔔 Notifiche riattivate!"))
-                page.overlay.append(snack)
-                snack.open = True
-                page.update()
+
+            azioni_dlg = [
+                ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
+            ]
+            if attivo_qui:
+                azioni_dlg.append(ft.TextButton("🔕 Silenzia questo Telefono", on_click=silenzia_qui))
+                azioni_dlg.append(ft.TextButton("🔔 Test / Gestisci Dispositivo", url=url_attiva))
             else:
-                url_attiva = f"{RENDER_URL.rstrip('/')}/api/notifiche/pagina-attiva"
-                dlg_n = ft.AlertDialog(
-                    title=ft.Text("🔔 Attiva Notifiche", size=16, weight=ft.FontWeight.BOLD),
-                    content=ft.Text("Ricevi una notifica 15 minuti prima dell'inizio e della fine degli impegni e visualizza il contatore sull'icona dell'app.", size=13),
-                    actions=[
-                        ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
-                        ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva)
-                    ]
-                )
-                try:
-                    page.open(dlg_n)
-                except Exception:
-                    page.overlay.append(dlg_n)
-                    dlg_n.open = True
-                    page.update()
+                azioni_dlg.append(ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva))
+
+            dlg_n = ft.AlertDialog(
+                title=ft.Text("🔔 Notifiche Dispositivo", size=16, weight=ft.FontWeight.BOLD),
+                content=ft.Text(
+                    "Ogni telefono gestisce le proprie notifiche in modo indipendente (15 min prima di inizio e fine impegno e contatore sull'icona).",
+                    size=13
+                ),
+                actions=azioni_dlg
+            )
+            try:
+                page.open(dlg_n)
+            except Exception:
+                page.overlay.append(dlg_n)
+                dlg_n.open = True
+                page.update()
 
         page.views.append(
             ft.View(
