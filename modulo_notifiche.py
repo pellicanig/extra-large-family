@@ -988,13 +988,14 @@ async function attivaDispositivo() {
         const cfgResp = await fetch('/api/notifiche/status?did=' + encodeURIComponent(did), { cache: 'no-store' });
         const cfg = await cfgResp.json();
 
-        let sub = await reg.pushManager.getSubscription();
-        if (!sub) {
-            sub = await reg.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
-            });
+        let oldSub = await reg.pushManager.getSubscription();
+        if (oldSub) {
+            try { await oldSub.unsubscribe(); } catch (e) {}
         }
+        let sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
+        });
 
         const resSub = await fetch('/api/notifiche/subscribe', {
             method: 'POST',
