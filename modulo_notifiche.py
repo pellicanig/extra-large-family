@@ -182,7 +182,6 @@ def _carica_o_inizializza_config_db():
                             sub_obj = raw_obj.get("sub") if ("sub" in raw_obj and isinstance(raw_obj["sub"], dict)) else raw_obj
                             ua_h = raw_obj.get("ua_hash", "") if isinstance(raw_obj, dict) else ""
                             ep = sub_obj.get("endpoint") if isinstance(sub_obj, dict) else None
-                            # In SYS_SUB il campo booleano 'preso' indica se il singolo dispositivo è silenziato (True = silenziato)
                             is_attivo = not bool(r.get("preso"))
                             if ep:
                                 _STATO["subscriptions"][ep] = {
@@ -663,118 +662,12 @@ CLIENT_JS_CODE = """
     setInterval(syncRapidoBadge, 3000);
     setInterval(sincronizzaDispositivoEBadge, 30000);
 
-    // Aggiorna istantaneamente il badge appena tocchi un pulsante (es. Salva/Elimina) o torni alla schermata Home
     document.addEventListener('visibilitychange', syncRapidoBadge);
     window.addEventListener('pagehide', syncRapidoBadge);
     window.addEventListener('blur', syncRapidoBadge);
     document.addEventListener('pointerup', () => {
         setTimeout(syncRapidoBadge, 800);
         setTimeout(syncRapidoBadge, 2000);
-    });
-})();
-"""
-
-SW_JS_CODE = """
-self.addEventListener('install', (e) => { self.skipWaiting(); });
-self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
-""" + SW_PUSH_HANDLERS_JS
-
-CLIENT_JS_CODE = """
-(function() {
-    if (window.__elfNotifInit) return;
-    window.__elfNotifInit = true;
-
-    function urlBase64ToUint8Array(base64String) {
-        const padding = '='.repeat((4 - base64String.length % 4) % 4);
-        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-        const rawData = window.atob(base64);
-        return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
-    }
-
-    function arrayBufferToBase64Url(buffer) {
-        if (!buffer) return '';
-        const bytes = new Uint8Array(buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        return window.btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
-    }
-
-    function aggiornaBadgeLocale(n) {
-        if (typeof n !== 'number') return;
-        if ('setAppBadge' in navigator) {
-            if (n > 0) navigator.setAppBadge(n).catch(()=>{});
-            else navigator.clearAppBadge().catch(()=>{});
-        }
-    }
-
-    async function getDedicatedSwReg() {
-        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/api/notifiche/' });
-        let sw = reg.installing || reg.waiting || reg.active;
-        if (sw && sw.state !== 'activated') {
-            await new Promise((resolve) => {
-                const t = setTimeout(resolve, 2500);
-                sw.addEventListener('statechange', () => {
-                    if (sw.state === 'activated') { clearTimeout(t); resolve(); }
-                });
-            });
-        }
-        return reg;
-    }
-
-    async function sincronizzaDispositivoEBadge() {
-        try {
-            const hasPerm = ('Notification' in window && Notification.permission === 'granted');
-            let currentEndpoint = '';
-
-            if ('serviceWorker' in navigator && 'PushManager' in window && hasPerm) {
-                const reg = await getDedicatedSwReg();
-                let sub = await reg.pushManager.getSubscription();
-                if (sub) currentEndpoint = sub.endpoint || '';
-            }
-
-            const r = await fetch('/api/notifiche/status?endpoint=' + encodeURIComponent(currentEndpoint) + '&perm=' + (hasPerm ? '1' : '0'), { cache: 'no-store' });
-            const cfg = await r.json();
-            aggiornaBadgeLocale(cfg.residui);
-
-            if (hasPerm && 'serviceWorker' in navigator && 'PushManager' in window && cfg.vapid_public) {
-                const reg = await getDedicatedSwReg();
-                let sub = await reg.pushManager.getSubscription();
-                if (sub && sub.options && sub.options.applicationServerKey) {
-                    const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
-                    if (currentKey && currentKey !== cfg.vapid_public.replace(/=+$/, '')) {
-                        try { await sub.unsubscribe(); } catch (e) {}
-                        sub = null;
-                    }
-                }
-                if (!sub && !cfg.dispositivo_silenziato) {
-                    sub = await reg.pushManager.subscribe({
-                        userVisibleOnly: true,
-                        applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
-                    });
-                }
-                if (sub && !cfg.dispositivo_registrato) {
-                    await fetch('/api/notifiche/subscribe', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ sub: sub, silent_sync: true })
-                    });
-                }
-            }
-        } catch (e) {}
-    }
-
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.addEventListener('message', (ev) => {
-            if (ev.data && ev.data.type === 'ELF_BADGE') {
-                aggiornaBadgeLocale(ev.data.badge_count);
-            }
-        });
-    }
-
-    sincronizzaDispositivoEBadge();
-    setInterval(sincronizzaDispositivoEBadge, 25000);
-    document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) sincronizzaDispositivoEBadge();
     });
 })();
 """
@@ -833,7 +726,7 @@ async function pulisciCacheAppInstallata() {
 }
 
 async function getSwReg() {
-    const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/api/notifiche/' });
+    const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
     let sw = reg.installing || reg.waiting || reg.active;
     if (sw && sw.state !== 'activated') {
         await new Promise((resolve) => {
@@ -938,7 +831,6 @@ async function attivaDispositivo() {
             else await navigator.clearAppBadge().catch(()=>{});
         }
 
-        // Notifica locale immediata dal Service Worker + Notifica Push dal Server
         try {
             await reg.showNotification('✅ Notifiche Attive su questo Telefono', {
                 body: '📅 Impegni residui di oggi: ' + out.residui + '\\nAvviso impostato a 15 min prima di inizio e fine impegno.',
@@ -1154,7 +1046,6 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                     except Exception as ex:
                         print(f"[NOTIFICHE] Errore salvataggio SYS_SUB: {ex}", flush=True)
 
-                # Rimuove vecchi endpoint dello stesso dispositivo
                 if ua_h:
                     vecchi_ep = [k for k, v in _STATO["subscriptions"].items() if v.get("ua_hash") == ua_h and k != ep]
                     for v_ep in vecchi_ep:
@@ -1230,7 +1121,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-5\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-6\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
