@@ -247,35 +247,28 @@ def _associa_device_a_pagina(did: str, ep: str, client_ua: str):
                 if ep and p_ep != ep:
                     p._elf_ep = ep
                     cambiato = True
-                if cambiato:
-                    _aggiorna_ui_pagine()
-                return
         except Exception:
             morti.add(p)
 
-    candidata = None
-    best_ts = -1.0
+    # Aggancia anche qualsiasi nuova sessione Flet appena aperta dallo stesso dispositivo (_elf_did is None)
     for p in pagine:
         try:
             if getattr(p, "_elf_did", None) is None:
                 p_ua = (getattr(p, "client_user_agent", "") or "").strip()
                 if not client_ua or not p_ua or p_ua == client_ua.strip():
-                    ts = getattr(p, "_elf_reg_ts", 0.0)
-                    if ts > best_ts:
-                        best_ts = ts
-                        candidata = p
+                    if did:
+                        p._elf_did = did
+                    if ep:
+                        p._elf_ep = ep
+                    cambiato = True
         except Exception:
             morti.add(p)
 
-    if candidata is not None:
-        if did:
-            candidata._elf_did = did
-        if ep:
-            candidata._elf_ep = ep
-        _aggiorna_ui_pagine()
-
     for m in morti:
         _STATO["pagine_attive"].discard(m)
+
+    if cambiato:
+        _aggiorna_ui_pagine()
 
 
 def is_notifiche_attive(page=None) -> bool:
@@ -772,19 +765,27 @@ CLIENT_JS_CODE = """
         return window.btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
     }
 
-    async function getDedicatedSwReg() {
-        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
-        let sw = reg.installing || reg.waiting || reg.active;
-        if (sw && sw.state !== 'activated') {
-            await new Promise((resolve) => {
-                const t = setTimeout(resolve, 2500);
-                sw.addEventListener('statechange', () => {
-                    if (sw.state === 'activated') { clearTimeout(t); resolve(); }
-                });
-            });
+    async function getSwReg() {
+    try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) {
+            if (r.scope && r.scope.includes('/api/notifiche')) {
+                await r.unregister();
+            }
         }
-        return reg;
+    } catch (e) {}
+    const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
+    let sw = reg.installing || reg.waiting || reg.active;
+    if (sw && sw.state !== 'activated') {
+        await new Promise((resolve) => {
+            const timer = setTimeout(resolve, 2500);
+            sw.addEventListener('statechange', () => {
+                if (sw.state === 'activated') { clearTimeout(timer); resolve(); }
+            });
+        });
     }
+    return reg;
+}
 
     async function aggiornaBadgeLocale(n, activeTags, activeItems) {
         if (typeof n !== 'number') return;
