@@ -384,35 +384,6 @@ def _invia_push_a_tutti(payload_dict: dict):
     threading.Thread(target=_background_send, daemon=True).start()
 
 
-def _invia_push_a_tutti(payload_dict: dict):
-    if not webpush or not _STATO["vapid_private"] or not _STATO["subscriptions"]:
-        return
-
-    da_rimuovere = []
-    with _LOCK:
-        items = list(_STATO["subscriptions"].items())
-
-    for ep, info in items:
-        if not info.get("attivo", True):
-            continue
-        code, _ = _invia_push_singolo(info["sub"], payload_dict)
-        if code in [401, 403, 404, 410]:
-            da_rimuovere.append((ep, info.get("id_db"), info.get("device_id")))
-
-    if da_rimuovere:
-        with _LOCK:
-            for ep, id_db, did in da_rimuovere:
-                _STATO["subscriptions"].pop(ep, None)
-                if did:
-                    _STATO["stato_device"].pop(did, None)
-                if id_db and _STATO["supabase"]:
-                    try:
-                        _STATO["supabase"].table("menu_giornalieri").delete().eq("id", id_db).execute()
-                    except Exception:
-                        pass
-        _aggiorna_ui_pagine()
-
-
 def _controlla_impegni_oggi(forza_push_badge: bool = False):
     sb = _STATO["supabase"]
     if not sb:
