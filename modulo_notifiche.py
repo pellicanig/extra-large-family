@@ -297,6 +297,7 @@ def imposta_silenzioso(valore: bool, page=None):
 def forza_ricalcolo_impegni():
     _STATO["ultimo_sync_anagrafica"] = 0
     _STATO["evento_ricalcolo"].set()
+    threading.Thread(target=_controlla_impegni_oggi, daemon=True).start()
 
 
 def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
@@ -482,9 +483,8 @@ def _controlla_impegni_oggi():
         _invia_push_a_tutti(notif)
 
     if residui != _STATO["ultimo_residui_push"]:
-        precedente = _STATO["ultimo_residui_push"]
         _STATO["ultimo_residui_push"] = residui
-        if not notifiche_da_inviare and precedente != -1:
+        if not notifiche_da_inviare:
             _invia_push_a_tutti({
                 "badge_only": True,
                 "badge_count": residui
@@ -499,7 +499,7 @@ def _loop_scheduler():
             gc.collect()
         except Exception as ex:
             print(f"[NOTIFICHE] Errore loop: {ex}", flush=True)
-        _STATO["evento_ricalcolo"].wait(timeout=25)
+        _STATO["evento_ricalcolo"].wait(timeout=15)
         _STATO["evento_ricalcolo"].clear()
 
 
@@ -552,6 +552,126 @@ self.addEventListener('notificationclick', (event) => {
         })
     );
 });
+"""
+
+SW_JS_CODE = """
+self.addEventListener('install', (e) => { self.skipWaiting(); });
+self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });
+""" + SW_PUSH_HANDLERS_JS
+
+CLIENT_JS_CODE = """
+(function() {
+    if (window.__elfNotifInit) return;
+    window.__elfNotifInit = true;
+
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+    }
+
+    function arrayBufferToBase64Url(buffer) {
+        if (!buffer) return '';
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        return window.btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+    }
+
+    function aggiornaBadgeLocale(n) {
+        if (typeof n !== 'number') return;
+        if ('setAppBadge' in navigator) {
+            if (n > 0) navigator.setAppBadge(n).catch(()=>{});
+            else navigator.clearAppBadge().catch(()=>{});
+        }
+    }
+
+    async function syncRapidoBadge() {
+        try {
+            const r = await fetch('/api/notifiche/status', { cache: 'no-store' });
+            const d = await r.json();
+            aggiornaBadgeLocale(d.residui);
+        } catch (e) {}
+    }
+
+    async function getDedicatedSwReg() {
+        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
+        let sw = reg.installing || reg.waiting || reg.active;
+        if (sw && sw.state !== 'activated') {
+            await new Promise((resolve) => {
+                const t = setTimeout(resolve, 2500);
+                sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') { clearTimeout(t); resolve(); }
+                });
+            });
+        }
+        return reg;
+    }
+
+    async function sincronizzaDispositivoEBadge() {
+        try {
+            const hasPerm = ('Notification' in window && Notification.permission === 'granted');
+            let currentEndpoint = '';
+
+            if ('serviceWorker' in navigator && 'PushManager' in window && hasPerm) {
+                const reg = await getDedicatedSwReg();
+                let sub = await reg.pushManager.getSubscription();
+                if (sub) currentEndpoint = sub.endpoint || '';
+            }
+
+            const r = await fetch('/api/notifiche/status?endpoint=' + encodeURIComponent(currentEndpoint) + '&perm=' + (hasPerm ? '1' : '0'), { cache: 'no-store' });
+            const cfg = await r.json();
+            aggiornaBadgeLocale(cfg.residui);
+
+            if (hasPerm && 'serviceWorker' in navigator && 'PushManager' in window && cfg.vapid_public) {
+                const reg = await getDedicatedSwReg();
+                let sub = await reg.pushManager.getSubscription();
+                if (sub && sub.options && sub.options.applicationServerKey) {
+                    const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
+                    if (currentKey && currentKey !== cfg.vapid_public.replace(/=+$/, '')) {
+                        try { await sub.unsubscribe(); } catch (e) {}
+                        sub = null;
+                    }
+                }
+                if (!sub && !cfg.dispositivo_silenziato) {
+                    sub = await reg.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
+                    });
+                }
+                if (sub && !cfg.dispositivo_registrato) {
+                    await fetch('/api/notifiche/subscribe', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sub: sub, silent_sync: true })
+                    });
+                }
+            }
+        } catch (e) {}
+    }
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (ev) => {
+            if (ev.data && ev.data.type === 'ELF_BADGE') {
+                aggiornaBadgeLocale(ev.data.badge_count);
+            }
+        });
+    }
+
+    sincronizzaDispositivoEBadge();
+    setInterval(syncRapidoBadge, 3000);
+    setInterval(sincronizzaDispositivoEBadge, 30000);
+
+    // Aggiorna istantaneamente il badge appena tocchi un pulsante (es. Salva/Elimina) o torni alla schermata Home
+    document.addEventListener('visibilitychange', syncRapidoBadge);
+    window.addEventListener('pagehide', syncRapidoBadge);
+    window.addEventListener('blur', syncRapidoBadge);
+    document.addEventListener('pointerup', () => {
+        setTimeout(syncRapidoBadge, 800);
+        setTimeout(syncRapidoBadge, 2000);
+    });
+})();
 """
 
 SW_JS_CODE = """
