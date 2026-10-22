@@ -3,7 +3,6 @@ import gc
 import json
 import time
 import base64
-import hashlib
 import threading
 import urllib.parse
 from datetime import datetime
@@ -27,20 +26,23 @@ _STATO = {
     "inizializzato": False,
     "vapid_public": "",
     "vapid_private": "",
-    "subscriptions": {},        # endpoint -> {"id_db": ..., "sub": ..., "attivo": True, "ua_hash": "..."}
-    "stato_client_ua": {},      # ua_hash -> bool (True se questo specifico dispositivo ha notifiche attive)
-    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|tipo"
+    "subscriptions": {},        # endpoint -> {"id_db": ..., "sub": ..., "attivo": True, "device_id": "..."}
+    "stato_device": {},         # device_id -> bool (True SOLO se quel singolo dispositivo è autorizzato e attivo)
+    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|HH:MM|tipo"
     "data_corrente": "",
     "residui_attuali": 0,
+    "active_tags": [],          # lista tag impegni ancora attivi oggi
     "ultimo_residui_push": -1,
+    "ultimo_check_ts": 0.0,
     "cache_famiglia": {},       # id -> nome
     "cache_categorie": {},      # id -> nome
-    "ultimo_sync_anagrafica": 0,
+    "ultimo_sync_anagrafica": 0.0,
     "scheduler_avviato": False,
     "evento_ricalcolo": threading.Event(),
     "pagine_attive": set()
 }
 _LOCK = threading.Lock()
+_CALC_LOCK = threading.Lock()
 
 
 def _ora_italia() -> datetime:
@@ -55,13 +57,6 @@ def _calcola_minuti(orario_str) -> int:
         return h * 60 + m
     except Exception:
         return -1
-
-
-def _hash_ua(user_agent: str) -> str:
-    ua_clean = (user_agent or "").strip().lower()
-    if not ua_clean:
-        return ""
-    return hashlib.sha256(ua_clean.encode("utf-8")).hexdigest()[:16]
 
 
 def _pulisci_chiave_str(val: str) -> str:
@@ -133,13 +128,13 @@ def _salva_stato_vapid_db():
         print(f"[NOTIFICHE] Errore salvataggio SYS_VAPID: {ex}", flush=True)
 
 
-def _ricostruisci_mappa_ua():
+def _ricostruisci_mappa_device():
     mappa = {}
     for info in _STATO["subscriptions"].values():
-        uah = info.get("ua_hash")
-        if uah and info.get("attivo", True):
-            mappa[uah] = True
-    _STATO["stato_client_ua"].update(mappa)
+        did = info.get("device_id")
+        if did:
+            mappa[did] = bool(info.get("attivo", True))
+    _STATO["stato_device"].update(mappa)
 
 
 def _carica_o_inizializza_config_db():
@@ -180,7 +175,7 @@ def _carica_o_inizializza_config_db():
                         try:
                             raw_obj = json.loads(sub_txt)
                             sub_obj = raw_obj.get("sub") if ("sub" in raw_obj and isinstance(raw_obj["sub"], dict)) else raw_obj
-                            ua_h = raw_obj.get("ua_hash", "") if isinstance(raw_obj, dict) else ""
+                            did = raw_obj.get("device_id", "") if isinstance(raw_obj, dict) else ""
                             ep = sub_obj.get("endpoint") if isinstance(sub_obj, dict) else None
                             is_attivo = not bool(r.get("preso"))
                             if ep:
@@ -188,11 +183,11 @@ def _carica_o_inizializza_config_db():
                                     "id_db": r["id"],
                                     "sub": sub_obj,
                                     "attivo": is_attivo,
-                                    "ua_hash": ua_h
+                                    "device_id": did
                                 }
                         except Exception:
                             pass
-                _ricostruisci_mappa_ua()
+                _ricostruisci_mappa_device()
             except Exception as ex:
                 print(f"[NOTIFICHE] Errore lettura config DB: {ex}", flush=True)
 
@@ -202,16 +197,60 @@ def _carica_o_inizializza_config_db():
             _STATO["vapid_private"] = priv_k
 
         _STATO["inizializzato"] = True
-        print(f"[NOTIFICHE] Inizializzato. Dispositivi totali: {len(_STATO['subscriptions'])}", flush=True)
+        print(f"[NOTIFICHE] Inizializzato. Dispositivi registrati: {len(_STATO['subscriptions'])}", flush=True)
 
     threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
 
 
 def registra_pagina(page):
     try:
+        if not hasattr(page, "_elf_did"):
+            page._elf_did = None
+        if not hasattr(page, "_elf_ep"):
+            page._elf_ep = None
+        page._elf_reg_ts = time.time()
         _STATO["pagine_attive"].add(page)
     except Exception:
         pass
+
+
+def _associa_device_a_pagina(did: str, ep: str, client_ua: str):
+    if not did:
+        return
+    morti = set()
+     pagine = list(_STATO["pagine_attive"])
+    # Se c'è già una pagina con questo did, aggiorna l'endpoint
+    for p in pagine:
+        try:
+            if getattr(p, "_elf_did", None) == did:
+                if ep:
+                    p._elf_ep = ep
+                return
+        except Exception:
+            morti.add(p)
+
+    # Altrimenti associa alla pagina appena aperta dallo stesso User-Agent non ancora associata
+    candidata = None
+    best_ts = -1.0
+    for p in pagine:
+        try:
+            if getattr(p, "_elf_did", None) is None:
+                p_ua = (getattr(p, "client_user_agent", "") or "").strip()
+                if not client_ua or not p_ua or p_ua == client_ua.strip():
+                    ts = getattr(p, "_elf_reg_ts", 0.0)
+                    if ts > best_ts:
+                        best_ts = ts
+                        candidata = p
+        except Exception:
+            morti.add(p)
+
+    if candidata is not None:
+        candidata._elf_did = did
+        if ep:
+            candidata._elf_ep = ep
+
+    for m in morti:
+        _STATO["pagine_attive"].discard(m)
 
 
 def _aggiorna_ui_pagine():
@@ -229,19 +268,21 @@ def _aggiorna_ui_pagine():
 
 def is_notifiche_attive(page=None) -> bool:
     """
-    Verifica lo stato delle notifiche in modo INDIPENDENTE per il singolo dispositivo (page).
-    Se il dispositivo non ha autorizzato le notifiche, restituisce sempre False.
+    Restituisce True SOLO se lo specifico dispositivo (page) ha autorizzato le notifiche
+    ed è attivo su Supabase. Un dispositivo non autorizzato restituisce SEMPRE False.
     """
     if not _STATO["inizializzato"]:
         _carica_o_inizializza_config_db()
     if page is not None:
-        ua = getattr(page, "client_user_agent", "") or ""
-        uah = _hash_ua(ua)
-        if uah and uah in _STATO["stato_client_ua"]:
-            return bool(_STATO["stato_client_ua"][uah])
-        if uah:
+        did = getattr(page, "_elf_did", None)
+        ep = getattr(page, "_elf_ep", None)
+        if ep and ep in _STATO["subscriptions"]:
+            return bool(_STATO["subscriptions"][ep].get("attivo", True))
+        if did and did in _STATO["stato_device"]:
+            return bool(_STATO["stato_device"][did])
+        if did:
             for info in _STATO["subscriptions"].values():
-                if info.get("ua_hash") == uah:
+                if info.get("device_id") == did:
                     return bool(info.get("attivo", True))
         return False
     return any(info.get("attivo", True) for info in _STATO["subscriptions"].values())
@@ -251,33 +292,40 @@ def ha_dispositivi_registrati(page=None) -> bool:
     if not _STATO["inizializzato"]:
         _carica_o_inizializza_config_db()
     if page is not None:
-        ua = getattr(page, "client_user_agent", "") or ""
-        uah = _hash_ua(ua)
-        if uah:
-            return any(info.get("ua_hash") == uah for info in _STATO["subscriptions"].values())
+        did = getattr(page, "_elf_did", None)
+        ep = getattr(page, "_elf_ep", None)
+        if ep and ep in _STATO["subscriptions"]:
+            return True
+        if did:
+            return any(info.get("device_id") == did for info in _STATO["subscriptions"].values())
         return False
     return len(_STATO["subscriptions"]) > 0
 
 
 def imposta_silenzioso(valore: bool, page=None):
-    """Silenzia o riattiva SOLO il dispositivo corrente (senza toccare gli altri telefoni)."""
+    """Silenzia o riattiva ESCLUSIVAMENTE il singolo dispositivo che ha richiesto l'azione."""
     sb = _STATO["supabase"]
-    uah_target = ""
-    if page is not None:
-        ua = getattr(page, "client_user_agent", "") or ""
-        uah_target = _hash_ua(ua)
+    did_target = getattr(page, "_elf_did", None) if page is not None else None
+    ep_target = getattr(page, "_elf_ep", None) if page is not None else None
+
+    if page is not None and not did_target and not ep_target:
+        return
 
     nuovo_attivo = not bool(valore)
     ids_da_aggiornare = []
 
     with _LOCK:
         for ep, info in _STATO["subscriptions"].items():
-            if not uah_target or info.get("ua_hash") == uah_target:
+            match_ep = (ep_target and ep == ep_target)
+            match_did = (did_target and info.get("device_id") == did_target)
+            if match_ep or match_did or (page is None):
                 info["attivo"] = nuovo_attivo
                 if info.get("id_db"):
                     ids_da_aggiornare.append(info["id_db"])
-        if uah_target:
-            _STATO["stato_client_ua"][uah_target] = nuovo_attivo
+                if info.get("device_id"):
+                    _STATO["stato_device"][info["device_id"]] = nuovo_attivo
+        if did_target:
+            _STATO["stato_device"][did_target] = nuovo_attivo
 
     if sb and ids_da_aggiornare:
         def _w():
@@ -294,16 +342,14 @@ def imposta_silenzioso(valore: bool, page=None):
 
 
 def forza_ricalcolo_impegni():
-    _STATO["ultimo_sync_anagrafica"] = 0
+    _STATO["ultimo_sync_anagrafica"] = 0.0
+    _STATO["ultimo_check_ts"] = 0.0
     _STATO["evento_ricalcolo"].set()
-    def _forza_immediato():
-        _controlla_impegni_oggi()
-        # Forza l'invio immediato del badge aggiornato a tutti i dispositivi connessi
-        _invia_push_a_tutti({
-            "badge_only": True,
-            "badge_count": _STATO["residui_attuali"]
-        })
-    threading.Thread(target=_forza_immediato, daemon=True).start()
+
+    def _ricalcolo_immediato():
+        _controlla_impegni_oggi(forza_push_badge=True)
+
+    threading.Thread(target=_ricalcolo_immediato, daemon=True).start()
 
 
 def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
@@ -353,14 +399,14 @@ def _invia_push_a_tutti(payload_dict: dict):
             continue
         code, _ = _invia_push_singolo(info["sub"], payload_dict)
         if code in [401, 403, 404, 410]:
-            da_rimuovere.append((ep, info.get("id_db"), info.get("ua_hash")))
+            da_rimuovere.append((ep, info.get("id_db"), info.get("device_id")))
 
     if da_rimuovere:
         with _LOCK:
-            for ep, id_db, uah in da_rimuovere:
+            for ep, id_db, did in da_rimuovere:
                 _STATO["subscriptions"].pop(ep, None)
-                if uah:
-                    _STATO["stato_client_ua"].pop(uah, None)
+                if did:
+                    _STATO["stato_device"].pop(did, None)
                 if id_db and _STATO["supabase"]:
                     try:
                         _STATO["supabase"].table("menu_giornalieri").delete().eq("id", id_db).execute()
@@ -369,135 +415,150 @@ def _invia_push_a_tutti(payload_dict: dict):
         _aggiorna_ui_pagine()
 
 
-def _controlla_impegni_oggi():
+def _controlla_impegni_oggi(forza_push_badge: bool = False):
     sb = _STATO["supabase"]
     if not sb:
         return
 
-    adesso = _ora_italia()
-    oggi_str = adesso.strftime("%Y-%m-%d")
-    oggi_date = adesso.date()
-    minuti_ora = adesso.hour * 60 + adesso.minute
+    with _CALC_LOCK:
+        adesso = _ora_italia()
+        oggi_str = adesso.strftime("%Y-%m-%d")
+        oggi_date = adesso.date()
+        minuti_ora = adesso.hour * 60 + adesso.minute
+        ora_ts = time.time()
 
-    if _STATO["data_corrente"] != oggi_str:
-        _STATO["data_corrente"] = oggi_str
-        _STATO["notifiche_inviate"] = {k for k in _STATO["notifiche_inviate"] if k.startswith(oggi_str + "|")}
-        _STATO["ultimo_residui_push"] = -1
+        if _STATO["data_corrente"] != oggi_str:
+            _STATO["data_corrente"] = oggi_str
+            _STATO["notifiche_inviate"] = {k for k in _STATO["notifiche_inviate"] if k.startswith(oggi_str + "|")}
+            _STATO["ultimo_residui_push"] = -1
 
-    ora_ts = time.time()
-    if ora_ts - _STATO["ultimo_sync_anagrafica"] > 1800 or not _STATO["cache_famiglia"]:
-        try:
-            rf = sb.table("famiglia").select("id, nome").execute()
-            _STATO["cache_famiglia"] = {str(x["id"]): x["nome"] for x in (rf.data or [])}
-            rc = sb.table("categorie").select("id, nome").execute()
-            _STATO["cache_categorie"] = {str(x["id"]): x["nome"] for x in (rc.data or [])}
-            _STATO["ultimo_sync_anagrafica"] = ora_ts
-        except Exception:
-            pass
-
-    try:
-        res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").lte("data_evento", oggi_str).execute()
-        tutti = res.data or []
-    except Exception:
-        return
-
-    eventi_oggi = []
-    for imp in tutti:
-        val_p = imp.get("is_periodico")
-        is_p = str(val_p).lower() in ["true", "1", "t", "y", "yes"]
-        if is_p:
+        if ora_ts - _STATO["ultimo_sync_anagrafica"] > 1800 or not _STATO["cache_famiglia"]:
             try:
-                d_start = datetime.strptime(imp["data_evento"], "%Y-%m-%d").date()
-                d_stop = datetime.strptime(imp["data_fine_periodo"], "%Y-%m-%d").date() if imp.get("data_fine_periodo") else None
+                rf = sb.table("famiglia").select("id, nome").execute()
+                _STATO["cache_famiglia"] = {str(x["id"]): x["nome"] for x in (rf.data or [])}
+                rc = sb.table("categorie").select("id, nome").execute()
+                _STATO["cache_categorie"] = {str(x["id"]): x["nome"] for x in (rc.data or [])}
+                _STATO["ultimo_sync_anagrafica"] = ora_ts
             except Exception:
+                pass
+
+        try:
+            res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").lte("data_evento", oggi_str).execute()
+            tutti = res.data or []
+            _STATO["ultimo_check_ts"] = ora_ts
+        except Exception as ex:
+            print(f"[NOTIFICHE] Errore lettura impegni: {ex}", flush=True)
+            return
+
+        eventi_oggi = []
+        for imp in tutti:
+            val_p = imp.get("is_periodico")
+            is_p = str(val_p).lower() in ["true", "1", "t", "y", "yes"]
+            if is_p:
+                try:
+                    d_start = datetime.strptime(imp["data_evento"], "%Y-%m-%d").date()
+                    d_stop = datetime.strptime(imp["data_fine_periodo"], "%Y-%m-%d").date() if imp.get("data_fine_periodo") else None
+                except Exception:
+                    continue
+                if oggi_date < d_start or (d_stop and oggi_date > d_stop):
+                    continue
+                escluse = (imp.get("date_escluse") or "").split(",")
+                if oggi_str in escluse:
+                    continue
+                g_str = imp.get("giorni_periodici") or ""
+                giorni_rep = [int(g) for g in g_str.split(",") if g.strip().isdigit()] if g_str else [d_start.weekday()]
+                if oggi_date.weekday() in giorni_rep:
+                    eventi_oggi.append(imp)
+            else:
+                if imp.get("data_evento") == oggi_str:
+                    eventi_oggi.append(imp)
+
+        residui = 0
+        active_tags = []
+        notifiche_da_inviare = []
+        nuove_inviate = False
+
+        for ev in eventi_oggi:
+            id_ev = str(ev.get("id"))
+            titolo = (ev.get("titolo") or "Impegno").strip()
+            note = (ev.get("note") or "").strip()
+            ora_i_str = ev.get("ora_inizio")
+            ora_f_str = ev.get("ora_fine")
+            min_i = _calcola_minuti(ora_i_str)
+            min_f = _calcola_minuti(ora_f_str)
+
+            # Calcolo fine effettiva rispetto all'orario corrente:
+            # - Se ha ora_fine > ora_inizio: termina a ora_fine
+            # - Se ha solo ora_inizio (senza ora_fine): rimane attivo fino a ora_inizio
+            # - Se non ha orario: vale per l'intera giornata
+            if min_f >= 0 and min_f > min_i:
+                fine_effettiva = min_f
+            elif min_i >= 0:
+                fine_effettiva = min_i
+            else:
+                fine_effettiva = 1439
+
+            tag_impegno = f"elf_imp_{id_ev}"
+            if fine_effettiva > minuti_ora:
+                residui += 1
+                active_tags.append(tag_impegno)
+
+            if min_i < 0:
                 continue
-            if oggi_date < d_start or (d_stop and oggi_date > d_stop):
-                continue
-            escluse = (imp.get("date_escluse") or "").split(",")
-            if oggi_str in escluse:
-                continue
-            g_str = imp.get("giorni_periodici") or ""
-            giorni_rep = [int(g) for g in g_str.split(",") if g.strip().isdigit()] if g_str else [d_start.weekday()]
-            if oggi_date.weekday() in giorni_rep:
-                eventi_oggi.append(imp)
-        else:
-            if imp.get("data_evento") == oggi_str:
-                eventi_oggi.append(imp)
 
-    residui = 0
-    notifiche_da_inviare = []
-    nuove_inviate = False
+            ids_fam = [str(f["id_familiare"]) for f in (ev.get("impegni_familiari") or []) if f.get("id_familiare")]
+            nomi_lista = [_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam if _STATO["cache_famiglia"].get(fid)]
+            chi_testo = ", ".join(nomi_lista) if nomi_lista else "Tutta la famiglia"
+            nome_cat = _STATO["cache_categorie"].get(str(ev.get("id_categoria")), "IMPEGNO")
+            ora_i_vis = str(ora_i_str)[:5]
+            ora_f_vis = str(ora_f_str)[:5] if (ora_f_str and min_f > min_i) else ""
+            orario_label = f"{ora_i_vis} - {ora_f_vis}" if ora_f_vis else ora_i_vis
+            riga_note = f"\n📝 {note}" if note else ""
 
-    for ev in eventi_oggi:
-        id_ev = str(ev.get("id"))
-        titolo = (ev.get("titolo") or "Impegno").strip()
-        note = (ev.get("note") or "").strip()
-        ora_i_str = ev.get("ora_inizio")
-        ora_f_str = ev.get("ora_fine")
-        min_i = _calcola_minuti(ora_i_str)
-        min_f = _calcola_minuti(ora_f_str)
-        if min_i >= 0 and min_f < 0:
-            min_f = min(min_i + 60, 1439)
-
-        fine_effettiva = min_f if min_f >= 0 else 1439
-        if fine_effettiva > minuti_ora:
-            residui += 1
-
-        if min_i < 0:
-            continue
-
-        ids_fam = [str(f["id_familiare"]) for f in (ev.get("impegni_familiari") or []) if f.get("id_familiare")]
-        nomi_lista = [_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam if _STATO["cache_famiglia"].get(fid)]
-        chi_testo = ", ".join(nomi_lista) if nomi_lista else "Tutta la famiglia"
-        nome_cat = _STATO["cache_categorie"].get(str(ev.get("id_categoria")), "IMPEGNO")
-        ora_i_vis = str(ora_i_str)[:5]
-        ora_f_vis = str(ora_f_str)[:5] if ora_f_str else f"{(min_f // 60):02d}:{(min_f % 60):02d}"
-        riga_note = f"\n📝 {note}" if note else ""
-
-        # 1. Notifica 15 minuti prima dell'INIZIO
-        min_mancanti_inizio = min_i - minuti_ora
-        chiave_start = f"{oggi_str}|{id_ev}|start15"
-        if 0 < min_mancanti_inizio <= 15 and chiave_start not in _STATO["notifiche_inviate"]:
-            _STATO["notifiche_inviate"].add(chiave_start)
-            nuove_inviate = True
-            notifiche_da_inviare.append({
-                "title": f"⏰ Tra {min_mancanti_inizio} min ({ora_i_vis}) • {chi_testo}",
-                "body": f"📌 [{nome_cat}] {titolo}\n🕒 Orario: {ora_i_vis} - {ora_f_vis}{riga_note}",
-                "tag": f"start_{id_ev}_{oggi_str}"
-            })
-
-        # 2. Notifica 15 minuti prima della FINE
-        if min_f >= 0:
-            min_mancanti_fine = min_f - minuti_ora
-            chiave_end = f"{oggi_str}|{id_ev}|end15"
-            if 0 < min_mancanti_fine <= 15 and chiave_end not in _STATO["notifiche_inviate"]:
-                _STATO["notifiche_inviate"].add(chiave_end)
+            # 1. Notifica 15 minuti prima dell'INIZIO
+            min_mancanti_inizio = min_i - minuti_ora
+            chiave_start = f"{oggi_str}|{id_ev}|{ora_i_vis}|start15"
+            if 0 < min_mancanti_inizio <= 15 and chiave_start not in _STATO["notifiche_inviate"]:
+                _STATO["notifiche_inviate"].add(chiave_start)
                 nuove_inviate = True
                 notifiche_da_inviare.append({
-                    "title": f"🏁 Termina tra {min_mancanti_fine} min ({ora_f_vis}) • {chi_testo}",
-                    "body": f"📌 [{nome_cat}] {titolo}\n🕒 Fine prevista: ore {ora_f_vis}{riga_note}",
-                    "tag": f"end_{id_ev}_{oggi_str}"
+                    "title": f"⏰ Tra {min_mancanti_inizio} min ({ora_i_vis}) • {chi_testo}",
+                    "body": f"📌 [{nome_cat}] {titolo}\n🕒 Orario: {orario_label}{riga_note}",
+                    "tag": tag_impegno
                 })
 
-    _STATO["residui_attuali"] = residui
+            # 2. Notifica 15 minuti prima della FINE (solo se è impostata un'ora di fine successiva all'inizio)
+            if min_f > min_i:
+                min_mancanti_fine = min_f - minuti_ora
+                chiave_end = f"{oggi_str}|{id_ev}|{ora_f_vis}|end15"
+                if 0 < min_mancanti_fine <= 15 and chiave_end not in _STATO["notifiche_inviate"]:
+                    _STATO["notifiche_inviate"].add(chiave_end)
+                    nuove_inviate = True
+                    notifiche_da_inviare.append({
+                        "title": f"🏁 Termina tra {min_mancanti_fine} min ({ora_f_vis}) • {chi_testo}",
+                        "body": f"📌 [{nome_cat}] {titolo}\n🕒 Fine prevista: ore {ora_f_vis}{riga_note}",
+                        "tag": tag_impegno
+                    })
 
-    if nuove_inviate:
-        threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
+        _STATO["residui_attuali"] = residui
+        _STATO["active_tags"] = active_tags
 
-    for notif in notifiche_da_inviare:
-        notif["badge_count"] = residui
-        _invia_push_a_tutti(notif)
+        if nuove_inviate:
+            threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
 
-    if residui != _STATO["ultimo_residui_push"]:
-        _STATO["ultimo_residui_push"] = residui
-        # Invia sempre il badge aggiornato a tutti i dispositivi indipendentemente dalle notifiche testuali
-        _invia_push_a_tutti({
-            "badge_only": True,
-            "badge_count": residui,
-            "title": f"📅 Impegni residui: {residui}" if residui > 0 else "✅ Nessun impegno residuo",
-            "body": "Aggiornamento contatore icona",
-            "tag": "elf-badge-sync"
-        })
+        for notif in notifiche_da_inviare:
+            notif["badge_count"] = residui
+            notif["active_tags"] = active_tags
+            _invia_push_a_tutti(notif)
+
+        if residui != _STATO["ultimo_residui_push"] or forza_push_badge:
+            _STATO["ultimo_residui_push"] = residui
+            if not notifiche_da_inviare:
+                _invia_push_a_tutti({
+                    "badge_only": True,
+                    "badge_count": residui,
+                    "active_tags": active_tags
+                })
 
 
 def _loop_scheduler():
@@ -508,50 +569,78 @@ def _loop_scheduler():
             gc.collect()
         except Exception as ex:
             print(f"[NOTIFICHE] Errore loop: {ex}", flush=True)
-        _STATO["evento_ricalcolo"].wait(timeout=15)
+        _STATO["evento_ricalcolo"].wait(timeout=10)
         _STATO["evento_ricalcolo"].clear()
 
 
 SW_PUSH_HANDLERS_JS = """
+async function applicaBadgeEPulisci(badgeCount, activeTags) {
+    if (typeof badgeCount === 'number' && self.navigator && 'setAppBadge' in self.navigator) {
+        try {
+            if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
+            else await self.navigator.clearAppBadge();
+        } catch (e) {}
+    }
+    if (self.registration && self.registration.getNotifications) {
+        try {
+            const list = await self.registration.getNotifications();
+            for (const n of list) {
+                if (badgeCount === 0) {
+                    n.close();
+                } else if (Array.isArray(activeTags) && n.tag && n.tag.startsWith('elf_imp_') && !activeTags.includes(n.tag)) {
+                    n.close();
+                }
+            }
+        } catch (e) {}
+    }
+}
+
 self.addEventListener('push', (event) => {
     let data = {};
     if (event.data) {
-        try { data = event.data.json(); } catch (e) { data = { title: 'ELF', body: event.data.text() }; }
+        try { data = event.data.json(); } catch (e) { data = {}; }
     }
 
     const badgeCount = (typeof data.badge_count === 'number') ? data.badge_count : null;
-    const badgePromise = (badgeCount !== null && self.navigator && 'setAppBadge' in self.navigator)
-        ? (badgeCount > 0 ? self.navigator.setAppBadge(badgeCount).catch(()=>{}) : self.navigator.clearAppBadge().catch(()=>{}))
-        : Promise.resolve();
+    const activeTags = Array.isArray(data.active_tags) ? data.active_tags : null;
+
+    const syncPromise = applicaBadgeEPulisci(badgeCount, activeTags);
 
     const notifyClients = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-        clients.forEach((c) => c.postMessage({ type: 'ELF_BADGE', badge_count: badgeCount }));
+        clients.forEach((c) => c.postMessage({
+            type: 'ELF_BADGE',
+            badge_count: badgeCount,
+            active_tags: activeTags
+        }));
     }).catch(()=>{});
 
-    if (data.badge_only) {
-        event.waitUntil(Promise.all([
-            badgePromise,
-            notifyClients,
-            self.registration.getNotifications({ tag: 'elf-badge-sync' }).then((ns) => ns.forEach((n) => n.close())).catch(()=>{})
-        ]));
+    // Se è solo un aggiornamento del contatore residui, NON mostrare alcuna notifica testuale
+    if (data.badge_only || !data.title) {
+        event.waitUntil(Promise.all([syncPromise, notifyClients]));
         return;
     }
 
-    const title = data.title || 'Impegno ELF';
     const options = {
         body: data.body || '',
         icon: '/icons/Icon-192.png',
+        badge: '/icons/Icon-192.png',
         vibrate: [250, 120, 250, 120, 400],
-        tag: data.tag || ('elf-' + Date.now()),
+        tag: data.tag || 'elf_imp_default',
         renotify: true,
         data: { url: '/' }
     };
 
     event.waitUntil(Promise.all([
-        badgePromise,
+        syncPromise,
         notifyClients,
-        self.registration.showNotification(title, options)
+        self.registration.showNotification(data.title, options)
     ]));
+});
+
+self.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'SYNC_BADGE_SW') {
+        event.waitUntil(applicaBadgeEPulisci(event.data.badge_count, event.data.active_tags));
+    }
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -577,6 +666,19 @@ CLIENT_JS_CODE = """
     if (window.__elfNotifInit) return;
     window.__elfNotifInit = true;
 
+    function getDeviceId() {
+        let did = '';
+        try {
+            did = localStorage.getItem('elf_device_id') || '';
+            if (!did) {
+                did = 'dev_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+                localStorage.setItem('elf_device_id', did);
+            }
+            document.cookie = 'elf_did=' + did + '; path=/; max-age=31536000; SameSite=Lax';
+        } catch (e) {}
+        return did;
+    }
+
     function urlBase64ToUint8Array(base64String) {
         const padding = '='.repeat((4 - base64String.length % 4) % 4);
         const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -592,20 +694,19 @@ CLIENT_JS_CODE = """
         return window.btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
     }
 
-    function aggiornaBadgeLocale(n) {
+    function aggiornaBadgeLocale(n, activeTags) {
         if (typeof n !== 'number') return;
         if ('setAppBadge' in navigator) {
             if (n > 0) navigator.setAppBadge(n).catch(()=>{});
             else navigator.clearAppBadge().catch(()=>{});
         }
-    }
-
-    async function syncRapidoBadge() {
-        try {
-            const r = await fetch('/api/notifiche/status', { cache: 'no-store' });
-            const d = await r.json();
-            aggiornaBadgeLocale(d.residui);
-        } catch (e) {}
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+                type: 'SYNC_BADGE_SW',
+                badge_count: n,
+                active_tags: activeTags || []
+            });
+        }
     }
 
     async function getDedicatedSwReg() {
@@ -622,8 +723,20 @@ CLIENT_JS_CODE = """
         return reg;
     }
 
+    async function syncRapidoBadge(forzaRicalcolo) {
+        try {
+            const did = getDeviceId();
+            const hasPerm = ('Notification' in window && Notification.permission === 'granted');
+            const url = '/api/notifiche/status?did=' + encodeURIComponent(did) + '&perm=' + (hasPerm ? '1' : '0') + (forzaRicalcolo ? '&forza=1' : '');
+            const r = await fetch(url, { cache: 'no-store' });
+            const d = await r.json();
+            aggiornaBadgeLocale(d.residui, d.active_tags);
+        } catch (e) {}
+    }
+
     async function sincronizzaDispositivoEBadge() {
         try {
+            const did = getDeviceId();
             const hasPerm = ('Notification' in window && Notification.permission === 'granted');
             let currentEndpoint = '';
 
@@ -633,9 +746,9 @@ CLIENT_JS_CODE = """
                 if (sub) currentEndpoint = sub.endpoint || '';
             }
 
-            const r = await fetch('/api/notifiche/status?endpoint=' + encodeURIComponent(currentEndpoint) + '&perm=' + (hasPerm ? '1' : '0'), { cache: 'no-store' });
+            const r = await fetch('/api/notifiche/status?did=' + encodeURIComponent(did) + '&endpoint=' + encodeURIComponent(currentEndpoint) + '&perm=' + (hasPerm ? '1' : '0'), { cache: 'no-store' });
             const cfg = await r.json();
-            aggiornaBadgeLocale(cfg.residui);
+            aggiornaBadgeLocale(cfg.residui, cfg.active_tags);
 
             if (hasPerm && 'serviceWorker' in navigator && 'PushManager' in window && cfg.vapid_public) {
                 const reg = await getDedicatedSwReg();
@@ -647,17 +760,15 @@ CLIENT_JS_CODE = """
                         sub = null;
                     }
                 }
-                if (!sub && !cfg.dispositivo_silenziato) {
-                    sub = await reg.pushManager.subscribe({
-                        userVisibleOnly: true,
-                        applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
-                    });
+                if (sub && cfg.dispositivo_registrato) {
+                    // Già registrato e allineato
+                    return;
                 }
-                if (sub && !cfg.dispositivo_registrato) {
+                if (sub && !cfg.dispositivo_registrato && !cfg.dispositivo_silenziato) {
                     await fetch('/api/notifiche/subscribe', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ sub: sub, silent_sync: true })
+                        body: JSON.stringify({ sub: sub, device_id: did, silent_sync: true })
                     });
                 }
             }
@@ -667,21 +778,23 @@ CLIENT_JS_CODE = """
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (ev) => {
             if (ev.data && ev.data.type === 'ELF_BADGE') {
-                aggiornaBadgeLocale(ev.data.badge_count);
+                aggiornaBadgeLocale(ev.data.badge_count, ev.data.active_tags);
             }
         });
     }
 
     sincronizzaDispositivoEBadge();
-    setInterval(syncRapidoBadge, 3000);
-    setInterval(sincronizzaDispositivoEBadge, 30000);
+    setInterval(() => syncRapidoBadge(false), 3000);
+    setInterval(sincronizzaDispositivoEBadge, 25000);
 
-    document.addEventListener('visibilitychange', syncRapidoBadge);
-    window.addEventListener('pagehide', syncRapidoBadge);
-    window.addEventListener('blur', syncRapidoBadge);
+    document.addEventListener('visibilitychange', () => syncRapidoBadge(true));
+    window.addEventListener('pagehide', () => syncRapidoBadge(true));
+    window.addEventListener('focus', () => syncRapidoBadge(true));
+    window.addEventListener('blur', () => syncRapidoBadge(true));
     document.addEventListener('pointerup', () => {
-        setTimeout(syncRapidoBadge, 800);
-        setTimeout(syncRapidoBadge, 2000);
+        setTimeout(() => syncRapidoBadge(true), 400);
+        setTimeout(() => syncRapidoBadge(true), 1200);
+        setTimeout(() => syncRapidoBadge(true), 2500);
     });
 })();
 """
@@ -712,12 +825,25 @@ button, .btn-link { display: block; box-sizing: border-box; text-decoration: non
     <h3 style="margin-top:0;margin-bottom:8px;color:#0D47A1;">🔔 Notifiche di questo Dispositivo</h3>
     <div id="badgeStato" class="badge-stato stato-off">Verifica stato...</div>
     <p id="status" style="font-size:13px;color:#444;line-height:1.4;">Controllo autorizzazioni del telefono in corso...</p>
-    <button id="btnAttiva" class="btn-attiva" onclick="attivaDispositivo()">📲 ATTIVA E INVIA NOTIFICA DI PROVA</button>
-    <button id="btnTest" class="btn-test" style="display:none;" onclick="inviaTestDispositivo()">🔔 INVIA NOTIFICA DI PROVA ORA</button>
-    <button id="btnMute" class="btn-mute" style="display:none;" onclick="disattivaDispositivo()">🔕 SILENZIA SU QUESTO TELEFONO</button>
+    <button id="btnAttiva" class="btn-attiva" onclick="attivaDispositivo()">📲 ATTIVA SU QUESTO TELEFONO</button>
+    <button id="btnTest" class="btn-test" style="display:none;" onclick="inviaTestDispositivo()">🔔 INVIA NOTIFICA DI PROVA</button>
+    <button id="btnMute" class="btn-mute" style="display:none;" onclick="disattivaDispositivo()">🔕 SILENZIA QUESTO TELEFONO</button>
     <a class="btn-link btn-home" href="/">⬅️ TORNA ALL'APP</a>
 </div>
 <script>
+function getDeviceId() {
+    let did = '';
+    try {
+        did = localStorage.getItem('elf_device_id') || '';
+        if (!did) {
+            did = 'dev_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now().toString(36);
+            localStorage.setItem('elf_device_id', did);
+        }
+        document.cookie = 'elf_did=' + did + '; path=/; max-age=31536000; SameSite=Lax';
+    } catch (e) {}
+    return did;
+}
+
 function urlBase64ToUint8Array(base64String) {
     const padding = '='.repeat((4 - base64String.length % 4) % 4);
     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -770,6 +896,7 @@ async function aggiornaStatoUI() {
         return;
     }
 
+    const did = getDeviceId();
     const perm = Notification.permission;
     let sub = null;
     try {
@@ -778,7 +905,7 @@ async function aggiornaStatoUI() {
     } catch (e) {}
 
     const ep = sub ? sub.endpoint : '';
-    const r = await fetch('/api/notifiche/status?endpoint=' + encodeURIComponent(ep) + '&perm=' + (perm === 'granted' ? '1' : '0'), { cache: 'no-store' });
+    const r = await fetch('/api/notifiche/status?did=' + encodeURIComponent(did) + '&endpoint=' + encodeURIComponent(ep) + '&perm=' + (perm === 'granted' ? '1' : '0') + '&forza=1', { cache: 'no-store' });
     const cfg = await r.json();
 
     if ('setAppBadge' in navigator) {
@@ -789,15 +916,15 @@ async function aggiornaStatoUI() {
     if (perm === 'granted' && sub && cfg.dispositivo_attivo) {
         badge.className = 'badge-stato stato-on';
         badge.innerText = '✅ ATTIVE SU QUESTO DISPOSITIVO';
-        st.innerText = 'Impegni residui di oggi: ' + cfg.residui + '. Riceverai le notifiche 15 min prima di inizio e fine impegno.';
-        btnAttiva.innerText = '🔄 RI-SINCRONIZZA QUESTO DISPOSITIVO';
+        st.innerText = 'Impegni residui di oggi: ' + cfg.residui + '. Riceverai le notifiche solo 15 min prima di inizio e fine impegno.';
+        btnAttiva.innerText = '🔄 RI-SINCRONIZZA QUESTO TELEFONO';
         btnTest.style.display = 'block';
         btnMute.style.display = 'block';
     } else {
         badge.className = 'badge-stato stato-off';
         badge.innerText = '🔕 NON ATTIVE SU QUESTO DISPOSITIVO';
-        st.innerText = 'Premi il pulsante blu qui sotto per attivare le notifiche e il numeretto sull\\'icona su questo telefono.';
-        btnAttiva.innerText = '📲 ATTIVA E INVIA NOTIFICA DI PROVA';
+        st.innerText = 'Premi il pulsante blu qui sotto per attivare le notifiche e il contatore su questo telefono.';
+        btnAttiva.innerText = '📲 ATTIVA SU QUESTO TELEFONO';
         btnTest.style.display = 'none';
         btnMute.style.display = 'none';
     }
@@ -808,9 +935,10 @@ async function attivaDispositivo() {
     const btnAttiva = document.getElementById('btnAttiva');
     btnAttiva.disabled = true;
     st.className = '';
-    st.innerText = '⏳ Attivazione e invio notifica di prova in corso...';
+    st.innerText = '⏳ Attivazione dispositivo in corso...';
 
     try {
+        const did = getDeviceId();
         const perm = await Notification.requestPermission();
         if (perm !== 'granted') {
             st.className = 'err';
@@ -820,7 +948,7 @@ async function attivaDispositivo() {
         }
 
         const reg = await getSwReg();
-        const cfgResp = await fetch('/api/notifiche/status', { cache: 'no-store' });
+        const cfgResp = await fetch('/api/notifiche/status?did=' + encodeURIComponent(did) + '&forza=1', { cache: 'no-store' });
         const cfg = await cfgResp.json();
 
         const oldSub = await reg.pushManager.getSubscription();
@@ -836,7 +964,7 @@ async function attivaDispositivo() {
         const resSub = await fetch('/api/notifiche/subscribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sub: sub, send_test: true })
+            body: JSON.stringify({ sub: sub, device_id: did, send_test: false })
         });
         const out = await resSub.json();
 
@@ -845,23 +973,9 @@ async function attivaDispositivo() {
             else await navigator.clearAppBadge().catch(()=>{});
         }
 
-        try {
-            await reg.showNotification('✅ Notifiche Attive su questo Telefono', {
-                body: '📅 Impegni residui di oggi: ' + out.residui + '\\nAvviso impostato a 15 min prima di inizio e fine impegno.',
-                icon: '/icons/Icon-192.png',
-                vibrate: [200, 100, 200],
-                tag: 'elf-local-check'
-            });
-        } catch (e) {}
-
         await aggiornaStatoUI();
-        if (out.push_status === 201 || out.push_status === 200) {
-            st.className = 'ok';
-            st.innerText = '✅ Dispositivo attivo e verificato! Notifica inviata (Impegni residui oggi: ' + out.residui + ').';
-        } else {
-            st.className = 'err';
-            st.innerText = '⚠️ Registrato, ma il server Push ha risposto: ' + (out.push_msg || out.push_status);
-        }
+        st.className = 'ok';
+        st.innerText = '✅ Dispositivo attivato! Impegni residui di oggi: ' + out.residui + '.';
     } catch (e) {
         st.className = 'err';
         st.innerText = '❌ Errore: ' + e.message;
@@ -875,6 +989,7 @@ async function inviaTestDispositivo() {
     st.className = '';
     st.innerText = '⏳ Invio notifica Push di prova a questo dispositivo...';
     try {
+        const did = getDeviceId();
         const reg = await getSwReg();
         const sub = await reg.pushManager.getSubscription();
         if (!sub) {
@@ -884,12 +999,12 @@ async function inviaTestDispositivo() {
         const res = await fetch('/api/notifiche/subscribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sub: sub, send_test: true })
+            body: JSON.stringify({ sub: sub, device_id: did, send_test: true })
         });
         const out = await res.json();
         if (out.push_status === 201 || out.push_status === 200) {
             st.className = 'ok';
-            st.innerText = '✅ Notifica Push inviata con successo! (Impegni residui oggi: ' + out.residui + ')';
+            st.innerText = '✅ Notifica di prova inviata! (Impegni residui oggi: ' + out.residui + ')';
         } else {
             st.className = 'err';
             st.innerText = '⚠️ Risposta server Push: ' + (out.push_msg || out.push_status);
@@ -905,6 +1020,7 @@ async function disattivaDispositivo() {
     st.className = '';
     st.innerText = '⏳ Silenziamento di questo dispositivo in corso...';
     try {
+        const did = getDeviceId();
         const reg = await getSwReg();
         const sub = await reg.pushManager.getSubscription();
         const ep = sub ? sub.endpoint : '';
@@ -914,11 +1030,14 @@ async function disattivaDispositivo() {
         await fetch('/api/notifiche/unsubscribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ endpoint: ep })
+            body: JSON.stringify({ endpoint: ep, device_id: did })
         });
+        if ('clearAppBadge' in navigator) {
+            navigator.clearAppBadge().catch(()=>{});
+        }
         await aggiornaStatoUI();
         st.className = 'ok';
-        st.innerText = '🔕 Notifiche silenziate solo su questo dispositivo. Gli altri telefoni restano attivi.';
+        st.innerText = '🔕 Notifiche silenziate solo su questo dispositivo. Gli altri telefoni restano invariati.';
     } catch (e) {
         st.className = 'err';
         st.innerText = '❌ Errore: ' + e.message;
@@ -968,23 +1087,30 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
     @app.get("/api/notifiche/status")
     async def get_status(req: fastapi.Request):
+        did = (req.query_params.get("did") or req.cookies.get("elf_did") or "").strip()
         ep = req.query_params.get("endpoint", "").strip()
         perm = req.query_params.get("perm", "")
-        ua_h = _hash_ua(req.headers.get("user-agent", ""))
+        forza = req.query_params.get("forza", "") == "1"
+
+        # Ricalcola da Supabase se richiesto o se sono passati più di 2 secondi dall'ultimo controllo
+        if forza or (time.time() - _STATO["ultimo_check_ts"] > 2.0):
+            _controlla_impegni_oggi()
 
         info_sub = _STATO["subscriptions"].get(ep) if ep else None
-        if not info_sub and ua_h:
-            info_sub = next((v for v in _STATO["subscriptions"].values() if v.get("ua_hash") == ua_h), None)
+        if not info_sub and did:
+            info_sub = next((v for v in _STATO["subscriptions"].values() if v.get("device_id") == did), None)
 
         disp_reg = info_sub is not None
         disp_attivo = bool(info_sub and info_sub.get("attivo", True))
         disp_sil = bool(info_sub and not info_sub.get("attivo", True))
 
-        if ua_h and perm in ["0", "1"]:
-            nuovo_stato_ua = (perm == "1") and disp_attivo
-            if _STATO["stato_client_ua"].get(ua_h) != nuovo_stato_ua:
-                _STATO["stato_client_ua"][ua_h] = nuovo_stato_ua
-                _aggiorna_ui_pagine()
+        if did:
+            _associa_device_a_pagina(did, ep, req.headers.get("user-agent", ""))
+            if perm in ["0", "1"]:
+                nuovo_stato_dev = (perm == "1") and disp_attivo
+                if _STATO["stato_device"].get(did) != nuovo_stato_dev:
+                    _STATO["stato_device"][did] = nuovo_stato_dev
+                    _aggiorna_ui_pagine()
 
         return JSONResponse({
             "attive": disp_attivo,
@@ -993,6 +1119,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "dispositivo_silenziato": disp_sil,
             "dispositivi": len(_STATO["subscriptions"]),
             "residui": _STATO["residui_attuali"],
+            "active_tags": _STATO["active_tags"],
             "vapid_public": _STATO["vapid_public"]
         })
 
@@ -1003,9 +1130,10 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         ora_str = _ora_italia().strftime("%H:%M")
         _invia_push_a_tutti({
             "title": f"🔔 Test Notifica ELF ({ora_str})",
-            "body": f"Impegni residui di oggi: {residui}. Le notifiche Push funzionano!",
+            "body": f"Impegni residui di oggi: {residui}.",
             "badge_count": residui,
-            "tag": f"elf-test-{int(time.time())}"
+            "active_tags": _STATO["active_tags"],
+            "tag": "elf_test_notif"
         })
         return JSONResponse({
             "ok": True,
@@ -1018,14 +1146,15 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         payload = await req.json()
         sub_obj = payload.get("sub") if isinstance(payload, dict) and "sub" in payload else payload
         send_test = bool(payload.get("send_test")) if isinstance(payload, dict) else False
-        ua_h = _hash_ua(req.headers.get("user-agent", ""))
+        did = (payload.get("device_id") if isinstance(payload, dict) else "") or req.cookies.get("elf_did") or ""
+        did = did.strip()
 
         ep = sub_obj.get("endpoint") if isinstance(sub_obj, dict) else None
         push_status = 200
         push_msg = "OK"
 
         if ep:
-            record_json = json.dumps({"sub": sub_obj, "ua_hash": ua_h})
+            record_json = json.dumps({"sub": sub_obj, "device_id": did})
             with _LOCK:
                 esistente = _STATO["subscriptions"].get(ep)
                 id_db = esistente.get("id_db") if esistente else None
@@ -1036,7 +1165,8 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                             try:
                                 raw_s = json.loads(r_s.get("subcategoria") or "{}")
                                 s_inner = raw_s.get("sub") if "sub" in raw_s else raw_s
-                                if s_inner.get("endpoint") == ep or (ua_h and raw_s.get("ua_hash") == ua_h):
+                                # Abbinamento ESCLUSIVAMENTE per endpoint o per device_id univoco (mai per User-Agent!)
+                                if s_inner.get("endpoint") == ep or (did and raw_s.get("device_id") == did):
                                     id_db = r_s["id"]
                                     break
                             except Exception:
@@ -1060,8 +1190,8 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                     except Exception as ex:
                         print(f"[NOTIFICHE] Errore salvataggio SYS_SUB: {ex}", flush=True)
 
-                if ua_h:
-                    vecchi_ep = [k for k, v in _STATO["subscriptions"].items() if v.get("ua_hash") == ua_h and k != ep]
+                if did:
+                    vecchi_ep = [k for k, v in _STATO["subscriptions"].items() if v.get("device_id") == did and k != ep]
                     for v_ep in vecchi_ep:
                         _STATO["subscriptions"].pop(v_ep, None)
 
@@ -1069,10 +1199,13 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                     "id_db": id_db,
                     "sub": sub_obj,
                     "attivo": True,
-                    "ua_hash": ua_h
+                    "device_id": did
                 }
-                if ua_h:
-                    _STATO["stato_client_ua"][ua_h] = True
+                if did:
+                    _STATO["stato_device"][did] = True
+
+            if did:
+                _associa_device_a_pagina(did, ep, req.headers.get("user-agent", ""))
 
             _controlla_impegni_oggi()
             _aggiorna_ui_pagine()
@@ -1081,10 +1214,11 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 residui = _STATO["residui_attuali"]
                 ora_str = _ora_italia().strftime("%H:%M")
                 push_status, push_msg = _invia_push_singolo(sub_obj, {
-                    "title": f"🔔 Notifica Push ELF ({ora_str})",
-                    "body": f"📅 Impegni residui di oggi: {residui}\nRiceverai un avviso 15 min prima di inizio e fine impegno.",
+                    "title": f"🔔 Test Notifica ELF ({ora_str})",
+                    "body": f"📅 Impegni residui di oggi: {residui}",
                     "badge_count": residui,
-                    "tag": f"elf-push-test-{int(time.time())}"
+                    "active_tags": _STATO["active_tags"],
+                    "tag": "elf_test_notif"
                 })
 
         return JSONResponse({
@@ -1098,17 +1232,17 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
     async def post_unsubscribe(req: fastapi.Request):
         payload = await req.json()
         ep = (payload.get("endpoint") or "").strip() if isinstance(payload, dict) else ""
-        ua_h = _hash_ua(req.headers.get("user-agent", ""))
+        did = ((payload.get("device_id") if isinstance(payload, dict) else "") or req.cookies.get("elf_did") or "").strip()
 
         with _LOCK:
             da_silenziare = []
             for k, v in list(_STATO["subscriptions"].items()):
-                if (ep and k == ep) or (ua_h and v.get("ua_hash") == ua_h):
+                if (ep and k == ep) or (did and v.get("device_id") == did):
                     v["attivo"] = False
                     if v.get("id_db"):
                         da_silenziare.append(v["id_db"])
-            if ua_h:
-                _STATO["stato_client_ua"][ua_h] = False
+            if did:
+                _STATO["stato_device"][did] = False
 
         if _STATO["supabase"] and da_silenziare:
             for id_r in da_silenziare:
@@ -1135,7 +1269,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-6\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-7\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
