@@ -32,8 +32,7 @@ _STATO = {
     "data_corrente": "",
     "residui_attuali": 0,
     "active_tags": [],
-    "active_items": [],
-    "ultimo_signature_push": "",
+    "ultimo_residui_push": -1,
     "ultimo_check_ts": 0.0,
     "cache_famiglia": {},
     "cache_categorie": {},
@@ -250,7 +249,6 @@ def _associa_device_a_pagina(did: str, ep: str, client_ua: str):
         except Exception:
             morti.add(p)
 
-    # Aggancia anche qualsiasi nuova sessione Flet appena aperta dallo stesso dispositivo (_elf_did is None)
     for p in pagine:
         try:
             if getattr(p, "_elf_did", None) is None:
@@ -430,7 +428,7 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
         if _STATO["data_corrente"] != oggi_str:
             _STATO["data_corrente"] = oggi_str
             _STATO["notifiche_inviate"] = {k for k in _STATO["notifiche_inviate"] if k.startswith(oggi_str + "|")}
-            _STATO["ultimo_signature_push"] = ""
+            _STATO["ultimo_residui_push"] = -1
 
         if ora_ts - _STATO["ultimo_sync_anagrafica"] > 1800 or not _STATO["cache_famiglia"]:
             try:
@@ -475,7 +473,6 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
 
         residui = 0
         active_tags = []
-        active_items = []
         notifiche_da_inviare = []
         nuove_inviate = False
 
@@ -488,7 +485,7 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
             min_i = _calcola_minuti(ora_i_str)
             min_f = _calcola_minuti(ora_f_str)
 
-            # Gestione corretta impegni "Tutto il giorno" vs impegni con orario
+            # Impegni "Tutto il giorno" restano nel conteggio residui fino alle 23:59 (1439)
             is_tutto_il_giorno = (min_i <= 0 and min_f <= 0) or (min_i == 0 and min_f >= 1439)
             if is_tutto_il_giorno:
                 fine_effettiva = 1439
@@ -502,37 +499,26 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
             else:
                 fine_effettiva = 1439
 
+            tag_impegno = f"elf_imp_{id_ev}"
+            if fine_effettiva > minuti_ora:
+                residui += 1
+                active_tags.append(tag_impegno)
+
+            # Gli impegni "Tutto il giorno" aggiornano SOLO il numeretto, MAI notifiche
+            if is_tutto_il_giorno or min_i < 0:
+                continue
+
             ids_fam = [str(f["id_familiare"]) for f in (ev.get("impegni_familiari") or []) if f.get("id_familiare")]
             nomi_lista = [_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam if _STATO["cache_famiglia"].get(fid)]
             chi_testo = ", ".join(nomi_lista) if nomi_lista else "Tutta la famiglia"
             nome_cat = _STATO["cache_categorie"].get(str(ev.get("id_categoria")), "IMPEGNO")
 
-            ora_i_vis = ora_i_str[:5] if min_i >= 0 else ""
-            ora_f_vis = ora_f_str[:5] if (min_f > min_i and min_i >= 0) else ""
-            if is_tutto_il_giorno:
-                orario_label = "Tutto il giorno"
-            elif ora_f_vis:
-                orario_label = f"{ora_i_vis} - {ora_f_vis}"
-            else:
-                orario_label = ora_i_vis
-
+            ora_i_vis = ora_i_str[:5]
+            ora_f_vis = ora_f_str[:5] if (min_f > min_i) else ""
+            orario_label = f"{ora_i_vis} - {ora_f_vis}" if ora_f_vis else ora_i_vis
             riga_note = f"\n📝 {note}" if note else ""
-            tag_impegno = f"elf_imp_{id_ev}"
 
-            if fine_effettiva > minuti_ora:
-                residui += 1
-                active_tags.append(tag_impegno)
-                active_items.append({
-                    "tag": tag_impegno,
-                    "sig": f"{orario_label}|{titolo}|{chi_testo}",
-                    "title": f"📅 {orario_label} • {chi_testo}",
-                    "body": f"📌 [{nome_cat}] {titolo}{riga_note}"
-                })
-
-            if is_tutto_il_giorno or min_i < 0:
-                continue
-
-            # 1. Notifica sonora 15 minuti prima dell'INIZIO
+            # 1. Notifica ESCLUSIVAMENTE 15 minuti prima dell'INIZIO
             min_mancanti_inizio = min_i - minuti_ora
             chiave_start = f"{oggi_str}|{id_ev}|{ora_i_vis}|start15"
             if 0 < min_mancanti_inizio <= 15 and chiave_start not in _STATO["notifiche_inviate"]:
@@ -544,7 +530,7 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
                     "tag": tag_impegno
                 })
 
-            # 2. Notifica sonora 15 minuti prima della FINE
+            # 2. Notifica ESCLUSIVAMENTE 15 minuti prima della FINE
             if min_f > min_i:
                 min_mancanti_fine = min_f - minuti_ora
                 chiave_end = f"{oggi_str}|{id_ev}|{ora_f_vis}|end15"
@@ -559,7 +545,6 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
 
         _STATO["residui_attuali"] = residui
         _STATO["active_tags"] = active_tags
-        _STATO["active_items"] = active_items
 
         if nuove_inviate:
             threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
@@ -567,18 +552,15 @@ def _controlla_impegni_oggi(forza_push_badge: bool = False):
         for notif in notifiche_da_inviare:
             notif["badge_count"] = residui
             notif["active_tags"] = active_tags
-            notif["active_items"] = active_items
             _invia_push_a_tutti(notif)
 
-        sig_attuale = f"{residui}|" + ",".join(f"{x['tag']}:{x['sig']}" for x in active_items)
-        if sig_attuale != _STATO["ultimo_signature_push"] or forza_push_badge:
-            _STATO["ultimo_signature_push"] = sig_attuale
+        if residui != _STATO["ultimo_residui_push"] or forza_push_badge:
+            _STATO["ultimo_residui_push"] = residui
             if not notifiche_da_inviare:
                 _invia_push_a_tutti({
                     "badge_only": True,
                     "badge_count": residui,
-                    "active_tags": active_tags,
-                    "active_items": active_items
+                    "active_tags": active_tags
                 })
 
 
@@ -595,9 +577,8 @@ def _loop_scheduler():
 
 
 SW_PUSH_HANDLERS_JS = """
-const _elfSigs = {};
-
-async function applicaBadgeEPulisci(badgeCount, activeTags, activeItems, skipTag) {
+async function applicaBadgeEPulisci(badgeCount, activeTags) {
+    // 1. Aggiorna SOLO il numeretto sull'icona dell'app (senza creare alcuna notifica!)
     if (typeof badgeCount === 'number' && self.navigator && 'setAppBadge' in self.navigator) {
         try {
             if (badgeCount > 0) await self.navigator.setAppBadge(badgeCount);
@@ -605,39 +586,15 @@ async function applicaBadgeEPulisci(badgeCount, activeTags, activeItems, skipTag
         } catch (e) {}
     }
 
+    // 2. Chiude dalla tendina eventuali notifiche vecchie di impegni già terminati o eliminati
     if (!self.registration || !self.registration.getNotifications) return;
-
     try {
         const list = await self.registration.getNotifications();
         const validSet = new Set(Array.isArray(activeTags) ? activeTags : []);
-        const presentTags = new Set();
-
         for (const n of list) {
             if (n.tag === 'elf_test_notif') continue;
             if (badgeCount === 0 || !n.tag || !validSet.has(n.tag)) {
                 n.close();
-                if (n.tag) delete _elfSigs[n.tag];
-            } else {
-                presentTags.add(n.tag);
-            }
-        }
-
-        if (badgeCount > 0 && Array.isArray(activeItems)) {
-            for (const item of activeItems) {
-                if (!item || !item.tag || item.tag === skipTag) continue;
-                const changed = (_elfSigs[item.tag] && _elfSigs[item.tag] !== item.sig);
-                if (!presentTags.has(item.tag) || changed) {
-                    _elfSigs[item.tag] = item.sig || '';
-                    await self.registration.showNotification(item.title, {
-                        body: item.body || '',
-                        icon: '/icons/Icon-192.png',
-                        badge: '/icons/Icon-192.png',
-                        tag: item.tag,
-                        silent: true,
-                        renotify: false,
-                        data: { url: '/', sig: item.sig || '' }
-                    });
-                }
             }
         }
     } catch (e) {}
@@ -651,21 +608,19 @@ self.addEventListener('push', (event) => {
 
     const badgeCount = (typeof data.badge_count === 'number') ? data.badge_count : null;
     const activeTags = Array.isArray(data.active_tags) ? data.active_tags : [];
-    const activeItems = Array.isArray(data.active_items) ? data.active_items : [];
-    const isTest = (data.tag === 'elf_test_notif');
 
     const notifyClients = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
         clients.forEach((c) => c.postMessage({
             type: 'ELF_BADGE',
             badge_count: badgeCount,
-            active_tags: activeTags,
-            active_items: activeItems
+            active_tags: activeTags
         }));
     }).catch(()=>{});
 
+    // Se è solo un aggiornamento del numeretto, aggiorna il badge e NON mostrare alcuna notifica
     if (data.badge_only || !data.title) {
         event.waitUntil(Promise.all([
-            applicaBadgeEPulisci(badgeCount, activeTags, activeItems, null),
+            applicaBadgeEPulisci(badgeCount, activeTags),
             notifyClients
         ]));
         return;
@@ -685,13 +640,7 @@ self.addEventListener('push', (event) => {
 
     const work = async () => {
         await self.registration.showNotification(data.title, options);
-        await applicaBadgeEPulisci(badgeCount, activeTags, activeItems, alertTag);
-        if (isTest) {
-            await new Promise((r) => setTimeout(r, 4000));
-            const ns = await self.registration.getNotifications({ tag: 'elf_test_notif' });
-            ns.forEach((n) => n.close());
-            await applicaBadgeEPulisci(badgeCount, activeTags, activeItems, null);
-        }
+        await applicaBadgeEPulisci(badgeCount, activeTags);
     };
 
     event.waitUntil(Promise.all([work(), notifyClients]));
@@ -701,9 +650,7 @@ self.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'SYNC_BADGE_SW') {
         event.waitUntil(applicaBadgeEPulisci(
             event.data.badge_count,
-            event.data.active_tags || [],
-            event.data.active_items || [],
-            null
+            event.data.active_tags || []
         ));
     }
 });
@@ -765,29 +712,29 @@ CLIENT_JS_CODE = """
         return window.btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
     }
 
-    async function getSwReg() {
-    try {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        for (const r of regs) {
-            if (r.scope && r.scope.includes('/api/notifiche')) {
-                await r.unregister();
+    async function getDedicatedSwReg() {
+        try {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            for (const r of regs) {
+                if (r.scope && r.scope.includes('/api/notifiche')) {
+                    await r.unregister();
+                }
             }
-        }
-    } catch (e) {}
-    const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
-    let sw = reg.installing || reg.waiting || reg.active;
-    if (sw && sw.state !== 'activated') {
-        await new Promise((resolve) => {
-            const timer = setTimeout(resolve, 2500);
-            sw.addEventListener('statechange', () => {
-                if (sw.state === 'activated') { clearTimeout(timer); resolve(); }
+        } catch (e) {}
+        const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
+        let sw = reg.installing || reg.waiting || reg.active;
+        if (sw && sw.state !== 'activated') {
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 2500);
+                sw.addEventListener('statechange', () => {
+                    if (sw.state === 'activated') { clearTimeout(timer); resolve(); }
+                });
             });
-        });
+        }
+        return reg;
     }
-    return reg;
-}
 
-    async function aggiornaBadgeLocale(n, activeTags, activeItems) {
+    async function aggiornaBadgeLocale(n, activeTags) {
         if (typeof n !== 'number') return;
         if ('setAppBadge' in navigator) {
             if (n > 0) navigator.setAppBadge(n).catch(()=>{});
@@ -801,8 +748,7 @@ CLIENT_JS_CODE = """
                     targetSw.postMessage({
                         type: 'SYNC_BADGE_SW',
                         badge_count: n,
-                        active_tags: activeTags || [],
-                        active_items: activeItems || []
+                        active_tags: activeTags || []
                     });
                 }
             } catch (e) {}
@@ -819,7 +765,7 @@ CLIENT_JS_CODE = """
                 + (forzaRicalcolo ? '&forza=1' : '');
             const r = await fetch(url, { cache: 'no-store' });
             const d = await r.json();
-            aggiornaBadgeLocale(d.residui, d.active_tags, d.active_items);
+            aggiornaBadgeLocale(d.residui, d.active_tags);
         } catch (e) {}
     }
 
@@ -851,7 +797,6 @@ CLIENT_JS_CODE = """
                         sub = null;
                     }
                 }
-                // Auto-ripristino silenzioso dopo deploy se il telefono ha già il permesso notifiche
                 if (!sub && !cfg.dispositivo_silenziato) {
                     try {
                         sub = await reg.pushManager.subscribe({
@@ -870,14 +815,14 @@ CLIENT_JS_CODE = """
                 }
             }
 
-            aggiornaBadgeLocale(cfg.residui, cfg.active_tags, cfg.active_items);
+            aggiornaBadgeLocale(cfg.residui, cfg.active_tags);
         } catch (e) {}
     }
 
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('message', (ev) => {
             if (ev.data && ev.data.type === 'ELF_BADGE') {
-                aggiornaBadgeLocale(ev.data.badge_count, ev.data.active_tags, ev.data.active_items);
+                aggiornaBadgeLocale(ev.data.badge_count, ev.data.active_tags);
             }
         });
     }
@@ -966,6 +911,14 @@ async function pulisciCacheAppInstallata() {
 }
 
 async function getSwReg() {
+    try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) {
+            if (r.scope && r.scope.includes('/api/notifiche')) {
+                await r.unregister();
+            }
+        }
+    } catch (e) {}
     const reg = await navigator.serviceWorker.register('/sw-notifiche.js', { scope: '/' });
     let sw = reg.installing || reg.waiting || reg.active;
     if (sw && sw.state !== 'activated') {
@@ -1010,7 +963,6 @@ async function aggiornaStatoUI() {
     let r = await fetch('/api/notifiche/status?did=' + encodeURIComponent(did) + '&endpoint=' + encodeURIComponent(ep) + '&perm=' + (perm === 'granted' && !muted ? '1' : '0') + '&forza=1', { cache: 'no-store' });
     let cfg = await r.json();
 
-    // Se il telefono ha già i permessi attivi, si riallinea da solo senza dover cliccare su Attiva
     if (perm === 'granted' && !muted && reg && cfg.vapid_public && (!sub || !cfg.dispositivo_attivo)) {
         try {
             if (!sub) {
@@ -1033,19 +985,23 @@ async function aggiornaStatoUI() {
         } catch (e) {}
     }
 
+    if ('setAppBadge' in navigator) {
+        if (cfg.residui > 0) navigator.setAppBadge(cfg.residui).catch(()=>{});
+        else navigator.clearAppBadge().catch(()=>{});
+    }
+
     if (reg && reg.active) {
         reg.active.postMessage({
             type: 'SYNC_BADGE_SW',
             badge_count: cfg.residui,
-            active_tags: cfg.active_tags || [],
-            active_items: cfg.active_items || []
+            active_tags: cfg.active_tags || []
         });
     }
 
     if (perm === 'granted' && !muted && sub && cfg.dispositivo_attivo) {
         badge.className = 'badge-stato stato-on';
         badge.innerText = '✅ ATTIVE SU QUESTO DISPOSITIVO';
-        st.innerText = 'Impegni residui di oggi: ' + cfg.residui + '. Avvisi impostati a 15 min prima di inizio e fine impegno.';
+        st.innerText = 'Impegni residui di oggi: ' + cfg.residui + '. Avvisi impostati solo a 15 min prima di inizio e fine impegno.';
         btnAttiva.innerText = '🔄 RI-SINCRONIZZA QUESTO TELEFONO';
         btnTest.style.display = 'block';
         btnMute.style.display = 'block';
@@ -1112,7 +1068,7 @@ async function attivaDispositivo() {
 async function inviaTestDispositivo() {
     const st = document.getElementById('status');
     st.className = '';
-    st.innerText = '⏳ Invio notifica di prova (si chiuderà da sola dopo 4 secondi)...';
+    st.innerText = '⏳ Invio notifica di prova...';
     try {
         const did = getDeviceId();
         const reg = await getSwReg();
@@ -1251,7 +1207,6 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "dispositivi": len(_STATO["subscriptions"]),
             "residui": _STATO["residui_attuali"],
             "active_tags": _STATO["active_tags"],
-            "active_items": _STATO["active_items"],
             "vapid_public": _STATO["vapid_public"]
         })
 
@@ -1265,7 +1220,6 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "body": f"Impegni residui di oggi: {residui}.",
             "badge_count": residui,
             "active_tags": _STATO["active_tags"],
-            "active_items": _STATO["active_items"],
             "tag": "elf_test_notif"
         })
         return JSONResponse({
@@ -1347,15 +1301,13 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                     "body": f"📅 Impegni residui di oggi: {residui}",
                     "badge_count": residui,
                     "active_tags": _STATO["active_tags"],
-                    "active_items": _STATO["active_items"],
                     "tag": "elf_test_notif"
                 })
             else:
                 _invia_push_singolo(sub_obj, {
                     "badge_only": True,
                     "badge_count": residui,
-                    "active_tags": _STATO["active_tags"],
-                    "active_items": _STATO["active_items"]
+                    "active_tags": _STATO["active_tags"]
                 })
 
         return JSONResponse({
@@ -1406,7 +1358,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-8\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-9\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
