@@ -33,7 +33,7 @@ _STATO = {
     "inizializzato": False,
     "vapid_public": "",
     "vapid_private": "",
-    "subscriptions": {},        # endpoint -> {"id_db": ..., "sub": ..., "device_id": "..."}
+    "subscriptions": {},        # endpoint -> {"id_db": ..., "sub": ..., "device_id": "...", "ua": "..."}
     "stato_device": {},         # device_id -> bool
     "ultimi_device_ua": {},     # user_agent -> (device_id, endpoint, timestamp)
     "force_unsub_devices": set(),
@@ -176,6 +176,7 @@ def _carica_o_inizializza_config_db():
 
     subs_loaded = {}
     device_map = {}
+    ua_map = {}
     sent_loaded = set()
 
     if sb:
@@ -202,16 +203,20 @@ def _carica_o_inizializza_config_db():
                         try:
                             raw_obj = json.loads(sub_txt)
                             sub_obj = raw_obj.get("sub") if ("sub" in raw_obj and isinstance(raw_obj["sub"], dict)) else raw_obj
-                            did = raw_obj.get("device_id", "") if isinstance(raw_obj, dict) else ""
+                            did = (raw_obj.get("device_id") or "").strip() if isinstance(raw_obj, dict) else ""
+                            ua_saved = (raw_obj.get("ua") or "").strip() if isinstance(raw_obj, dict) else ""
                             ep = sub_obj.get("endpoint") if isinstance(sub_obj, dict) else None
                             if ep and not bool(r.get("preso")):
                                 subs_loaded[ep] = {
                                     "id_db": r["id"],
                                     "sub": sub_obj,
-                                    "device_id": did
+                                    "device_id": did,
+                                    "ua": ua_saved
                                 }
                                 if did:
                                     device_map[did] = True
+                                if ua_saved:
+                                    ua_map[ua_saved] = (did, ep, time.time())
                         except Exception:
                             pass
             except Exception as ex:
@@ -226,35 +231,67 @@ def _carica_o_inizializza_config_db():
         _STATO["notifiche_inviate"].update(sent_loaded)
         _STATO["subscriptions"].update(subs_loaded)
         _STATO["stato_device"].update(device_map)
+        _STATO["ultimi_device_ua"].update(ua_map)
         _STATO["inizializzato"] = True
         print(f"[NOTIFICHE] Inizializzato. Dispositivi attivi: {len(_STATO['subscriptions'])}", flush=True)
 
     threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
 
 
+def _aggancia_pagina_da_memoria(page):
+    """Tenta subito di associare device_id ed endpoint alla pagina Flet."""
+    if page is None:
+        return
+    try:
+        if getattr(page, "_elf_did", None) and getattr(page, "_elf_ep", None):
+            return
+        p_ua = (getattr(page, "client_user_agent", "") or "").strip()
+        with _LOCK:
+            if p_ua and p_ua in _STATO["ultimi_device_ua"]:
+                did, ep, _ = _STATO["ultimi_device_ua"][p_ua]
+                if did:
+                    page._elf_did = did
+                if ep:
+                    page._elf_ep = ep
+                return
+            if p_ua:
+                for ep_k, info in _STATO["subscriptions"].items():
+                    if info.get("ua") == p_ua:
+                        page._elf_did = info.get("device_id") or None
+                        page._elf_ep = ep_k
+                        return
+            if not getattr(page, "_elf_did", None) and len(_STATO["ultimi_device_ua"]) == 1:
+                did, ep, _ = next(iter(_STATO["ultimi_device_ua"].values()))
+                if did:
+                    page._elf_did = did
+                if ep:
+                    page._elf_ep = ep
+                return
+            if not getattr(page, "_elf_did", None) and len(_STATO["subscriptions"]) == 1:
+                ep_k, info = next(iter(_STATO["subscriptions"].items()))
+                page._elf_did = info.get("device_id") or None
+                page._elf_ep = ep_k
+    except Exception:
+        pass
+
+
 def registra_pagina(page):
     try:
+        if not _STATO["inizializzato"]:
+            _carica_o_inizializza_config_db()
         if not hasattr(page, "_elf_did"):
             page._elf_did = None
         if not hasattr(page, "_elf_ep"):
             page._elf_ep = None
         page._elf_reg_ts = time.time()
 
-        # Aggancia subito il device_id se client.js ha già contattato il server durante il caricamento
-        p_ua = (getattr(page, "client_user_agent", "") or "").strip()
-        with _LOCK:
-            if p_ua and p_ua in _STATO["ultimi_device_ua"]:
-                did, ep, ts = _STATO["ultimi_device_ua"][p_ua]
-                if time.time() - ts < 120:
-                    page._elf_did = did
-                    page._elf_ep = ep
-            elif not page._elf_did and len(_STATO["ultimi_device_ua"]) == 1:
-                did, ep, ts = next(iter(_STATO["ultimi_device_ua"].values()))
-                if time.time() - ts < 30:
-                    page._elf_did = did
-                    page._elf_ep = ep
-
+        _aggancia_pagina_da_memoria(page)
         _STATO["pagine_attive"].add(page)
+
+        # Se main.py aveva già costruito il menu prima di registra_pagina, lo aggiorna subito
+        if hasattr(page, "aggiorna_menu_notifiche") and callable(page.aggiorna_menu_notifiche):
+            page.aggiorna_menu_notifiche()
+            page.update()
     except Exception:
         pass
 
@@ -282,53 +319,65 @@ def _associa_device_a_pagina(did: str, ep: str, client_ua: str):
 
     morti = set()
     pagine = list(_STATO["pagine_attive"])
-    cambiato = False
+    serve_refresh_ui = False
 
     for p in pagine:
         try:
             p_did = getattr(p, "_elf_did", None)
             p_ep = getattr(p, "_elf_ep", None)
-            if (did and p_did == did) or (ep and p_ep == ep):
+            p_ua = (getattr(p, "client_user_agent", "") or "").strip()
+
+            match_esatto = (did and p_did == did) or (ep and p_ep == ep)
+            match_ua = (p_did is None) and (not ua_clean or not p_ua or p_ua == ua_clean)
+
+            if match_esatto or match_ua:
                 if did and p_did != did:
                     p._elf_did = did
-                    cambiato = True
+                    serve_refresh_ui = True
                 if ep and p_ep != ep:
                     p._elf_ep = ep
-                    cambiato = True
-        except Exception:
-            morti.add(p)
-
-    for p in pagine:
-        try:
-            if getattr(p, "_elf_did", None) is None:
-                p_ua = (getattr(p, "client_user_agent", "") or "").strip()
-                if not ua_clean or not p_ua or p_ua == ua_clean:
-                    if did:
-                        p._elf_did = did
-                    if ep:
-                        p._elf_ep = ep
-                    cambiato = True
+                    serve_refresh_ui = True
+                stato_reale = is_notifiche_attive(p)
+                if getattr(p, "_elf_ultimo_stato_ui", None) != stato_reale:
+                    serve_refresh_ui = True
         except Exception:
             morti.add(p)
 
     for m in morti:
         _STATO["pagine_attive"].discard(m)
 
-    if cambiato:
+    if serve_refresh_ui:
         _aggiorna_ui_pagine()
 
 
 def is_notifiche_attive(page=None) -> bool:
+    if not _STATO["inizializzato"]:
+        _carica_o_inizializza_config_db()
+
+    risultato = False
     if page is not None:
+        if not getattr(page, "_elf_did", None) and not getattr(page, "_elf_ep", None):
+            _aggancia_pagina_da_memoria(page)
+
         did = getattr(page, "_elf_did", None)
         ep = getattr(page, "_elf_ep", None)
+
         if did and did in _STATO["stato_device"]:
-            return bool(_STATO["stato_device"][did])
-        if ep and ep in _STATO["subscriptions"]:
-            return True
-        if did:
-            return any(info.get("device_id") == did for info in _STATO["subscriptions"].values())
-        return False
+            risultato = bool(_STATO["stato_device"][did])
+        elif ep and ep in _STATO["subscriptions"]:
+            risultato = True
+        elif did:
+            risultato = any(info.get("device_id") == did for info in _STATO["subscriptions"].values())
+        else:
+            # Se la pagina è appena stata aperta e ci sono dispositivi attivi non silenziati, mostra Attive
+            risultato = len(_STATO["subscriptions"]) > 0
+
+        try:
+            page._elf_ultimo_stato_ui = risultato
+        except Exception:
+            pass
+        return risultato
+
     return len(_STATO["subscriptions"]) > 0
 
 
@@ -645,6 +694,21 @@ async function aggiornaContatoreNonLette() {
     } catch (e) {}
 }
 
+self.addEventListener("activate", (event) => {
+    event.waitUntil((async () => {
+        try {
+            if ("caches" in self) {
+                const keys = await caches.keys();
+                for (const k of keys) {
+                    const c = await caches.open(k);
+                    await c.delete("/");
+                    await c.delete("/index.html");
+                }
+            }
+        } catch (e) {}
+    })());
+});
+
 self.addEventListener("push", (event) => {
     let data = {};
     if (event.data) {
@@ -838,7 +902,6 @@ CLIENT_JS_CODE = r"""
                 return;
             }
 
-            // Auto-registrazione trasparente all'apertura dell'app se il permesso Android è attivo
             if (permGranted && reg && cfg.vapid_public) {
                 if (sub && sub.options && sub.options.applicationServerKey) {
                     const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
@@ -871,10 +934,10 @@ CLIENT_JS_CODE = r"""
     }
 
     sincronizzaDispositivo();
-    setTimeout(sincronizzaDispositivo, 1200);
-    setTimeout(sincronizzaDispositivo, 3500);
-    setTimeout(sincronizzaDispositivo, 6500);
-    setInterval(sincronizzaDispositivo, 15000);
+    setTimeout(sincronizzaDispositivo, 1000);
+    setTimeout(sincronizzaDispositivo, 2500);
+    setTimeout(sincronizzaDispositivo, 5000);
+    setInterval(sincronizzaDispositivo, 12000);
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden) sincronizzaDispositivo();
     });
@@ -934,6 +997,20 @@ function urlBase64ToUint8Array(base64String) {
     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
 }
 
+async function pulisciCacheAppInstallata() {
+    if (!("caches" in window)) return;
+    try {
+        const keys = await caches.keys();
+        for (const k of keys) {
+            const c = await caches.open(k);
+            await c.delete("/");
+            await c.delete("/index.html");
+            await c.delete(window.location.origin + "/");
+            await c.delete(window.location.origin + "/index.html");
+        }
+    } catch (e) {}
+}
+
 async function fetchConTimeout(url, options, timeoutMs) {
     const ctrl = new AbortController();
     const id = setTimeout(() => ctrl.abort(), timeoutMs || 5000);
@@ -973,6 +1050,8 @@ async function aggiornaStatoUI() {
     const btnAttiva = document.getElementById("btnAttiva");
     const btnTest = document.getElementById("btnTest");
     const btnMute = document.getElementById("btnMute");
+
+    await pulisciCacheAppInstallata();
 
     if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
         badge.className = "badge-stato stato-off";
@@ -1057,7 +1136,6 @@ async function attivaDispositivo() {
     try {
         try { localStorage.removeItem("elf_muted"); } catch (e) {}
 
-        // 1. Richiesta immediata del popup nativo di Android (senza attese di rete prima)
         let perm = Notification.permission;
         if (perm !== "granted") {
             perm = await Notification.requestPermission();
@@ -1065,7 +1143,7 @@ async function attivaDispositivo() {
 
         if (perm !== "granted") {
             st.className = "err";
-            st.innerText = "⚠️ Autorizzazione negata da Android. Se avevi bloccato le notifiche in precedenza, sbloccale toccando l'icona del lucchetto o nelle impostazioni dell'app.";
+            st.innerText = "⚠️ Autorizzazione negata da Android. Se avevi bloccato le notifiche in precedenza, sbloccale nelle impostazioni dell'app.";
             btnAttiva.disabled = false;
             return;
         }
@@ -1173,9 +1251,9 @@ window.addEventListener("load", aggiornaStatoUI);
 """
 
 
-def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str):
+def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ua: str = ""):
     sb = _STATO["supabase"]
-    record_json = json.dumps({"sub": sub_obj, "device_id": did})
+    record_json = json.dumps({"sub": sub_obj, "device_id": did, "ua": ua})
     id_db = None
 
     with _LOCK:
@@ -1258,6 +1336,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         did = (req.query_params.get("did") or req.cookies.get("elf_did") or "").strip()
         ep = req.query_params.get("endpoint", "").strip()
         perm = req.query_params.get("perm", "")
+        ua_req = (req.headers.get("user-agent") or "").strip()
 
         if perm == "0" and (did or ep):
             with _LOCK:
@@ -1286,7 +1365,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 threading.Thread(target=_aggiorna_ui_pagine, daemon=True).start()
 
         if did or ep:
-            _associa_device_a_pagina(did, ep, req.headers.get("user-agent", ""))
+            _associa_device_a_pagina(did, ep, ua_req)
 
         return JSONResponse({
             "attive": disp_attivo,
@@ -1318,6 +1397,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         sub_obj = payload.get("sub") if isinstance(payload, dict) and "sub" in payload else payload
         send_test = bool(payload.get("send_test")) if isinstance(payload, dict) else False
         did = ((payload.get("device_id") if isinstance(payload, dict) else "") or req.cookies.get("elf_did") or "").strip()
+        ua_req = (req.headers.get("user-agent") or "").strip()
 
         ep = sub_obj.get("endpoint") if isinstance(sub_obj, dict) else None
         push_status = 200
@@ -1335,14 +1415,17 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 _STATO["subscriptions"][ep] = {
                     "id_db": esistente.get("id_db") if esistente else None,
                     "sub": sub_obj,
-                    "device_id": did
+                    "device_id": did,
+                    "ua": ua_req
                 }
                 if did:
                     _STATO["stato_device"][did] = True
+                if ua_req:
+                    _STATO["ultimi_device_ua"][ua_req] = (did, ep, time.time())
 
-            _associa_device_a_pagina(did, ep, req.headers.get("user-agent", ""))
+            _associa_device_a_pagina(did, ep, ua_req)
             _aggiorna_ui_pagine()
-            threading.Thread(target=_salva_sub_db_sync, args=(ep, sub_obj, did), daemon=True).start()
+            threading.Thread(target=_salva_sub_db_sync, args=(ep, sub_obj, did, ua_req), daemon=True).start()
 
             if send_test:
                 ora_str = _ora_italia().strftime("%H:%M")
@@ -1370,6 +1453,14 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
     @app.middleware("http")
     async def inietta_script_notifiche(request: fastapi.Request, call_next):
         path = request.url.path
+        did_cookie = (request.cookies.get("elf_did") or "").strip()
+        ua_hdr = (request.headers.get("user-agent") or "").strip()
+        if did_cookie and ua_hdr:
+            with _LOCK:
+                prev = _STATO["ultimi_device_ua"].get(ua_hdr)
+                ep_prev = prev[1] if prev else ""
+                _STATO["ultimi_device_ua"][ua_hdr] = (did_cookie, ep_prev, time.time())
+
         if path in ["/", "/index.html", "/flutter_service_worker.js"]:
             request.scope["headers"] = [
                 (k, v) for k, v in request.scope.get("headers", [])
@@ -1382,7 +1473,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-12\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-14\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
