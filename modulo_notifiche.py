@@ -40,12 +40,13 @@ _STATO = {
     "subscriptions": {},        # endpoint -> {"id_db": int|None, "sub": dict, "ep_hash": str, "device_id": str}
     "hash_to_ep": {},           # ep_hash -> endpoint
     "stato_device": {},         # device_id / ep_hash -> bool
-    "ultimo_ep_attivo": "",     # ultimo ep_hash visto dal middleware HTTP
+    "ultimo_ep_attivo": "",     # ultimo ep_hash rilevato dal cookie HTTP all'apertura
+    "ultimo_did_attivo": "",    # ultimo device_id rilevato dal cookie HTTP all'apertura
     "force_unsub_devices": set(),
     "unmute_devices": set(),
-    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|HH:MM|tipo" (solo quando TUTTI i telefoni l'hanno ricevuta)
+    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|HH:MM|tipo" (solo quando TUTTI i telefoni attivi l'hanno ricevuta)
     "inviate_per_ep": {},       # chiave_notifica -> set(endpoint_che_hanno_ricevuto_201)
-    "fallimenti_ep": {},        # endpoint -> conteggio errori 404/410 consecutivi
+    "fallimenti_ep": {},        # endpoint -> conteggio errori 401/403/404/410 consecutivi
     "impegni_notificati_id": set(),
     "data_corrente": "",
     "residui_attuali": 0,
@@ -91,8 +92,16 @@ def _pulisci_chiave_str(val: str) -> str:
 
 def _crea_client_supabase_dedicato(fallback_client=None):
     """Crea o rigenera un client Supabase isolato per evitare errori ConnectionState.CLOSED."""
-    url = _STATO["supabase_url"] or os.environ.get("SUPABASE_URL") or (getattr(fallback_client, "supabase_url", None) if fallback_client else "")
-    key = _STATO["supabase_key"] or os.environ.get("SUPABASE_KEY") or (getattr(fallback_client, "supabase_key", None) if fallback_client else "")
+    url = (
+        _STATO["supabase_url"]
+        or os.environ.get("SUPABASE_URL")
+        or (getattr(fallback_client, "supabase_url", None) if fallback_client else "")
+    )
+    key = (
+        _STATO["supabase_key"]
+        or os.environ.get("SUPABASE_KEY")
+        or (getattr(fallback_client, "supabase_key", None) if fallback_client else "")
+    )
     if url and key:
         _STATO["supabase_url"] = str(url)
         _STATO["supabase_key"] = str(key)
@@ -106,7 +115,10 @@ def _crea_client_supabase_dedicato(fallback_client=None):
 
 def _rinnova_client_se_chiuso(ex: Exception):
     msg = str(ex)
-    if any(k in msg for k in ["ConnectionState", "SEND_HEADERS", "RECV_", "Server disconnected", "RemoteProtocolError", "LocalProtocolError", "ReadTimeout"]):
+    if any(k in msg for k in [
+        "ConnectionState", "SEND_HEADERS", "RECV_", "Server disconnected",
+        "RemoteProtocolError", "LocalProtocolError", "ReadTimeout", "WriteTimeout", "PoolTimeout"
+    ]):
         nuovo = _crea_client_supabase_dedicato()
         if nuovo is not None:
             _STATO["supabase"] = nuovo
@@ -202,6 +214,7 @@ def _carica_o_inizializza_config_db():
     device_map = {}
     sent_loaded = set()
     sent_ep_loaded = {}
+    ids_duplicati_da_pulire = []
 
     if sb:
         with _DB_LOCK:
@@ -235,6 +248,9 @@ def _carica_o_inizializza_config_db():
                             did = (raw_obj.get("device_id") or "").strip() if isinstance(raw_obj, dict) else ""
                             ep = (sub_obj.get("endpoint") or "").strip() if isinstance(sub_obj, dict) else ""
                             if ep and not bool(r.get("preso")):
+                                if ep in subs_loaded:
+                                    ids_duplicati_da_pulire.append(r["id"])
+                                    continue
                                 ep_h = _calcola_hash_ep(ep)
                                 subs_loaded[ep] = {
                                     "id_db": r["id"],
@@ -248,6 +264,12 @@ def _carica_o_inizializza_config_db():
                                     device_map[did] = True
                         except Exception:
                             pass
+
+                for id_dup in ids_duplicati_da_pulire:
+                    try:
+                        sb.table("menu_giornalieri").delete().eq("id", id_dup).execute()
+                    except Exception:
+                        pass
             except Exception as ex:
                 _rinnova_client_se_chiuso(ex)
                 print(f"[NOTIFICHE] Errore lettura config DB: {ex}", flush=True)
@@ -271,25 +293,23 @@ def _carica_o_inizializza_config_db():
 
 
 def _aggancia_pagina(page):
+    """Associa immediatamente la pagina Flet al dispositivo tramite il cookie HTTP rilevato all'apertura."""
     if page is None:
         return
     try:
-        if getattr(page, "_elf_ep", None):
+        if getattr(page, "_elf_ep", None) or getattr(page, "_elf_did", None):
             return
         with _LOCK:
             ultimo_h = _STATO["ultimo_ep_attivo"]
+            ultimo_d = _STATO["ultimo_did_attivo"]
             if ultimo_h and ultimo_h in _STATO["hash_to_ep"]:
                 ep = _STATO["hash_to_ep"][ultimo_h]
                 info = _STATO["subscriptions"].get(ep)
                 page._elf_ep = ep
                 page._elf_ep_hash = ultimo_h
-                page._elf_did = (info.get("device_id") if info else None) or ultimo_h
-                return
-            if len(_STATO["subscriptions"]) == 1:
-                ep, info = next(iter(_STATO["subscriptions"].items()))
-                page._elf_ep = ep
-                page._elf_ep_hash = info.get("ep_hash")
-                page._elf_did = info.get("device_id")
+                page._elf_did = ultimo_d or (info.get("device_id") if info else None) or ultimo_h
+            elif ultimo_d:
+                page._elf_did = ultimo_d
     except Exception:
         pass
 
@@ -329,11 +349,12 @@ def _aggiorna_ui_pagine():
         _STATO["pagine_attive"].discard(m)
 
 
-def _associa_device_a_pagina(did: str, ep: str):
+def _associa_device_a_pagina(did: str, ep: str, disp_attivo: bool = False):
     ep_h = _calcola_hash_ep(ep) if ep else ""
-    if ep_h:
-        with _LOCK:
-            _STATO["ultimo_ep_attivo"] = ep_h
+    with _LOCK:
+        _STATO["ultimo_ep_attivo"] = ep_h if disp_attivo else ""
+        if did:
+            _STATO["ultimo_did_attivo"] = did
 
     morti = set()
     serve_refresh = False
@@ -342,15 +363,27 @@ def _associa_device_a_pagina(did: str, ep: str):
         try:
             p_ep = getattr(p, "_elf_ep", None)
             p_did = getattr(p, "_elf_did", None)
-            # Associa se la pagina non aveva ancora un endpoint o se appartiene a questo dispositivo
-            if (ep and p_ep == ep) or (did and p_did == did) or (p_ep is None and ep):
-                if ep and p_ep != ep:
-                    p._elf_ep = ep
-                    p._elf_ep_hash = ep_h
-                    serve_refresh = True
+
+            match_device = (
+                (ep and p_ep == ep)
+                or (did and p_did == did)
+                or (p_did is None and p_ep is None)
+            )
+            if match_device:
                 if did and p_did != did:
                     p._elf_did = did
                     serve_refresh = True
+                if disp_attivo and ep:
+                    if p_ep != ep:
+                        p._elf_ep = ep
+                        p._elf_ep_hash = ep_h
+                        serve_refresh = True
+                elif not disp_attivo:
+                    if p_ep is not None:
+                        p._elf_ep = None
+                        p._elf_ep_hash = None
+                        serve_refresh = True
+
                 stato_ora = is_notifiche_attive(p)
                 if getattr(p, "_elf_ultimo_stato_ui", None) != stato_ora:
                     serve_refresh = True
@@ -369,7 +402,7 @@ def is_notifiche_attive(page=None) -> bool:
         _carica_o_inizializza_config_db()
 
     if page is not None:
-        if not getattr(page, "_elf_ep", None):
+        if not getattr(page, "_elf_ep", None) and not getattr(page, "_elf_did", None):
             _aggancia_pagina(page)
 
         ep = getattr(page, "_elf_ep", None)
@@ -384,8 +417,8 @@ def is_notifiche_attive(page=None) -> bool:
             elif did and did in _STATO["stato_device"]:
                 attivo = bool(_STATO["stato_device"][did])
             else:
-                # Se il telefono sta aprendo l'app e ci sono sottoscrizioni attive, mostra Silenzia finché client.js non smentisce
-                attivo = len(_STATO["subscriptions"]) > 0
+                # Se il telefono non ha cookie di attivazione e non è registrato, mostra "Attiva Notifiche"
+                attivo = False
 
         try:
             page._elf_ultimo_stato_ui = attivo
@@ -415,7 +448,6 @@ def _rimuovi_endpoint_specifico(ep_target: str, did_target: str, imposta_force_u
                 _STATO["hash_to_ep"].pop(ep_h, None)
                 _STATO["stato_device"][ep_h] = False
         elif did_target and not ep_target:
-            # Cerca solo se c'è un unico endpoint con quel did_target esatto
             for ep_k, info in list(_STATO["subscriptions"].items()):
                 if info.get("device_id") == did_target or info.get("ep_hash") == did_target:
                     if info.get("id_db"):
@@ -423,6 +455,7 @@ def _rimuovi_endpoint_specifico(ep_target: str, did_target: str, imposta_force_u
                     _STATO["subscriptions"].pop(ep_k, None)
                     if info.get("ep_hash"):
                         _STATO["hash_to_ep"].pop(info["ep_hash"], None)
+                        _STATO["stato_device"][info["ep_hash"]] = False
                     break
 
         if did_target:
@@ -434,6 +467,14 @@ def _rimuovi_endpoint_specifico(ep_target: str, did_target: str, imposta_force_u
             _STATO["unmute_devices"].discard(ep_h)
             if imposta_force_unsub:
                 _STATO["force_unsub_devices"].add(ep_h)
+
+        for p in list(_STATO["pagine_attive"]):
+            try:
+                if (ep_target and getattr(p, "_elf_ep", None) == ep_target) or (did_target and getattr(p, "_elf_did", None) == did_target):
+                    p._elf_ep = None
+                    p._elf_ep_hash = None
+            except Exception:
+                pass
 
     _aggiorna_ui_pagine()
 
@@ -467,7 +508,7 @@ def imposta_silenzioso(valore: bool, page=None):
 
 
 def forza_ricalcolo_impegni():
-    """Sveglia immediatamente lo scheduler quando viene creato/modificato/eliminato un impegno."""
+    """Sveglia immediatamente lo scheduler in background senza rallentare il salvataggio in main.py."""
     _STATO["ultimo_sync_anagrafica"] = 0.0
     _STATO["evento_ricalcolo"].set()
 
@@ -532,8 +573,8 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "") -> b
                 _STATO["fallimenti_ep"].pop(ep, None)
             if chiave_notifica:
                 gia_consegnati.add(ep)
-        elif code in [404, 410]:
-            # Rimuove il token solo se Google FCM conferma per 2 volte che è disinstallato/scaduto
+        elif code in [401, 403, 404, 410]:
+            # Rimuove l'endpoint solo se Google FCM conferma per 2 volte che è scaduto/invalido
             with _LOCK:
                 cnt = _STATO["fallimenti_ep"].get(ep, 0) + 1
                 _STATO["fallimenti_ep"][ep] = cnt
@@ -542,7 +583,7 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "") -> b
             else:
                 tutti_consegnati = False
         else:
-            # Errore temporaneo di rete o timeout (es. 500, 502, 503, 429): riproverà tra 10 secondi!
+            # Errore temporaneo di rete o timeout: riproverà tra 10 secondi solo su questo telefono
             print(f"[NOTIFICHE] Retry programmato per endpoint ({code} {msg})", flush=True)
             tutti_consegnati = False
 
@@ -970,6 +1011,7 @@ CLIENT_JS_CODE = r"""
                 await allineaBadgeTendina(reg);
             } else if (!permGranted) {
                 cachedEndpoint = "";
+                document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
             }
 
             const permParam = (permGranted && !mutedLocal) ? "1" : "0";
@@ -992,6 +1034,7 @@ CLIENT_JS_CODE = r"""
             }
 
             if (mutedLocal) {
+                document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
                 if (reg && sub) {
                     try { await sub.unsubscribe(); } catch (e) {}
                     sub = null;
@@ -1007,7 +1050,7 @@ CLIENT_JS_CODE = r"""
                 return;
             }
 
-            // Se Android ha il permesso attivo, registra o riallinea silenziosamente il token
+            // Se Android ha il permesso attivo, registra o riallinea silenziosamente il token all'avvio
             if (permGranted && reg && cfg.vapid_public) {
                 if (sub && sub.options && sub.options.applicationServerKey) {
                     const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
@@ -1236,7 +1279,7 @@ async function attivaDispositivo() {
     try {
         try { localStorage.removeItem("elf_muted"); } catch (e) {}
 
-        // Chiamata immediata al popup nativo di Android
+        // 1. Richiesta immediata del popup nativo di Android
         let perm = Notification.permission;
         if (perm !== "granted") {
             perm = await Notification.requestPermission();
@@ -1254,7 +1297,6 @@ async function attivaDispositivo() {
         const reg = await getSwReg();
         const cfg = await fetchConTimeout("/api/notifiche/status?did=" + encodeURIComponent(did) + "&perm=1", {}, 5000);
 
-        // Riusa la sottoscrizione esistente se valida per non invalidare il token su Google FCM
         let sub = await reg.pushManager.getSubscription();
         if (!sub) {
             sub = await reg.pushManager.subscribe({
@@ -1320,6 +1362,7 @@ async function disattivaDispositivo() {
     st.innerText = "⏳ Disattivazione notifiche su questo telefono...";
     try {
         try { localStorage.setItem("elf_muted", "1"); } catch (e) {}
+        document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
         const did = getDeviceId();
         const reg = await getSwReg();
         const sub = await reg.pushManager.getSubscription();
@@ -1358,7 +1401,7 @@ window.addEventListener("load", aggiornaStatoUI);
 def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str):
     """
     Salva il telefono su Supabase usando ESCLUSIVAMENTE l'endpoint come chiave univoca.
-    Due telefoni diversi non potranno MAI sovrascriversi a vicenda.
+    Due telefoni diversi della famiglia non potranno MAI sovrascriversi a vicenda.
     """
     sb = _STATO["supabase"]
     record_json = json.dumps({"sub": sub_obj, "device_id": did, "ep_hash": ep_h})
@@ -1378,7 +1421,6 @@ def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str):
                         try:
                             raw_s = json.loads(r_s.get("subcategoria") or "{}")
                             s_inner = raw_s.get("sub") if "sub" in raw_s else raw_s
-                            # Confronta ESCLUSIVAMENTE l'endpoint hardware, mai il device_id!
                             if s_inner.get("endpoint") == ep:
                                 id_db = r_s["id"]
                                 break
@@ -1473,17 +1515,17 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             disp_attivo = (info_sub is not None) and not force_unsub and (perm != "0")
             if ep_h:
                 _STATO["stato_device"][ep_h] = disp_attivo
-            if did and disp_attivo:
-                _STATO["stato_device"][did] = True
+            if did:
+                _STATO["stato_device"][did] = disp_attivo
 
         if ep or did:
-            _associa_device_a_pagina(did, ep)
+            _associa_device_a_pagina(did, ep, disp_attivo=disp_attivo)
 
         return JSONResponse({
             "attive": disp_attivo,
             "dispositivo_registrato": disp_attivo,
             "dispositivo_attivo": disp_attivo,
-            "ep_hash": ep_h,
+            "ep_hash": ep_h if disp_attivo else "",
             "force_unsub": force_unsub,
             "unmute_cmd": unmute_cmd,
             "dispositivi": len(_STATO["subscriptions"]),
@@ -1534,7 +1576,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 _STATO["hash_to_ep"][ep_h] = ep
                 _STATO["fallimenti_ep"].pop(ep, None)
 
-            _associa_device_a_pagina(did or ep_h, ep)
+            _associa_device_a_pagina(did or ep_h, ep, disp_attivo=True)
             _aggiorna_ui_pagine()
             threading.Thread(target=_salva_sub_db_sync, args=(ep, sub_obj, did or ep_h, ep_h), daemon=True).start()
 
@@ -1569,10 +1611,12 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         if not _STATO["url_pubblico"] and request.url.scheme and request.url.netloc and "127.0.0.1" not in request.url.netloc and "localhost" not in request.url.netloc:
             _STATO["url_pubblico"] = f"{request.url.scheme}://{request.url.netloc}"
 
-        ep_h_cookie = (request.cookies.get("elf_ep_h") or "").strip()
-        if ep_h_cookie:
+        if path in ["/", "/index.html"]:
+            ep_h_cookie = (request.cookies.get("elf_ep_h") or "").strip()
+            did_cookie = (request.cookies.get("elf_did") or "").strip()
             with _LOCK:
                 _STATO["ultimo_ep_attivo"] = ep_h_cookie
+                _STATO["ultimo_did_attivo"] = did_cookie
 
         if path in ["/", "/index.html", "/flutter_service_worker.js"]:
             request.scope["headers"] = [
@@ -1586,7 +1630,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-20\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-21\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
