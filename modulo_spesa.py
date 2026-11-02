@@ -82,9 +82,29 @@ def apri_popup_usi_ingrediente(page: ft.Page, nome_i: str, usi_raw: list, tot_st
 # ==========================================================
 def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=None, on_ridisegna_ram_fn=None):
     import json
-    spuntati_sessione = set(CACHE_ANAGRAFICA.get("spesa_presi_set") or set())
+    # Mappa: "YYYY-MM|nome_unita" -> {"qta": float, "usi": int}
+    spuntati_mappa = dict(CACHE_ANAGRAFICA.get("spesa_presi_map") or {})
     stato_filtro = {"scelta": None, "mese_anno": None}
     dati_aggregati = []
+
+    def _chiave_mese_ing(dt_rif: datetime, k_id: str) -> str:
+        return f"{dt_rif.strftime('%Y-%m')}|{k_id}"
+
+    def _is_item_preso(dt_rif: datetime, k_id: str, item_obj: dict) -> bool:
+        km = _chiave_mese_ing(dt_rif, k_id)
+        info = spuntati_mappa.get(km)
+        if not info:
+            return False
+        qta_att = round(float(item_obj.get("qta") or 0.0), 2)
+        usi_att = len(item_obj.get("dettagli_uso") or [])
+        qta_salvata = round(float(info.get("qta") or 0.0), 2)
+        usi_salvati = int(info.get("usi") or 0)
+        # Se il fabbisogno aumenta (nuova ricetta aggiunta o filtro più ampio), torna "Da comprare"
+        if qta_att > 0 and qta_att > qta_salvata + 0.01:
+            return False
+        if qta_att == 0 and usi_att > usi_salvati:
+            return False
+        return True
 
     def _carica_presi_spesa_db_sync():
         if not supabase:
@@ -100,11 +120,10 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
             )
             if res.data and res.data[0].get("subcategoria"):
                 raw = json.loads(res.data[0]["subcategoria"])
-                if isinstance(raw, list):
-                    loaded = {str(x) for x in raw if x}
-                    CACHE_ANAGRAFICA["spesa_presi_set"] = set(loaded)
-                    spuntati_sessione.clear()
-                    spuntati_sessione.update(loaded)
+                if isinstance(raw, dict):
+                    CACHE_ANAGRAFICA["spesa_presi_map"] = dict(raw)
+                    spuntati_mappa.clear()
+                    spuntati_mappa.update(raw)
         except Exception as ex:
             log_render(f"[AVVISO] Lettura SYS_SPESA_PRESI: {ex}")
 
@@ -112,7 +131,7 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
         if not supabase:
             return
         try:
-            payload_json = json.dumps(sorted(list(spuntati_sessione)))
+            payload_json = json.dumps(spuntati_mappa)
             res = (
                 supabase.table("menu_giornalieri")
                 .select("id")
@@ -207,14 +226,22 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
             if item.get("etichetta_extra") in ["[Dispensa]", "[Detersivi]"]:
                 continue
             k_id = f"{item['nome'].lower()}_{item['unita']}"
-            (gia_presi if k_id in spuntati_sessione else da_comprare).append((k_id, item))
+            (gia_presi if _is_item_preso(data_riferimento, k_id, item) else da_comprare).append((k_id, item))
 
         txt_riepilogo.value = f"Ingredienti da acquistare: {len(da_comprare)}  |  Già presi: {len(gia_presi)}"
 
         def toggle_spunta(e, key_ing, item_obj):
             nuovo_stato = bool(e.control.value)
-            (spuntati_sessione.add if nuovo_stato else spuntati_sessione.discard)(key_ing)
-            CACHE_ANAGRAFICA["spesa_presi_set"] = set(spuntati_sessione)
+            km = _chiave_mese_ing(data_riferimento, key_ing)
+            if nuovo_stato:
+                spuntati_mappa[km] = {
+                    "qta": round(float(item_obj.get("qta") or 0.0), 2),
+                    "usi": len(item_obj.get("dettagli_uso") or [])
+                }
+            else:
+                spuntati_mappa.pop(km, None)
+
+            CACHE_ANAGRAFICA["spesa_presi_map"] = dict(spuntati_mappa)
             item_obj["preso_db"] = nuovo_stato
 
             ids_dir = item_obj.get("ids_menu_diretti") or []
@@ -446,15 +473,20 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                             aggiungi_voce(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db, d_m_str, nome_r_m)
 
             CACHE_ANAGRAFICA["usi_dispensa_periodo"] = usi_dispensa_map
-            if not ridisegna_menu or CACHE_ANAGRAFICA.get("spesa_presi_set") is None:
+            if not ridisegna_menu or CACHE_ANAGRAFICA.get("spesa_presi_map") is None:
                 _carica_presi_spesa_db_sync()
             else:
-                spuntati_sessione.clear()
-                spuntati_sessione.update(CACHE_ANAGRAFICA.get("spesa_presi_set") or set())
+                spuntati_mappa.clear()
+                spuntati_mappa.update(CACHE_ANAGRAFICA.get("spesa_presi_map") or {})
 
             for v in somme.values():
                 if v["preso_db"]:
-                    spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
+                    km_v = _chiave_mese_ing(data_riferimento, f"{v['nome'].lower()}_{v['unita']}")
+                    if km_v not in spuntati_mappa:
+                        spuntati_mappa[km_v] = {
+                            "qta": round(float(v.get("qta") or 0.0), 2),
+                            "usi": len(v.get("dettagli_uso") or [])
+                        }
 
             dati_aggregati = sorted(list(somme.values()), key=lambda x: x["nome"].lower())
             spinner_spesa.visible = False
