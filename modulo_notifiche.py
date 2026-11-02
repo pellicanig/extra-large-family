@@ -37,15 +37,20 @@ _STATO = {
     "inizializzato": False,
     "vapid_public": "",
     "vapid_private": "",
-    "subscriptions": {},        # endpoint -> {"id_db": int|None, "sub": dict, "ep_hash": str, "device_id": str}
+    "subscriptions": {},        # endpoint -> {"id_db": int|None, "sub": dict, "ep_hash": str, "device_id": str, "hw_id": str, "ultimo_accesso_ts": int, "ultimo_ack_ts": int}
     "hash_to_ep": {},           # ep_hash -> endpoint
+    "did_to_ep": {},            # device_id -> endpoint
     "stato_device": {},         # device_id / ep_hash -> bool
+    "diag_device": {},          # device_id -> dict diagnostica (perm, standalone, persisted, os_cfg)
+    "fp_to_did": {},            # impronta (ip|ua) -> device_id
+    "ua_to_did": {},            # impronta (ua) -> device_id
     "ultimo_ep_attivo": "",     # ultimo ep_hash rilevato dal cookie HTTP all'apertura
     "ultimo_did_attivo": "",    # ultimo device_id rilevato dal cookie HTTP all'apertura
     "force_unsub_devices": set(),
     "unmute_devices": set(),
-    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|HH:MM|tipo" (solo quando TUTTI i telefoni attivi l'hanno ricevuta)
+    "notifiche_inviate": set(), # "YYYY-MM-DD|id_imp|HH:MM|tipo" (solo quando TUTTI i telefoni attivi hanno confermato ACK)
     "inviate_per_ep": {},       # chiave_notifica -> set(endpoint_che_hanno_ricevuto_201)
+    "ack_per_ep": {},           # chiave_notifica -> set(ep / ep_hash / did che hanno confermato ACK)
     "fallimenti_ep": {},        # endpoint -> conteggio errori 401/403/404/410 consecutivi
     "impegni_notificati_id": set(),
     "data_corrente": "",
@@ -53,6 +58,7 @@ _STATO = {
     "cache_famiglia": {},
     "cache_categorie": {},
     "ultimo_sync_anagrafica": 0.0,
+    "ultimo_sync_subs_ts": 0.0,
     "ultimo_keepalive": 0.0,
     "url_pubblico": "",
     "scheduler_avviato": False,
@@ -71,6 +77,31 @@ def _calcola_hash_ep(ep: str) -> str:
     if not ep:
         return ""
     return hashlib.sha256(ep.strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _calcola_fp_http(req: fastapi.Request) -> tuple[str, str]:
+    try:
+        xff = (req.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        ip = xff or (req.client.host if req.client else "") or ""
+        ua = (req.headers.get("user-agent") or "").strip()
+        fp = hashlib.sha256(f"{ip}|{ua}".encode("utf-8")).hexdigest()[:16] if (ip or ua) else ""
+        ua_h = hashlib.sha256(ua.encode("utf-8")).hexdigest()[:16] if ua else ""
+        return fp, ua_h
+    except Exception:
+        return "", ""
+
+
+def _calcola_fp_page(page) -> tuple[str, str]:
+    if page is None:
+        return "", ""
+    try:
+        ip = str(getattr(page, "client_ip", "") or "").split(",")[0].strip()
+        ua = str(getattr(page, "client_user_agent", "") or "").strip()
+        fp = hashlib.sha256(f"{ip}|{ua}".encode("utf-8")).hexdigest()[:16] if (ip or ua) else ""
+        ua_h = hashlib.sha256(ua.encode("utf-8")).hexdigest()[:16] if ua else ""
+        return fp, ua_h
+    except Exception:
+        return "", ""
 
 
 def _calcola_minuti(orario_str) -> int:
@@ -169,11 +200,16 @@ def _salva_stato_vapid_db():
             k: list(v) for k, v in _STATO["inviate_per_ep"].items()
             if k.startswith(oggi_str + "|") and v
         }
+        ack_ep_oggi = {
+            k: list(v) for k, v in _STATO["ack_per_ep"].items()
+            if k.startswith(oggi_str + "|") and v
+        }
         payload_vapid = json.dumps({
             "pub": _STATO["vapid_public"],
             "priv": _STATO["vapid_private"],
             "sent": inviate_oggi,
-            "sent_ep": inviate_ep_oggi
+            "sent_ep": inviate_ep_oggi,
+            "ack_ep": ack_ep_oggi
         })
     with _DB_LOCK:
         try:
@@ -197,9 +233,9 @@ def _salva_stato_vapid_db():
             print(f"[NOTIFICHE] Avviso salvataggio SYS_VAPID: {ex}", flush=True)
 
 
-def _carica_o_inizializza_config_db():
+def _carica_o_inizializza_config_db(forza_reload_subs: bool = False):
     with _LOCK:
-        if _STATO["inizializzato"] and _STATO["vapid_public"]:
+        if _STATO["inizializzato"] and _STATO["vapid_public"] and not forza_reload_subs:
             return
     sb = _STATO["supabase"]
     pub_env = _pulisci_chiave_str(os.environ.get("VAPID_PUBLIC_KEY", ""))
@@ -211,15 +247,19 @@ def _carica_o_inizializza_config_db():
 
     subs_loaded = {}
     hash_map = {}
+    did_map = {}
     device_map = {}
     sent_loaded = set()
     sent_ep_loaded = {}
-    ids_duplicati_da_pulire = []
+    ack_ep_loaded = {}
+    ids_da_pulire = []
+    seen_did_hw = set()
+    ora_now = int(time.time())
 
     if sb:
         with _DB_LOCK:
             try:
-                res = sb.table("menu_giornalieri").select("id, categoria, subcategoria, preso").eq("data_menu", "1970-01-01").in_("categoria", ["SYS_VAPID", CAT_SUB_DB]).execute()
+                res = sb.table("menu_giornalieri").select("id, categoria, subcategoria, preso").eq("data_menu", "1970-01-01").in_("categoria", ["SYS_VAPID", CAT_SUB_DB]).order("id", desc=True).execute()
                 righe = res.data or []
                 oggi_str = _ora_italia().strftime("%Y-%m-%d")
 
@@ -232,11 +272,12 @@ def _carica_o_inizializza_config_db():
                             for k_sent in (dati_v.get("sent") or []):
                                 if str(k_sent).startswith(oggi_str + "|"):
                                     sent_loaded.add(str(k_sent))
-                            raw_sent_ep = dati_v.get("sent_ep") or {}
-                            if isinstance(raw_sent_ep, dict):
-                                for k_s, v_list in raw_sent_ep.items():
-                                    if str(k_s).startswith(oggi_str + "|") and isinstance(v_list, list):
-                                        sent_ep_loaded[str(k_s)] = set(v_list)
+                            for k_s, v_list in (dati_v.get("sent_ep") or {}).items():
+                                if str(k_s).startswith(oggi_str + "|") and isinstance(v_list, list):
+                                    sent_ep_loaded[str(k_s)] = set(v_list)
+                            for k_a, v_list in (dati_v.get("ack_ep") or {}).items():
+                                if str(k_a).startswith(oggi_str + "|") and isinstance(v_list, list):
+                                    ack_ep_loaded[str(k_a)] = set(v_list)
                             if not (pub_init and priv_init):
                                 pub_init, priv_init = _valida_o_deriva_coppia_vapid(dati_v.get("pub", ""), dati_v.get("priv", ""))
                         except Exception:
@@ -246,26 +287,45 @@ def _carica_o_inizializza_config_db():
                             raw_obj = json.loads(sub_txt)
                             sub_obj = raw_obj.get("sub") if ("sub" in raw_obj and isinstance(raw_obj["sub"], dict)) else raw_obj
                             did = (raw_obj.get("device_id") or "").strip() if isinstance(raw_obj, dict) else ""
+                            hw_id = (raw_obj.get("hw_id") or "").strip() if isinstance(raw_obj, dict) else ""
+                            ultimo_acc = int(raw_obj.get("ultimo_accesso_ts") or 0) if isinstance(raw_obj, dict) else 0
+                            ultimo_ack = int(raw_obj.get("ultimo_ack_ts") or 0) if isinstance(raw_obj, dict) else 0
                             ep = (sub_obj.get("endpoint") or "").strip() if isinstance(sub_obj, dict) else ""
+
                             if ep and not bool(r.get("preso")):
-                                if ep in subs_loaded:
-                                    ids_duplicati_da_pulire.append(r["id"])
+                                ultima_att = max(ultimo_acc, ultimo_ack)
+                                if ultima_att > 0 and (ora_now - ultima_att) > (30 * 86400):
+                                    ids_da_pulire.append(r["id"])
                                     continue
+
                                 ep_h = _calcola_hash_ep(ep)
+                                did_fin = did or ep_h
+                                hw_key = f"hw:{hw_id}" if hw_id else ""
+                                if ep in subs_loaded or did_fin in seen_did_hw or (hw_key and hw_key in seen_did_hw):
+                                    ids_da_pulire.append(r["id"])
+                                    continue
+
+                                seen_did_hw.add(did_fin)
+                                if hw_key:
+                                    seen_did_hw.add(hw_key)
+
                                 subs_loaded[ep] = {
                                     "id_db": r["id"],
                                     "sub": sub_obj,
                                     "ep_hash": ep_h,
-                                    "device_id": did or ep_h
+                                    "device_id": did_fin,
+                                    "hw_id": hw_id,
+                                    "ultimo_accesso_ts": ultimo_acc or ora_now,
+                                    "ultimo_ack_ts": ultimo_ack
                                 }
                                 hash_map[ep_h] = ep
+                                did_map[did_fin] = ep
                                 device_map[ep_h] = True
-                                if did:
-                                    device_map[did] = True
+                                device_map[did_fin] = True
                         except Exception:
                             pass
 
-                for id_dup in ids_duplicati_da_pulire:
+                for id_dup in ids_da_pulire:
                     try:
                         sb.table("menu_giornalieri").delete().eq("id", id_dup).execute()
                     except Exception:
@@ -278,38 +338,75 @@ def _carica_o_inizializza_config_db():
         pub_init, priv_init = _genera_chiavi_vapid()
 
     with _LOCK:
-        _STATO["vapid_public"] = pub_init
-        _STATO["vapid_private"] = priv_init
+        if pub_init and priv_init:
+            _STATO["vapid_public"] = pub_init
+            _STATO["vapid_private"] = priv_init
         _STATO["notifiche_inviate"].update(sent_loaded)
         for k_s, v_set in sent_ep_loaded.items():
             _STATO["inviate_per_ep"].setdefault(k_s, set()).update(v_set)
-        _STATO["subscriptions"].update(subs_loaded)
-        _STATO["hash_to_ep"].update(hash_map)
+        for k_a, v_set in ack_ep_loaded.items():
+            _STATO["ack_per_ep"].setdefault(k_a, set()).update(v_set)
+        _STATO["subscriptions"] = subs_loaded
+        _STATO["hash_to_ep"] = hash_map
+        _STATO["did_to_ep"] = did_map
         _STATO["stato_device"].update(device_map)
+        _STATO["ultimo_sync_subs_ts"] = time.time()
         _STATO["inizializzato"] = True
-        print(f"[NOTIFICHE] Inizializzato. Dispositivi registrati: {len(_STATO['subscriptions'])}", flush=True)
 
-    threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
+    if not forza_reload_subs:
+        print(f"[NOTIFICHE] Inizializzato. Dispositivi registrati: {len(_STATO['subscriptions'])}", flush=True)
+        threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
+
+
+def _risolvi_did_pagina(page=None) -> str:
+    if page is not None:
+        did_p = getattr(page, "_elf_did", None)
+        if did_p:
+            return did_p
+        fp, ua_h = _calcola_fp_page(page)
+        with _LOCK:
+            if fp and fp in _STATO["fp_to_did"]:
+                return _STATO["fp_to_did"][fp]
+            if ua_h and ua_h in _STATO["ua_to_did"]:
+                return _STATO["ua_to_did"][ua_h]
+    with _LOCK:
+        return _STATO["ultimo_did_attivo"] or _STATO["ultimo_ep_attivo"] or ""
+
+
+def ottieni_diag_dispositivo(page=None) -> tuple[str, dict]:
+    did = _risolvi_did_pagina(page)
+    with _LOCK:
+        diag = dict(_STATO["diag_device"].get(did, {})) if did else {}
+    return did, diag
 
 
 def _aggancia_pagina(page):
-    """Associa immediatamente la pagina Flet al dispositivo tramite il cookie HTTP rilevato all'apertura."""
     if page is None:
         return
     try:
-        if getattr(page, "_elf_ep", None) or getattr(page, "_elf_did", None):
-            return
+        fp, ua_h = _calcola_fp_page(page)
         with _LOCK:
+            did_trovato = (
+                getattr(page, "_elf_did", None)
+                or (_STATO["fp_to_did"].get(fp) if fp else None)
+                or (_STATO["ua_to_did"].get(ua_h) if ua_h else None)
+                or _STATO["ultimo_did_attivo"]
+            )
             ultimo_h = _STATO["ultimo_ep_attivo"]
-            ultimo_d = _STATO["ultimo_did_attivo"]
-            if ultimo_h and ultimo_h in _STATO["hash_to_ep"]:
+            if did_trovato and did_trovato in _STATO["did_to_ep"]:
+                ep = _STATO["did_to_ep"][did_trovato]
+                info = _STATO["subscriptions"].get(ep, {})
+                page._elf_ep = ep
+                page._elf_ep_hash = info.get("ep_hash") or _calcola_hash_ep(ep)
+                page._elf_did = did_trovato
+            elif ultimo_h and ultimo_h in _STATO["hash_to_ep"]:
                 ep = _STATO["hash_to_ep"][ultimo_h]
-                info = _STATO["subscriptions"].get(ep)
+                info = _STATO["subscriptions"].get(ep, {})
                 page._elf_ep = ep
                 page._elf_ep_hash = ultimo_h
-                page._elf_did = ultimo_d or (info.get("device_id") if info else None) or ultimo_h
-            elif ultimo_d:
-                page._elf_did = ultimo_d
+                page._elf_did = did_trovato or info.get("device_id") or ultimo_h
+            elif did_trovato:
+                page._elf_did = did_trovato
     except Exception:
         pass
 
@@ -349,12 +446,16 @@ def _aggiorna_ui_pagine():
         _STATO["pagine_attive"].discard(m)
 
 
-def _associa_device_a_pagina(did: str, ep: str, disp_attivo: bool = False):
+def _associa_device_a_pagina(did: str, ep: str, disp_attivo: bool = False, fp: str = "", ua_h: str = ""):
     ep_h = _calcola_hash_ep(ep) if ep else ""
     with _LOCK:
         _STATO["ultimo_ep_attivo"] = ep_h if disp_attivo else ""
         if did:
             _STATO["ultimo_did_attivo"] = did
+            if fp:
+                _STATO["fp_to_did"][fp] = did
+            if ua_h:
+                _STATO["ua_to_did"][ua_h] = did
 
     morti = set()
     serve_refresh = False
@@ -363,10 +464,13 @@ def _associa_device_a_pagina(did: str, ep: str, disp_attivo: bool = False):
         try:
             p_ep = getattr(p, "_elf_ep", None)
             p_did = getattr(p, "_elf_did", None)
+            p_fp, p_ua_h = _calcola_fp_page(p)
 
             match_device = (
                 (ep and p_ep == ep)
                 or (did and p_did == did)
+                or (fp and p_fp and fp == p_fp)
+                or (ua_h and p_ua_h and ua_h == p_ua_h)
                 or (p_did is None and p_ep is None)
             )
             if match_device:
@@ -402,22 +506,24 @@ def is_notifiche_attive(page=None) -> bool:
         _carica_o_inizializza_config_db()
 
     if page is not None:
-        if not getattr(page, "_elf_ep", None) and not getattr(page, "_elf_did", None):
-            _aggancia_pagina(page)
-
+        _aggancia_pagina(page)
         ep = getattr(page, "_elf_ep", None)
         ep_h = getattr(page, "_elf_ep_hash", None)
-        did = getattr(page, "_elf_did", None)
+        did = _risolvi_did_pagina(page)
 
         with _LOCK:
-            if ep and ep in _STATO["subscriptions"]:
-                attivo = True
+            diag_d = _STATO["diag_device"].get(did, {}) if did else {}
+            if diag_d and diag_d.get("perm") not in ("", "1"):
+                attivo = False
+            elif ep and ep in _STATO["subscriptions"]:
+                attivo = bool(_STATO["stato_device"].get(did or ep_h, True))
+            elif did and did in _STATO["did_to_ep"]:
+                attivo = bool(_STATO["stato_device"].get(did, True))
             elif ep_h and ep_h in _STATO["hash_to_ep"]:
-                attivo = True
+                attivo = bool(_STATO["stato_device"].get(ep_h, True))
             elif did and did in _STATO["stato_device"]:
                 attivo = bool(_STATO["stato_device"][did])
             else:
-                # Se il telefono non ha cookie di attivazione e non è registrato, mostra "Attiva Notifiche"
                 attivo = False
 
         try:
@@ -513,83 +619,162 @@ def forza_ricalcolo_impegni():
     _STATO["evento_ricalcolo"].set()
 
 
+def _is_dispositivo_confermato_ack(ack_set: set, ep: str, ep_h: str, did: str) -> bool:
+    if not ack_set:
+        return False
+    return bool((ep and ep in ack_set) or (ep_h and ep_h in ack_set) or (did and did in ack_set))
+
+
+def _registra_ack_interno(notif_key: str, ep: str, ep_h: str, did: str, tag: str):
+    if not notif_key and tag:
+        oggi_s = _ora_italia().strftime("%Y-%m-%d")
+        with _LOCK:
+            for k_cand in list(_STATO["inviate_per_ep"].keys()):
+                if k_cand.startswith(oggi_s + "|"):
+                    parti = k_cand.split("|")
+                    if len(parti) >= 4:
+                        id_c, tipo_c = parti[1], parti[3]
+                        pref_t = "elf_start_" if tipo_c == "start15" else "elf_end_"
+                        if tag == f"{pref_t}{id_c}_{oggi_s}":
+                            notif_key = k_cand
+                            break
+    if not notif_key:
+        return
+
+    ora_int = int(time.time())
+    salva_db = False
+
+    with _LOCK:
+        ep_risolto = ep or _STATO["hash_to_ep"].get(ep_h, "") or _STATO["did_to_ep"].get(did, "")
+        info_sub = _STATO["subscriptions"].get(ep_risolto) if ep_risolto else None
+        if not info_sub:
+            for info_k in _STATO["subscriptions"].values():
+                if (did and info_k.get("device_id") == did) or (ep_h and info_k.get("ep_hash") == ep_h):
+                    info_sub = info_k
+                    ep_risolto = (info_k.get("sub") or {}).get("endpoint") or ""
+                    break
+
+        if info_sub:
+            ep_h = ep_h or info_sub.get("ep_hash") or _calcola_hash_ep(ep_risolto)
+            did = did or info_sub.get("device_id") or ep_h
+            info_sub["ultimo_accesso_ts"] = ora_int
+            info_sub["ultimo_ack_ts"] = ora_int
+
+        set_ack = _STATO["ack_per_ep"].setdefault(notif_key, set())
+        era_gia_ack = _is_dispositivo_confermato_ack(set_ack, ep_risolto, ep_h, did)
+        for ident in (ep_risolto, ep_h, did):
+            if ident:
+                set_ack.add(ident)
+
+        tutti_ack = True
+        for ep_s, inf_s in _STATO["subscriptions"].items():
+            if not _is_dispositivo_confermato_ack(set_ack, ep_s, inf_s.get("ep_hash", ""), inf_s.get("device_id", "")):
+                tutti_ack = False
+                break
+        if tutti_ack and _STATO["subscriptions"]:
+            _STATO["notifiche_inviate"].add(notif_key)
+
+        if not era_gia_ack:
+            salva_db = True
+
+    if salva_db:
+        threading.Thread(target=_salva_stato_vapid_db, daemon=True).start()
+
+
 def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
     if not webpush:
         return 500, "Libreria pywebpush non installata"
     if not _STATO["vapid_private"]:
         return 500, "Chiave VAPID_PRIVATE_KEY mancante"
-    try:
-        ep = sub_info.get("endpoint", "")
-        parsed = urllib.parse.urlparse(ep)
-        aud = f"{parsed.scheme}://{parsed.netloc}" if (parsed.scheme and parsed.netloc) else ""
-        claims = {"sub": "mailto:notifiche@extralargefamily.it"}
-        if aud:
-            claims["aud"] = aud
 
-        webpush(
-            subscription_info=sub_info,
-            data=json.dumps(payload_dict),
-            vapid_private_key=_STATO["vapid_private"],
-            vapid_claims=claims,
-            ttl=3600,
-            headers={"Urgency": "high"}
-        )
-        return 201, "OK"
-    except WebPushException as ex:
-        code = ex.response.status_code if ex.response is not None else 500
-        return code, f"HTTP {code}"
-    except Exception as ex:
-        return 500, str(ex)
+    ep = sub_info.get("endpoint", "")
+    parsed = urllib.parse.urlparse(ep)
+    aud = f"{parsed.scheme}://{parsed.netloc}" if (parsed.scheme and parsed.netloc) else ""
+    claims = {"sub": "mailto:notifiche@extralargefamily.it"}
+    if aud:
+        claims["aud"] = aud
+
+    data_json = json.dumps(payload_dict)
+
+    for tentativo in range(2):
+        try:
+            webpush(
+                subscription_info=sub_info,
+                data=data_json,
+                vapid_private_key=_STATO["vapid_private"],
+                vapid_claims=claims,
+                ttl=3600,
+                headers={"Urgency": "high", "TTL": "3600"},
+                timeout=10
+            )
+            return 201, "OK"
+        except WebPushException as ex:
+            code = ex.response.status_code if ex.response is not None else 500
+            if code in [401, 403, 404, 410] or tentativo == 1:
+                return code, f"HTTP {code}"
+            time.sleep(0.4)
+        except Exception as ex:
+            if tentativo == 1:
+                return 500, str(ex)
+            time.sleep(0.4)
+    return 500, "Errore invio"
 
 
 def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "") -> bool:
     """
-    Invia la notifica a tutti i telefoni registrati tracciando la consegna SU OGNI SINGOLO ENDPOINT.
-    Restituisce True solo quando TUTTI i telefoni attivi hanno ricevuto l'avviso (200/201/202).
+    Invia la notifica ai telefoni registrati che non hanno ancora confermato con ACK.
+    Restituisce True solo quando tutti i dispositivi attivi hanno confermato l'ACK.
     """
     if not webpush or not _STATO["vapid_private"]:
         return False
 
     with _LOCK:
         items = list(_STATO["subscriptions"].items())
-        gia_consegnati = set(_STATO["inviate_per_ep"].get(chiave_notifica, set())) if chiave_notifica else set()
+        gia_inviati_http = set(_STATO["inviate_per_ep"].get(chiave_notifica, set())) if chiave_notifica else set()
+        gia_confermati_ack = set(_STATO["ack_per_ep"].get(chiave_notifica, set())) if chiave_notifica else set()
 
     if not items:
         return False
 
-    tutti_consegnati = True
-    almeno_uno_consegnato = False
+    almeno_uno_inviato = False
     da_rimuovere = []
+    destinatari_validi = []
 
     for ep, info in items:
-        if chiave_notifica and ep in gia_consegnati:
-            almeno_uno_consegnato = True
+        ep_h = info.get("ep_hash") or _calcola_hash_ep(ep)
+        did = info.get("device_id") or ep_h
+        destinatari_validi.append((ep, ep_h, did))
+
+        if chiave_notifica and _is_dispositivo_confermato_ack(gia_confermati_ack, ep, ep_h, did):
+            almeno_uno_inviato = True
             continue
 
-        code, msg = _invia_push_singolo(info["sub"], payload_dict)
+        payload_ep = dict(payload_dict)
+        if chiave_notifica:
+            payload_ep["notif_key"] = chiave_notifica
+        payload_ep["ep_hash"] = ep_h
+        payload_ep["device_id"] = did
+
+        code, msg = _invia_push_singolo(info["sub"], payload_ep)
         if code in [200, 201, 202]:
-            almeno_uno_consegnato = True
+            almeno_uno_inviato = True
             with _LOCK:
                 _STATO["fallimenti_ep"].pop(ep, None)
             if chiave_notifica:
-                gia_consegnati.add(ep)
+                gia_inviati_http.add(ep)
         elif code in [401, 403, 404, 410]:
-            # Rimuove l'endpoint solo se Google FCM conferma per 2 volte che è scaduto/invalido
             with _LOCK:
                 cnt = _STATO["fallimenti_ep"].get(ep, 0) + 1
                 _STATO["fallimenti_ep"][ep] = cnt
             if cnt >= 2:
-                da_rimuovere.append((ep, info.get("id_db"), info.get("device_id"), info.get("ep_hash")))
-            else:
-                tutti_consegnati = False
+                destinatari_validi = [d for d in destinatari_validi if d[0] != ep]
+                da_rimuovere.append((ep, info.get("id_db"), did, ep_h))
         else:
-            # Errore temporaneo di rete o timeout: riproverà tra 10 secondi solo su questo telefono
             print(f"[NOTIFICHE] Retry programmato per endpoint ({code} {msg})", flush=True)
-            tutti_consegnati = False
 
     if chiave_notifica:
         with _LOCK:
-            _STATO["inviate_per_ep"][chiave_notifica] = gia_consegnati
+            _STATO["inviate_per_ep"][chiave_notifica] = gia_inviati_http
 
     if da_rimuovere:
         sb = _STATO["supabase"]
@@ -601,6 +786,7 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "") -> b
                     _STATO["hash_to_ep"].pop(ep_h, None)
                     _STATO["stato_device"].pop(ep_h, None)
                 if did:
+                    _STATO["did_to_ep"].pop(did, None)
                     _STATO["stato_device"].pop(did, None)
         if sb:
             with _DB_LOCK:
@@ -612,7 +798,16 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "") -> b
                             _rinnova_client_se_chiuso(ex)
         _aggiorna_ui_pagine()
 
-    return (almeno_uno_consegnato and tutti_consegnati) if chiave_notifica else almeno_uno_consegnato
+    if chiave_notifica:
+        with _LOCK:
+            ack_attuali = set(_STATO["ack_per_ep"].get(chiave_notifica, set()))
+        tutti_confermati = all(
+            _is_dispositivo_confermato_ack(ack_attuali, ep_d, eph_d, did_d)
+            for (ep_d, eph_d, did_d) in destinatari_validi
+        )
+        return len(destinatari_validi) > 0 and tutti_confermati
+
+    return almeno_uno_inviato
 
 
 def _esegui_keepalive_render():
@@ -827,14 +1022,76 @@ def _loop_scheduler():
 
 
 SW_PUSH_HANDLERS_JS = r"""
-async function aggiornaContatoreNonLette() {
+const SW_ICON_CACHE = "elf-push-icons-v1";
+
+async function aggiornaContatoreNonLette(customBadge) {
     if (!self.registration || !self.registration.getNotifications) return;
     try {
         const list = await self.registration.getNotifications();
-        const unreadCount = list.length;
+        const unreadCount = (typeof customBadge === "number" && customBadge > list.length) ? customBadge : list.length;
         if (self.navigator && "setAppBadge" in self.navigator) {
             if (unreadCount > 0) await self.navigator.setAppBadge(unreadCount);
             else await self.navigator.clearAppBadge();
+        }
+    } catch (e) {}
+}
+
+async function inviaAckSingolo(notifKey, epHash, did, tag) {
+    const qs = "?notif_key=" + encodeURIComponent(notifKey || "")
+             + "&ep_hash=" + encodeURIComponent(epHash || "")
+             + "&did=" + encodeURIComponent(did || "")
+             + "&tag=" + encodeURIComponent(tag || "");
+    try {
+        const r = await fetch("/api/notifiche/ack" + qs, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ notif_key: notifKey || "", ep_hash: epHash || "", did: did || "", tag: tag || "" }),
+            keepalive: true
+        });
+        if (r && r.ok) return true;
+    } catch (e) {}
+    try {
+        const r2 = await fetch("/api/notifiche/ack" + qs, { method: "GET", cache: "no-store", keepalive: true });
+        if (r2 && r2.ok) return true;
+    } catch (e) {}
+    return false;
+}
+
+async function confermaRicezionePush(notifKey, epHash, did, tag) {
+    if (!notifKey && !tag) return;
+    let ok = await inviaAckSingolo(notifKey, epHash, did, tag);
+    if (!ok) {
+        await new Promise((r) => setTimeout(r, 1500));
+        ok = await inviaAckSingolo(notifKey, epHash, did, tag);
+    }
+    if (!ok && "caches" in self) {
+        try {
+            const c = await caches.open(SW_ICON_CACHE);
+            await c.put(
+                new Request("/__pending_ack__/" + encodeURIComponent(notifKey || tag)),
+                new Response(JSON.stringify({ notif_key: notifKey || "", ep_hash: epHash || "", did: did || "", tag: tag || "" }))
+            );
+            if (self.registration && "sync" in self.registration) {
+                await self.registration.sync.register("elf-flush-ack");
+            }
+        } catch (e) {}
+    }
+}
+
+async function svuotaAckPendenti() {
+    if (!("caches" in self)) return;
+    try {
+        const c = await caches.open(SW_ICON_CACHE);
+        const keys = await c.keys();
+        for (const req of keys) {
+            if (req.url.includes("/__pending_ack__/")) {
+                const resp = await c.match(req);
+                if (resp) {
+                    const d = await resp.json();
+                    const inviato = await inviaAckSingolo(d.notif_key, d.ep_hash, d.did, d.tag);
+                    if (inviato) await c.delete(req);
+                }
+            }
         }
     } catch (e) {}
 }
@@ -845,11 +1102,37 @@ self.addEventListener("activate", (event) => {
             if ("caches" in self) {
                 const keys = await caches.keys();
                 for (const k of keys) {
-                    const c = await caches.open(k);
-                    await c.delete("/");
-                    await c.delete("/index.html");
+                    if (k !== SW_ICON_CACHE) {
+                        const c = await caches.open(k);
+                        await c.delete("/");
+                        await c.delete("/index.html");
+                    }
                 }
+                const iconCache = await caches.open(SW_ICON_CACHE);
+                try { await iconCache.add("/icons/Icon-192.png"); } catch (e) {}
             }
+        } catch (e) {}
+    })());
+});
+
+self.addEventListener("sync", (event) => {
+    if (event.tag === "elf-flush-ack") {
+        event.waitUntil(svuotaAckPendenti());
+    }
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+    event.waitUntil((async () => {
+        try {
+            const sub = await self.registration.pushManager.subscribe(
+                event.oldSubscription ? event.oldSubscription.options : { userVisibleOnly: true }
+            );
+            await fetch("/api/notifiche/subscribe", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ sub: sub, silent_sync: true }),
+                keepalive: true
+            });
         } catch (e) {}
     })());
 });
@@ -880,21 +1163,50 @@ self.addEventListener("push", (event) => {
     }
 
     const alertTag = data.tag || ("elf_notif_" + Date.now());
-    const options = {
-        body: data.body || "",
-        icon: "/icons/Icon-192.png",
-        badge: "/icons/Icon-192.png",
-        vibrate: [250, 120, 250, 120, 400],
-        tag: alertTag,
-        silent: false,
-        renotify: true,
-        requireInteraction: true,
-        timestamp: Date.now(),
-        data: { url: "/" }
-    };
+    const notifKey = data.notif_key || "";
+    const epHash = data.ep_hash || "";
+    const did = data.device_id || "";
 
     const showWork = async () => {
-        await self.registration.showNotification(data.title, options);
+        let stessaNotificaGiaVisibile = false;
+        try {
+            if (self.registration && self.registration.getNotifications) {
+                const tutte = await self.registration.getNotifications();
+                for (const n of (tutte || [])) {
+                    const nData = n.data || {};
+                    if ((notifKey && nData.notif_key === notifKey) || (n.tag && n.tag === alertTag)) {
+                        stessaNotificaGiaVisibile = true;
+                    }
+                }
+            }
+        } catch (e) {}
+
+        const options = {
+            body: data.body || "",
+            icon: "/icons/Icon-192.png",
+            badge: "/icons/Icon-192.png",
+            vibrate: stessaNotificaGiaVisibile ? [] : [350, 140, 350, 140, 500],
+            tag: alertTag,
+            silent: stessaNotificaGiaVisibile,
+            renotify: !stessaNotificaGiaVisibile,
+            requireInteraction: true,
+            timestamp: Date.now(),
+            data: { url: "/", notif_key: notifKey, ep_hash: epHash, did: did }
+        };
+
+        try {
+            await self.registration.showNotification(data.title, options);
+        } catch (errNotif) {
+            await self.registration.showNotification(data.title, {
+                body: data.body || "",
+                tag: alertTag,
+                requireInteraction: true,
+                data: { url: "/", notif_key: notifKey, ep_hash: epHash, did: did }
+            });
+        }
+
+        await confermaRicezionePush(notifKey, epHash, did, alertTag);
+        await svuotaAckPendenti();
         await aggiornaContatoreNonLette();
     };
 
@@ -902,9 +1214,12 @@ self.addEventListener("push", (event) => {
 });
 
 self.addEventListener("notificationclick", (event) => {
+    const nData = (event.notification && event.notification.data) || {};
     event.notification.close();
     event.waitUntil(
         Promise.all([
+            confermaRicezionePush(nData.notif_key || "", nData.ep_hash || "", nData.did || "", event.notification.tag || ""),
+            svuotaAckPendenti(),
             aggiornaContatoreNonLette(),
             self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
                 for (const client of clientList) {
@@ -922,7 +1237,17 @@ self.addEventListener("notificationclose", (event) => {
 """
 
 SW_JS_CODE = r"""
-self.addEventListener("install", (e) => { self.skipWaiting(); });
+self.addEventListener("install", (e) => {
+    self.skipWaiting();
+    e.waitUntil((async () => {
+        try {
+            if ("caches" in self) {
+                const c = await caches.open("elf-push-icons-v1");
+                await c.add("/icons/Icon-192.png");
+            }
+        } catch (err) {}
+    })());
+});
 self.addEventListener("activate", (e) => { e.waitUntil(self.clients.claim()); });
 """ + SW_PUSH_HANDLERS_JS
 
@@ -933,18 +1258,67 @@ CLIENT_JS_CODE = r"""
 
     let cachedEndpoint = "";
     let syncInCorso = false;
+    let ultimoTokenSincronizzato = "";
+    const ackInviatiSessione = new Set();
+
+    function generaIdHardwareStabile() {
+        try {
+            const ua = (navigator.userAgent || "").replace(/Chrome\/[\d.]+/g, "Chrome").replace(/Version\/[\d.]+/g, "");
+            const raw = [
+                navigator.platform || "",
+                screen.width + "x" + screen.height,
+                window.devicePixelRatio || 1,
+                navigator.hardwareConcurrency || 0,
+                navigator.maxTouchPoints || 0,
+                ua
+            ].join("|");
+            let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+            for (let i = 0; i < raw.length; i++) {
+                const ch = raw.charCodeAt(i);
+                h1 = Math.imul(h1 ^ ch, 2654435761);
+                h2 = Math.imul(h2 ^ ch, 1597334677);
+            }
+            h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+            h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+            return "dev_" + (h2 >>> 0).toString(36) + "_" + (h1 >>> 0).toString(36);
+        } catch (e) {
+            return "dev_" + Math.random().toString(36).substring(2, 10);
+        }
+    }
+
+    function leggiCookie(nome) {
+        try {
+            const m = document.cookie.match(new RegExp("(^| )" + nome + "=([^;]+)"));
+            return m ? decodeURIComponent(m[2]) : "";
+        } catch (e) { return ""; }
+    }
 
     function getDeviceId() {
         let did = "";
         try {
-            did = localStorage.getItem("elf_device_id") || "";
-            if (!did) {
-                did = "dev_" + Math.random().toString(36).substring(2, 10) + "_" + Date.now().toString(36);
-                localStorage.setItem("elf_device_id", did);
-            }
-            document.cookie = "elf_did=" + did + "; path=/; max-age=31536000; SameSite=Lax";
+            did = localStorage.getItem("elf_device_id") || leggiCookie("elf_did") || "";
+            if (!did) did = generaIdHardwareStabile();
+            localStorage.setItem("elf_device_id", did);
+            document.cookie = "elf_did=" + encodeURIComponent(did) + "; path=/; max-age=31536000; SameSite=Lax";
         } catch (e) {}
-        return did;
+        return did || generaIdHardwareStabile();
+    }
+
+    function isStandalonePWA() {
+        try {
+            return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || (window.navigator && window.navigator.standalone === true);
+        } catch (e) { return false; }
+    }
+
+    async function richiedePersistenzaStorage() {
+        try {
+            if (navigator.storage && navigator.storage.persisted) {
+                let p = await navigator.storage.persisted();
+                if (!p && navigator.storage.persist) p = await navigator.storage.persist();
+                return p;
+            }
+        } catch (e) {}
+        return false;
     }
 
     function urlBase64ToUint8Array(base64String) {
@@ -954,24 +1328,26 @@ CLIENT_JS_CODE = r"""
         return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
     }
 
-    function arrayBufferToBase64Url(buffer) {
-        if (!buffer) return "";
-        const bytes = new Uint8Array(buffer);
-        let binary = "";
-        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-        return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    function estraiChiaviSub(subObj) {
+        if (!subObj) return { endpoint: "", p256dh: "", auth: "" };
+        try {
+            const j = subObj.toJSON ? subObj.toJSON() : subObj;
+            const k = (j && j.keys) || {};
+            return { endpoint: (j && j.endpoint) || subObj.endpoint || "", p256dh: k.p256dh || "", auth: k.auth || "" };
+        } catch (e) {
+            return { endpoint: subObj.endpoint || "", p256dh: "", auth: "" };
+        }
     }
 
     async function getDedicatedSwReg() {
         try {
             const regs = await navigator.serviceWorker.getRegistrations();
             for (const r of regs) {
-                if (r.scope && r.scope.includes("/api/notifiche")) {
-                    await r.unregister();
-                }
+                if (r.scope && r.scope.includes("/api/notifiche")) await r.unregister();
             }
         } catch (e) {}
-        const reg = await navigator.serviceWorker.register("/sw-notifiche.js", { scope: "/elf-push-sw/" });
+        const reg = await navigator.serviceWorker.register("/sw-notifiche.js", { scope: "/elf-push-sw/", updateViaCache: "none" });
+        try { await reg.update(); } catch (e) {}
         let sw = reg.installing || reg.waiting || reg.active;
         if (sw && sw.state !== "activated") {
             await new Promise((resolve) => {
@@ -984,41 +1360,88 @@ CLIENT_JS_CODE = r"""
         return reg;
     }
 
-    async function allineaBadgeTendina(reg) {
-        if (!reg || !reg.getNotifications || !("setAppBadge" in navigator)) return;
+    async function allineaBadgeEAckTendina(reg, epHash, did, endpointUrl, pendingKeys) {
+        if (!reg || !reg.getNotifications) return;
         try {
+            const setPending = new Set(Array.isArray(pendingKeys) ? pendingKeys : []);
             const list = await reg.getNotifications();
-            if (list.length > 0) await navigator.setAppBadge(list.length);
-            else await navigator.clearAppBadge();
+            for (const n of list) {
+                const nData = n.data || {};
+                const nKey = nData.notif_key || "";
+                const nTag = n.tag || "";
+                const idUnivoco = nKey || nTag;
+                if (!idUnivoco) continue;
+                if (ackInviatiSessione.has(idUnivoco) && !setPending.has(nKey)) continue;
+                ackInviatiSessione.add(idUnivoco);
+
+                const qs = "?notif_key=" + encodeURIComponent(nKey)
+                         + "&ep_hash=" + encodeURIComponent(nData.ep_hash || epHash || "")
+                         + "&did=" + encodeURIComponent(nData.did || did || "")
+                         + "&tag=" + encodeURIComponent(nTag);
+                fetch("/api/notifiche/ack" + qs, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        notif_key: nKey,
+                        ep_hash: nData.ep_hash || epHash || "",
+                        did: nData.did || did || "",
+                        endpoint: endpointUrl || "",
+                        tag: nTag
+                    })
+                }).catch(() => { ackInviatiSessione.delete(idUnivoco); });
+            }
+            if ("setAppBadge" in navigator) {
+                if (list.length > 0) await navigator.setAppBadge(list.length);
+                else await navigator.clearAppBadge();
+            }
         } catch (e) {}
     }
 
     async function sincronizzaDispositivo() {
-        if (syncInCorso) return;
+        if (document.hidden || syncInCorso) return;
         syncInCorso = true;
         try {
             const did = getDeviceId();
-            const permGranted = ("Notification" in window && Notification.permission === "granted");
+            const hwId = generaIdHardwareStabile();
+            const rawPerm = ("Notification" in window) ? Notification.permission : "denied";
+            const permGranted = (rawPerm === "granted");
             let mutedLocal = false;
-            try { mutedLocal = (localStorage.getItem("elf_muted") === "1"); } catch (e) {}
+            let osCfgLocal = "0";
+            try {
+                mutedLocal = (localStorage.getItem("elf_muted") === "1");
+                osCfgLocal = (localStorage.getItem("elf_os_configured") === "1") ? "1" : "0";
+            } catch (e) {}
 
             let reg = null;
             let sub = null;
-            if ("serviceWorker" in navigator && "PushManager" in window && permGranted) {
+            let isPersisted = false;
+            let chiaviSub = { endpoint: "", p256dh: "", auth: "" };
+
+            if ("serviceWorker" in navigator && "PushManager" in window && permGranted && !mutedLocal) {
+                isPersisted = await richiedePersistenzaStorage();
                 reg = await getDedicatedSwReg();
                 sub = await reg.pushManager.getSubscription();
-                if (sub) cachedEndpoint = sub.endpoint || "";
-                await allineaBadgeTendina(reg);
-            } else if (!permGranted) {
+                chiaviSub = estraiChiaviSub(sub);
+                cachedEndpoint = chiaviSub.endpoint;
+            } else {
                 cachedEndpoint = "";
                 document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
             }
 
-            const permParam = (permGranted && !mutedLocal) ? "1" : "0";
+            const permParam = (permGranted && !mutedLocal) ? "1" : (rawPerm === "denied" ? "denied" : "0");
+            const standaloneParam = isStandalonePWA() ? "1" : "0";
+            const persistedParam = isPersisted ? "1" : "0";
+
             const r = await fetch(
                 "/api/notifiche/status?did=" + encodeURIComponent(did)
-                + "&endpoint=" + encodeURIComponent(cachedEndpoint)
-                + "&perm=" + permParam,
+                + "&hw_id=" + encodeURIComponent(hwId)
+                + "&endpoint=" + encodeURIComponent(chiaviSub.endpoint)
+                + "&p256dh=" + encodeURIComponent(chiaviSub.p256dh)
+                + "&auth=" + encodeURIComponent(chiaviSub.auth)
+                + "&perm=" + encodeURIComponent(permParam)
+                + "&standalone=" + standaloneParam
+                + "&persisted=" + persistedParam
+                + "&os_cfg=" + osCfgLocal,
                 { cache: "no-store" }
             );
             const cfg = await r.json();
@@ -1027,7 +1450,6 @@ CLIENT_JS_CODE = r"""
                 try { localStorage.removeItem("elf_muted"); } catch (e) {}
                 mutedLocal = false;
             }
-
             if (cfg.force_unsub) {
                 try { localStorage.setItem("elf_muted", "1"); } catch (e) {}
                 mutedLocal = true;
@@ -1044,45 +1466,45 @@ CLIENT_JS_CODE = r"""
                     const ns = await reg.getNotifications();
                     ns.forEach((n) => n.close());
                 }
-                if ("clearAppBadge" in navigator) {
-                    navigator.clearAppBadge().catch(()=>{});
-                }
+                if ("clearAppBadge" in navigator) navigator.clearAppBadge().catch(()=>{});
                 return;
             }
 
-            // Se Android ha il permesso attivo, registra o riallinea silenziosamente il token all'avvio
-            if (permGranted && reg && cfg.vapid_public) {
-                if (sub && sub.options && sub.options.applicationServerKey) {
-                    const currentKey = arrayBufferToBase64Url(sub.options.applicationServerKey);
-                    if (currentKey && currentKey !== cfg.vapid_public.replace(/=+$/, "")) {
-                        try { await sub.unsubscribe(); } catch (e) {}
-                        sub = null;
-                    }
-                }
+            if (permGranted && !mutedLocal && reg && (cfg.token_disallineato || !cfg.dispositivo_attivo) && cfg.vapid_public) {
                 if (!sub) {
                     try {
                         sub = await reg.pushManager.subscribe({
                             userVisibleOnly: true,
                             applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
                         });
-                    } catch (e) {}
+                        chiaviSub = estraiChiaviSub(sub);
+                        cachedEndpoint = chiaviSub.endpoint;
+                    } catch (eSub) {}
                 }
-                if (sub) {
-                    cachedEndpoint = sub.endpoint || "";
-                    if (!cfg.dispositivo_attivo) {
+                if (sub && chiaviSub.endpoint) {
+                    const improntaSync = did + "|" + chiaviSub.endpoint + "|" + chiaviSub.p256dh + "|" + chiaviSub.auth;
+                    if (ultimoTokenSincronizzato !== improntaSync) {
                         const resSub = await fetch("/api/notifiche/subscribe", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ sub: sub, device_id: did, silent_sync: true })
+                            body: JSON.stringify({ sub: sub, device_id: did, hw_id: hwId, silent_sync: true, send_test: false })
                         });
-                        const dataSub = await resSub.json();
-                        if (dataSub.ep_hash) {
-                            document.cookie = "elf_ep_h=" + dataSub.ep_hash + "; path=/; max-age=31536000; SameSite=Lax";
+                        if (resSub && resSub.ok) {
+                            const dataSub = await resSub.json();
+                            ultimoTokenSincronizzato = improntaSync;
+                            cfg.dispositivo_attivo = true;
+                            if (dataSub.ep_hash) cfg.ep_hash = dataSub.ep_hash;
                         }
-                    } else if (cfg.ep_hash) {
-                        document.cookie = "elf_ep_h=" + cfg.ep_hash + "; path=/; max-age=31536000; SameSite=Lax";
                     }
                 }
+            }
+
+            await allineaBadgeEAckTendina(reg, cfg.ep_hash, did, cachedEndpoint, cfg.pending_ack_keys);
+
+            if (!cfg.dispositivo_attivo) {
+                document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
+            } else if (cfg.ep_hash) {
+                document.cookie = "elf_ep_h=" + cfg.ep_hash + "; path=/; max-age=31536000; SameSite=Lax";
             }
         } catch (e) {
         } finally {
@@ -1091,12 +1513,10 @@ CLIENT_JS_CODE = r"""
     }
 
     sincronizzaDispositivo();
-    setTimeout(sincronizzaDispositivo, 1000);
-    setTimeout(sincronizzaDispositivo, 2800);
-    setInterval(sincronizzaDispositivo, 15000);
-    document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) sincronizzaDispositivo();
-    });
+    setTimeout(sincronizzaDispositivo, 1200);
+    setTimeout(sincronizzaDispositivo, 3200);
+    setInterval(() => { if (!document.hidden) sincronizzaDispositivo(); }, 8000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) sincronizzaDispositivo(); });
     window.addEventListener("focus", sincronizzaDispositivo);
 })();
 """
@@ -1106,44 +1526,102 @@ PAGINA_ATTIVA_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gestione Notifiche Dispositivo - ELF</title>
+<title>Gestione Notifiche e Autorizzazioni - ELF</title>
 <style>
-body { font-family: system-ui, sans-serif; background: #EEF2F6; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 15px; box-sizing: border-box; }
-.card { background: white; padding: 22px; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); max-width: 370px; width: 100%; text-align: center; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #EEF2F6; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 15px; box-sizing: border-box; }
+.card { background: white; padding: 20px; border-radius: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); max-width: 420px; width: 100%; text-align: center; }
 .badge-stato { display: inline-block; padding: 6px 12px; border-radius: 20px; font-size: 13px; font-weight: bold; margin-bottom: 10px; }
 .stato-on { background: #E8F5E9; color: #1B5E20; border: 1px solid #81C784; }
 .stato-off { background: #FFEBEE; color: #B71C1C; border: 1px solid #E57373; }
 button, .btn-link { display: block; box-sizing: border-box; text-decoration: none; color: white; border: none; padding: 13px 16px; border-radius: 8px; font-size: 14px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 10px; }
 .btn-attiva { background: #0D47A1; }
+.btn-settings { background: #E65100; }
+.btn-conferma { background: #1565C0; font-size: 12.5px; padding: 10px 12px; }
 .btn-test { background: #2E7D32; }
 .btn-mute { background: #C62828; }
 .btn-home { background: #546E7A; margin-top: 16px; }
-.ok { color: #1B5E20; font-weight: bold; background: #E8F5E9; padding: 10px; border-radius: 8px; }
-.err { color: #B71C1C; font-weight: bold; background: #FFEBEE; padding: 10px; border-radius: 8px; }
+.ok { color: #1B5E20; font-weight: bold; background: #E8F5E9; padding: 10px; border-radius: 8px; font-size: 13px; }
+.err { color: #B71C1C; font-weight: bold; background: #FFEBEE; padding: 10px; border-radius: 8px; font-size: 13px; }
+.tutorial-box { text-align: left; background: #FFF8E1; border: 1px solid #FFE082; border-radius: 10px; padding: 12px; margin-top: 14px; font-size: 12.5px; color: #37474F; line-height: 1.45; }
+.tutorial-box h4 { margin: 0 0 8px 0; color: #E65100; font-size: 13.5px; }
+.tutorial-step { margin-bottom: 6px; }
+.check-row { display: flex; justify-content: space-between; align-items: center; background: #F8F9FA; padding: 7px 10px; border-radius: 6px; margin-bottom: 5px; font-size: 12px; font-weight: 600; }
 </style>
 </head>
 <body>
 <div class="card">
-    <h3 style="margin-top:0;margin-bottom:8px;color:#0D47A1;">🔔 Notifiche di questo Dispositivo</h3>
+    <h3 style="margin-top:0;margin-bottom:8px;color:#0D47A1;">🔔 Notifiche & Autorizzazioni ELF</h3>
     <div id="badgeStato" class="badge-stato stato-off">Verifica stato...</div>
+
+    <div style="margin: 8px 0;">
+        <div class="check-row"><span>1. Permesso Notifiche OS:</span><span id="chkPerm">Verifica...</span></div>
+        <div class="check-row"><span>2. Installazione Schermata Home:</span><span id="chkStandalone">Verifica...</span></div>
+        <div class="check-row"><span>3. Token Push Persistente:</span><span id="chkPersist">Verifica...</span></div>
+        <div class="check-row"><span>4. Stato Batteria / Energia:</span><span id="chkBattery">Verifica...</span></div>
+        <div class="check-row"><span>5. Sospensione App Disattivata:</span><span id="chkStandby">Verifica...</span></div>
+    </div>
+
     <p id="status" style="font-size:13px;color:#444;line-height:1.4;">Controllo autorizzazioni del telefono in corso...</p>
-    <button id="btnAttiva" class="btn-attiva" onclick="attivaDispositivo()">📲 ATTIVA NOTIFICHE</button>
+
+    <button id="btnAttiva" class="btn-attiva" onclick="attivaDispositivo()">📲 ATTIVA NOTIFICHE E PERMESSI</button>
+    <button id="btnSettings" class="btn-settings" onclick="apriImpostazioniOS()">⚙️ APRI IMPOSTAZIONI BATTERIA / APP</button>
     <button id="btnTest" class="btn-test" style="display:none;" onclick="inviaTestDispositivo()">🔔 INVIA NOTIFICA DI PROVA</button>
     <button id="btnMute" class="btn-mute" style="display:none;" onclick="disattivaDispositivo()">🔕 SILENZIA QUESTO TELEFONO</button>
+
+    <div id="boxTutorial" class="tutorial-box">
+        <h4>📋 Guida Impostazioni Batteria e Sospensioni</h4>
+        <div class="tutorial-step"><b>1. Apri Info App:</b> Tocca <b>"⚙️ APRI IMPOSTAZIONI BATTERIA / APP"</b> qui sopra (oppure tieni premuto per 2 secondi sull'icona di ELF nella schermata Home e tocca <b>ℹ️ Info App</b>).</div>
+        <div class="tutorial-step"><b>2. Notifiche:</b> Entra in <b>Notifiche</b> e verifica che l'interruttore sia <b>Attivo</b>.</div>
+        <div class="tutorial-step"><b>3. Batteria:</b> Entra in <b>Batteria</b> e seleziona <b>"Senza restrizioni"</b> (Non ottimizzare).</div>
+        <div class="tutorial-step"><b>4. Sospensione:</b> Disattiva la voce <b>"Sospendi app se non usata"</b>.</div>
+        <button id="btnConfermaOS" class="btn-conferma" onclick="confermaImpostazioniManuali()">✅ HO IMPOSTATO BATTERIA E SOSPENSIONI</button>
+    </div>
+
     <a class="btn-link btn-home" href="/">⬅️ TORNA ALL'APP</a>
 </div>
 <script>
+const DID_URL = "__DID_PLACEHOLDER__";
+
+function generaIdHardwareStabile() {
+    try {
+        const ua = (navigator.userAgent || "").replace(/Chrome\/[\d.]+/g, "Chrome").replace(/Version\/[\d.]+/g, "");
+        const raw = [
+            navigator.platform || "",
+            screen.width + "x" + screen.height,
+            window.devicePixelRatio || 1,
+            navigator.hardwareConcurrency || 0,
+            navigator.maxTouchPoints || 0,
+            ua
+        ].join("|");
+        let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+        for (let i = 0; i < raw.length; i++) {
+            const ch = raw.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return "dev_" + (h2 >>> 0).toString(36) + "_" + (h1 >>> 0).toString(36);
+    } catch (e) {
+        return "dev_" + Math.random().toString(36).substring(2, 10);
+    }
+}
+
 function getDeviceId() {
     let did = "";
     try {
-        did = localStorage.getItem("elf_device_id") || "";
-        if (!did) {
-            did = "dev_" + Math.random().toString(36).substring(2, 10) + "_" + Date.now().toString(36);
-            localStorage.setItem("elf_device_id", did);
-        }
-        document.cookie = "elf_did=" + did + "; path=/; max-age=31536000; SameSite=Lax";
+        did = localStorage.getItem("elf_device_id") || DID_URL || "";
+        if (!did) did = generaIdHardwareStabile();
+        localStorage.setItem("elf_device_id", did);
+        document.cookie = "elf_did=" + encodeURIComponent(did) + "; path=/; max-age=31536000; SameSite=Lax";
     } catch (e) {}
-    return did;
+    return did || generaIdHardwareStabile();
+}
+
+function isStandalonePWA() {
+    try {
+        return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || (window.navigator && window.navigator.standalone === true);
+    } catch (e) { return false; }
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -1168,12 +1646,11 @@ async function getSwReg() {
     try {
         const regs = await navigator.serviceWorker.getRegistrations();
         for (const r of regs) {
-            if (r.scope && r.scope.includes("/api/notifiche")) {
-                await r.unregister();
-            }
+            if (r.scope && r.scope.includes("/api/notifiche")) await r.unregister();
         }
     } catch (e) {}
-    const reg = await navigator.serviceWorker.register("/sw-notifiche.js", { scope: "/elf-push-sw/" });
+    const reg = await navigator.serviceWorker.register("/sw-notifiche.js", { scope: "/elf-push-sw/", updateViaCache: "none" });
+    try { await reg.update(); } catch (e) {}
     let sw = reg.installing || reg.waiting || reg.active;
     if (sw && sw.state !== "activated") {
         await new Promise((resolve) => {
@@ -1186,17 +1663,106 @@ async function getSwReg() {
     return reg;
 }
 
+async function diagnosticaPermessiEBatteria() {
+    const elStandalone = document.getElementById("chkStandalone");
+    const elPersist = document.getElementById("chkPersist");
+    const elBat = document.getElementById("chkBattery");
+    const elStandby = document.getElementById("chkStandby");
+
+    const standalone = isStandalonePWA();
+    elStandalone.innerText = standalone ? "✅ App su Home" : "⚠️ Browser (Installa su Home)";
+    elStandalone.style.color = standalone ? "#1B5E20" : "#E65100";
+
+    let isPersisted = false;
+    try {
+        if (navigator.storage && navigator.storage.persisted) {
+            isPersisted = await navigator.storage.persisted();
+            if (!isPersisted && navigator.storage.persist) isPersisted = await navigator.storage.persist();
+        } else { isPersisted = true; }
+    } catch (e) {}
+
+    elPersist.innerText = isPersisted ? "✅ Protetto" : "⚠️ Standard";
+    elPersist.style.color = isPersisted ? "#1B5E20" : "#E65100";
+
+    let osConfigured = false;
+    try { osConfigured = (localStorage.getItem("elf_os_configured") === "1"); } catch (e) {}
+
+    let batInfo = "", batLow = false;
+    try {
+        if ("getBattery" in navigator) {
+            const bat = await navigator.getBattery();
+            const pct = Math.round((bat.level || 1) * 100);
+            batInfo = pct + "%" + (bat.charging ? " ⚡" : "");
+            if (pct <= 20 && !bat.charging) batLow = true;
+        }
+    } catch (e) {}
+
+    if (batLow) {
+        elBat.innerText = "⚠️ Risparmio (" + batInfo + ")";
+        elBat.style.color = "#C62828";
+    } else if (osConfigured) {
+        elBat.innerText = "✅ Senza restriz. " + (batInfo ? "(" + batInfo + ")" : "");
+        elBat.style.color = "#1B5E20";
+    } else {
+        elBat.innerText = (batInfo ? batInfo + " - " : "") + "🟠 Verifica punto 3";
+        elBat.style.color = "#E65100";
+    }
+
+    if (Notification.permission === "granted" && osConfigured) {
+        elStandby.innerText = "✅ Sbloccata";
+        elStandby.style.color = "#1B5E20";
+    } else if (Notification.permission === "granted") {
+        elStandby.innerText = "🟠 Verifica punto 4";
+        elStandby.style.color = "#E65100";
+    } else {
+        elStandby.innerText = "⚪ Da configurare";
+        elStandby.style.color = "#E65100";
+    }
+    return { standalone, isPersisted, osConfigured };
+}
+
+async function confermaImpostazioniManuali() {
+    try { localStorage.setItem("elf_os_configured", "1"); } catch (e) {}
+    await aggiornaStatoUI();
+    const st = document.getElementById("status");
+    st.className = "ok";
+    st.innerText = "✅ Configurazione Batteria e Sospensioni registrata correttamente su questo dispositivo!";
+}
+
+function apriImpostazioniOS() {
+    const isAndroid = /Android/i.test(navigator.userAgent || "");
+    const st = document.getElementById("status");
+    document.getElementById("boxTutorial").scrollIntoView({ behavior: "smooth" });
+    if (isAndroid) {
+        try {
+            window.location.href = "intent:#Intent;action=android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS;end";
+            setTimeout(() => {
+                st.className = "ok";
+                st.innerText = "ℹ️ Se non si è aperta la schermata specifica, tieni premuto per 2 secondi sull'icona di ELF nella Home -> tocca (i) Info App -> imposta Batteria su 'Senza restrizioni' e disattiva 'Sospendi app se non usata', poi premi il pulsante blu di conferma qui sotto.";
+            }, 900);
+            return;
+        } catch (e) {}
+    }
+    st.className = "ok";
+    st.innerText = "ℹ️ Segui i 4 passaggi nel riquadro giallo qui sotto per aprire le Impostazioni del telefono, poi premi '✅ HO IMPOSTATO BATTERIA E SOSPENSIONI'.";
+}
+
 async function aggiornaStatoUI() {
     const badge = document.getElementById("badgeStato");
     const st = document.getElementById("status");
     const btnAttiva = document.getElementById("btnAttiva");
     const btnTest = document.getElementById("btnTest");
     const btnMute = document.getElementById("btnMute");
+    const chkPerm = document.getElementById("chkPerm");
+
+    const diag = await diagnosticaPermessiEBatteria();
 
     if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
         badge.className = "badge-stato stato-off";
-        badge.innerText = "❌ NON SUPPORTATE";
-        st.innerText = "Per ricevere notifiche su smartphone, apri l'app dall'icona installata sulla schermata Home.";
+        badge.innerText = "❌ NON SUPPORTATE IN QUESTA VISTA";
+        chkPerm.innerText = "❌ Non disp.";
+        chkPerm.style.color = "#B71C1C";
+        st.innerText = "Su iPhone/iPad usa 'Condividi -> Aggiungi alla schermata Home' e apri l'app dall'icona sulla Home.";
         btnAttiva.style.display = "none";
         return;
     }
@@ -1206,8 +1772,18 @@ async function aggiornaStatoUI() {
     let muted = false;
     try { muted = (localStorage.getItem("elf_muted") === "1"); } catch (e) {}
 
-    let reg = null;
-    let sub = null;
+    if (perm === "granted" && !muted) {
+        chkPerm.innerText = "✅ Autorizzate";
+        chkPerm.style.color = "#1B5E20";
+    } else if (perm === "denied") {
+        chkPerm.innerText = "❌ Bloccate da OS";
+        chkPerm.style.color = "#B71C1C";
+    } else {
+        chkPerm.innerText = "⚪ Da attivare";
+        chkPerm.style.color = "#E65100";
+    }
+
+    let reg = null, sub = null;
     if (perm === "granted" && !muted) {
         try {
             reg = await getSwReg();
@@ -1216,38 +1792,21 @@ async function aggiornaStatoUI() {
     }
 
     let ep = sub ? sub.endpoint : "";
+    const permParam = (perm === "granted" && !muted) ? "1" : (perm === "denied" ? "denied" : "0");
     let cfg = { dispositivo_attivo: false, vapid_public: "" };
     try {
         cfg = await fetchConTimeout(
             "/api/notifiche/status?did=" + encodeURIComponent(did)
+            + "&hw_id=" + encodeURIComponent(generaIdHardwareStabile())
             + "&endpoint=" + encodeURIComponent(ep)
-            + "&perm=" + (perm === "granted" && !muted ? "1" : "0"),
+            + "&perm=" + encodeURIComponent(permParam)
+            + "&standalone=" + (diag.standalone ? "1" : "0")
+            + "&persisted=" + (diag.isPersisted ? "1" : "0")
+            + "&os_cfg=" + (diag.osConfigured ? "1" : "0"),
             {},
             5000
         );
     } catch (e) {}
-
-    if (perm === "granted" && !muted && reg && cfg.vapid_public && (!sub || !cfg.dispositivo_attivo)) {
-        try {
-            if (!sub) {
-                sub = await reg.pushManager.subscribe({
-                    userVisibleOnly: true,
-                    applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
-                });
-            }
-            if (sub) {
-                const resSub = await fetchConTimeout("/api/notifiche/subscribe", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ sub: sub, device_id: did, send_test: false })
-                }, 6000);
-                if (resSub && resSub.ep_hash) {
-                    document.cookie = "elf_ep_h=" + resSub.ep_hash + "; path=/; max-age=31536000; SameSite=Lax";
-                }
-                cfg.dispositivo_attivo = true;
-            }
-        } catch (e) {}
-    }
 
     if (perm === "granted" && !muted && sub && cfg.dispositivo_attivo) {
         badge.className = "badge-stato stato-on";
@@ -1261,9 +1820,10 @@ async function aggiornaStatoUI() {
         badge.className = "badge-stato stato-off";
         badge.innerText = "🔕 NON ATTIVE SU QUESTO DISPOSITIVO";
         st.className = "";
-        st.innerText = "Tocca il pulsante blu qui sotto per attivare le notifiche su questo telefono.";
+        st.innerText = (perm === "denied")
+            ? "⚠️ Hai le notifiche spente nelle impostazioni del telefono. Tocca '⚙️ APRI IMPOSTAZIONI BATTERIA / APP' e attiva Notifiche."
+            : "Tocca '📲 ATTIVA NOTIFICHE E PERMESSI' qui sotto per abilitare tutte le autorizzazioni.";
         btnAttiva.style.display = "block";
-        btnAttiva.innerText = "📲 ATTIVA NOTIFICHE";
         btnTest.style.display = "none";
         btnMute.style.display = "none";
     }
@@ -1274,20 +1834,18 @@ async function attivaDispositivo() {
     const btnAttiva = document.getElementById("btnAttiva");
     btnAttiva.disabled = true;
     st.className = "";
-    st.innerText = "⏳ Richiesta autorizzazione notifiche...";
+    st.innerText = "⏳ Attivazione permessi notifiche e protezione token...";
 
     try {
         try { localStorage.removeItem("elf_muted"); } catch (e) {}
-
-        // 1. Richiesta immediata del popup nativo di Android
         let perm = Notification.permission;
-        if (perm !== "granted") {
-            perm = await Notification.requestPermission();
-        }
+        if (perm !== "granted") perm = await Notification.requestPermission();
+        await diagnosticaPermessiEBatteria();
 
         if (perm !== "granted") {
+            await aggiornaStatoUI();
             st.className = "err";
-            st.innerText = "⚠️ Autorizzazione negata da Android. Se avevi spento l'interruttore nelle impostazioni del telefono, riaccendilo da Info App -> Notifiche.";
+            st.innerText = "⚠️ Autorizzazione negata dal sistema operativo. Premi '⚙️ APRI IMPOSTAZIONI BATTERIA / APP' e attiva Notifiche e Batteria Senza Restrizioni.";
             btnAttiva.disabled = false;
             return;
         }
@@ -1308,7 +1866,7 @@ async function attivaDispositivo() {
         const resSub = await fetchConTimeout("/api/notifiche/subscribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sub: sub, device_id: did, send_test: false })
+            body: JSON.stringify({ sub: sub, device_id: did, hw_id: generaIdHardwareStabile(), send_test: false })
         }, 6000);
 
         if (resSub && resSub.ep_hash) {
@@ -1317,7 +1875,7 @@ async function attivaDispositivo() {
 
         await aggiornaStatoUI();
         st.className = "ok";
-        st.innerText = "✅ Notifiche attivate con successo su questo telefono!";
+        st.innerText = "✅ Permessi attivati! Ora verifica i punti 3 e 4 nel riquadro giallo qui sotto.";
     } catch (e) {
         st.className = "err";
         st.innerText = "❌ Errore attivazione: " + e.message;
@@ -1341,7 +1899,7 @@ async function inviaTestDispositivo() {
         const out = await fetchConTimeout("/api/notifiche/subscribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sub: sub, device_id: did, send_test: true })
+            body: JSON.stringify({ sub: sub, device_id: did, hw_id: generaIdHardwareStabile(), send_test: true })
         }, 6000);
         if (out.push_status === 201 || out.push_status === 200) {
             st.className = "ok";
@@ -1361,22 +1919,21 @@ async function disattivaDispositivo() {
     st.className = "";
     st.innerText = "⏳ Disattivazione notifiche su questo telefono...";
     try {
-        try { localStorage.setItem("elf_muted", "1"); } catch (e) {}
+        try {
+            localStorage.setItem("elf_muted", "1");
+            localStorage.removeItem("elf_os_configured");
+        } catch (e) {}
         document.cookie = "elf_ep_h=; path=/; max-age=0; SameSite=Lax";
         const did = getDeviceId();
         const reg = await getSwReg();
         const sub = await reg.pushManager.getSubscription();
         const ep = sub ? sub.endpoint : "";
-        if (sub) {
-            try { await sub.unsubscribe(); } catch (e) {}
-        }
+        if (sub) { try { await sub.unsubscribe(); } catch (e) {} }
         if (reg && reg.getNotifications) {
             const ns = await reg.getNotifications();
             ns.forEach((n) => n.close());
         }
-        if ("clearAppBadge" in navigator) {
-            navigator.clearAppBadge().catch(()=>{});
-        }
+        if ("clearAppBadge" in navigator) navigator.clearAppBadge().catch(()=>{});
         await fetchConTimeout("/api/notifiche/unsubscribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1398,34 +1955,52 @@ window.addEventListener("load", aggiornaStatoUI);
 """
 
 
-def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str):
-    """
-    Salva il telefono su Supabase usando ESCLUSIVAMENTE l'endpoint come chiave univoca.
-    Due telefoni diversi della famiglia non potranno MAI sovrascriversi a vicenda.
-    """
+def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str, hw_id: str = ""):
     sb = _STATO["supabase"]
-    record_json = json.dumps({"sub": sub_obj, "device_id": did, "ep_hash": ep_h})
+    ora_int = int(time.time())
     id_db = None
+    ids_extra_da_pulire = []
 
     with _LOCK:
         esistente = _STATO["subscriptions"].get(ep)
+        ultimo_ack = esistente.get("ultimo_ack_ts", 0) if esistente else 0
         if esistente:
             id_db = esistente.get("id_db")
+
+    record_json = json.dumps({
+        "sub": sub_obj,
+        "device_id": did,
+        "ep_hash": ep_h,
+        "hw_id": hw_id,
+        "ultimo_accesso_ts": ora_int,
+        "ultimo_ack_ts": ultimo_ack
+    })
 
     if sb:
         with _DB_LOCK:
             try:
-                if not id_db:
-                    res_ex = sb.table("menu_giornalieri").select("id, subcategoria").eq("data_menu", "1970-01-01").eq("categoria", CAT_SUB_DB).execute()
-                    for r_s in (res_ex.data or []):
-                        try:
-                            raw_s = json.loads(r_s.get("subcategoria") or "{}")
-                            s_inner = raw_s.get("sub") if "sub" in raw_s else raw_s
-                            if s_inner.get("endpoint") == ep:
+                res_ex = sb.table("menu_giornalieri").select("id, subcategoria").eq("data_menu", "1970-01-01").eq("categoria", CAT_SUB_DB).execute()
+                for r_s in (res_ex.data or []):
+                    try:
+                        raw_s = json.loads(r_s.get("subcategoria") or "{}")
+                        s_inner = raw_s.get("sub") if "sub" in raw_s else raw_s
+                        r_ep = (s_inner.get("endpoint") or "").strip()
+                        r_did = (raw_s.get("device_id") or "").strip()
+                        r_hw = (raw_s.get("hw_id") or "").strip()
+                        if r_ep == ep or (did and r_did == did) or (hw_id and r_hw == hw_id):
+                            if id_db is None:
                                 id_db = r_s["id"]
-                                break
-                        except Exception:
-                            pass
+                            elif r_s["id"] != id_db:
+                                ids_extra_da_pulire.append(r_s["id"])
+                    except Exception:
+                        pass
+
+                for id_extra in ids_extra_da_pulire:
+                    try:
+                        sb.table("menu_giornalieri").delete().eq("id", id_extra).execute()
+                    except Exception:
+                        pass
+
                 if id_db:
                     sb.table("menu_giornalieri").update({
                         "subcategoria": record_json,
@@ -1452,6 +2027,10 @@ def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str):
 
 
 def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
+    if getattr(app, "_elf_push_collegato", False):
+        return
+    setattr(app, "_elf_push_collegato", True)
+
     if supabase_client is not None:
         _STATO["supabase"] = _crea_client_supabase_dedicato(supabase_client)
 
@@ -1481,22 +2060,64 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         )
 
     @app.get("/api/notifiche/pagina-attiva")
-    async def get_pagina_attiva():
+    async def get_pagina_attiva(did: str = ""):
+        html = PAGINA_ATTIVA_HTML.replace("__DID_PLACEHOLDER__", (did or "").strip())
         return HTMLResponse(
-            content=PAGINA_ATTIVA_HTML,
+            content=html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
         )
 
+    @app.get("/api/notifiche/ack")
+    @app.post("/api/notifiche/ack")
+    async def handle_ack(req: fastapi.Request):
+        if not _STATO["inizializzato"]:
+            await asyncio.to_thread(_carica_o_inizializza_config_db)
+        payload = {}
+        if req.method == "POST":
+            try:
+                payload = await req.json()
+            except Exception:
+                payload = {}
+
+        notif_key = str(payload.get("notif_key") or req.query_params.get("notif_key") or "").strip()
+        ep = str(payload.get("endpoint") or req.query_params.get("endpoint") or "").strip()
+        ep_h = str(payload.get("ep_hash") or req.query_params.get("ep_hash") or req.cookies.get("elf_ep_h") or "").strip()
+        did = str(payload.get("did") or req.query_params.get("did") or req.cookies.get("elf_did") or "").strip()
+        tag = str(payload.get("tag") or req.query_params.get("tag") or "").strip()
+
+        if ep and not ep_h:
+            ep_h = _calcola_hash_ep(ep)
+
+        _registra_ack_interno(notif_key, ep, ep_h, did, tag)
+        return JSONResponse({"ok": True})
+
     @app.get("/api/notifiche/status")
     async def get_status(req: fastapi.Request):
+        if not _STATO["inizializzato"]:
+            await asyncio.to_thread(_carica_o_inizializza_config_db)
+        elif time.time() - _STATO["ultimo_sync_subs_ts"] > 10.0:
+            await asyncio.to_thread(_carica_o_inizializza_config_db, True)
+
+        fp, ua_h = _calcola_fp_http(req)
         did = (req.query_params.get("did") or req.cookies.get("elf_did") or "").strip()
+        hw_id = (req.query_params.get("hw_id") or "").strip()
         ep = req.query_params.get("endpoint", "").strip()
+        p256dh_q = req.query_params.get("p256dh", "").strip()
+        auth_q = req.query_params.get("auth", "").strip()
         ep_h_cookie = (req.cookies.get("elf_ep_h") or "").strip()
-        perm = req.query_params.get("perm", "")
+        perm = req.query_params.get("perm", "0")
+        standalone = req.query_params.get("standalone", "0")
+        persisted = req.query_params.get("persisted", "0")
+        os_cfg = req.query_params.get("os_cfg", "0")
 
         ep_h = _calcola_hash_ep(ep) if ep else ep_h_cookie
 
         with _LOCK:
+            if fp and did:
+                _STATO["fp_to_did"][fp] = did
+            if ua_h and did:
+                _STATO["ua_to_did"][ua_h] = did
+
             unmute_cmd = bool((did and did in _STATO["unmute_devices"]) or (ep_h and ep_h in _STATO["unmute_devices"]))
             if unmute_cmd:
                 _STATO["unmute_devices"].discard(did)
@@ -1508,23 +2129,61 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                 _STATO["force_unsub_devices"].discard(ep_h)
 
             info_sub = _STATO["subscriptions"].get(ep) if ep else None
-            if not info_sub and ep_h and ep_h in _STATO["hash_to_ep"]:
-                ep_mapped = _STATO["hash_to_ep"][ep_h]
-                info_sub = _STATO["subscriptions"].get(ep_mapped)
+            info_sub_per_did = None
+            for ep_cand, info_cand in _STATO["subscriptions"].items():
+                if (did and (info_cand.get("device_id") == did or info_cand.get("ep_hash") == did)) or (hw_id and info_cand.get("hw_id") == hw_id):
+                    info_sub_per_did = (ep_cand, info_cand)
+                    break
 
-            disp_attivo = (info_sub is not None) and not force_unsub and (perm != "0")
+            if not info_sub and info_sub_per_did and (not ep or info_sub_per_did[0] == ep):
+                info_sub = info_sub_per_did[1]
+                if not ep_h:
+                    ep_h = info_sub.get("ep_hash") or ""
+
+            if info_sub:
+                info_sub["ultimo_accesso_ts"] = int(time.time())
+
+            token_disallineato = False
+            if perm == "1" and not force_unsub:
+                if info_sub_per_did is not None:
+                    ep_db, cand_db = info_sub_per_did
+                    keys_db = ((cand_db.get("sub") or {}).get("keys") or {})
+                    if not ep or ep != ep_db:
+                        token_disallineato = True
+                    elif (p256dh_q and p256dh_q != keys_db.get("p256dh", "")) or (auth_q and auth_q != keys_db.get("auth", "")):
+                        token_disallineato = True
+                elif ep and info_sub is None:
+                    token_disallineato = True
+
+            disp_attivo = (info_sub is not None) and bool(ep) and not force_unsub and (perm == "1") and not token_disallineato
             if ep_h:
                 _STATO["stato_device"][ep_h] = disp_attivo
             if did:
                 _STATO["stato_device"][did] = disp_attivo
+                _STATO["diag_device"][did] = {
+                    "perm": perm,
+                    "standalone": standalone,
+                    "persisted": persisted,
+                    "os_cfg": os_cfg,
+                    "attivo": disp_attivo
+                }
+
+            pending_ack_keys = []
+            if info_sub and disp_attivo:
+                for k_job, inviati_set in _STATO["inviate_per_ep"].items():
+                    ack_set = _STATO["ack_per_ep"].get(k_job, set())
+                    if ep in inviati_set and not _is_dispositivo_confermato_ack(ack_set, ep, ep_h, did):
+                        pending_ack_keys.append(k_job)
 
         if ep or did:
-            _associa_device_a_pagina(did, ep, disp_attivo=disp_attivo)
+            _associa_device_a_pagina(did, ep, disp_attivo=disp_attivo, fp=fp, ua_h=ua_h)
 
         return JSONResponse({
             "attive": disp_attivo,
             "dispositivo_registrato": disp_attivo,
             "dispositivo_attivo": disp_attivo,
+            "token_disallineato": token_disallineato,
+            "pending_ack_keys": pending_ack_keys,
             "ep_hash": ep_h if disp_attivo else "",
             "force_unsub": force_unsub,
             "unmute_cmd": unmute_cmd,
@@ -1548,10 +2207,12 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
     @app.post("/api/notifiche/subscribe")
     async def post_subscribe(req: fastapi.Request):
+        fp, ua_h = _calcola_fp_http(req)
         payload = await req.json()
         sub_obj = payload.get("sub") if isinstance(payload, dict) and "sub" in payload else payload
         send_test = bool(payload.get("send_test")) if isinstance(payload, dict) else False
         did = ((payload.get("device_id") if isinstance(payload, dict) else "") or req.cookies.get("elf_did") or "").strip()
+        hw_id = ((payload.get("hw_id") if isinstance(payload, dict) else "") or "").strip()
 
         ep = (sub_obj.get("endpoint") or "").strip() if isinstance(sub_obj, dict) else ""
         ep_h = _calcola_hash_ep(ep)
@@ -1560,6 +2221,11 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
         if ep:
             with _LOCK:
+                if fp and did:
+                    _STATO["fp_to_did"][fp] = did
+                if ua_h and did:
+                    _STATO["ua_to_did"][ua_h] = did
+
                 for k in (did, ep_h):
                     if k:
                         _STATO["force_unsub_devices"].discard(k)
@@ -1567,25 +2233,43 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                         _STATO["stato_device"][k] = True
 
                 esistente = _STATO["subscriptions"].get(ep)
+                for old_ep, old_info in list(_STATO["subscriptions"].items()):
+                    if old_ep != ep and ((did and old_info.get("device_id") == did) or (hw_id and old_info.get("hw_id") == hw_id)):
+                        if esistente is None and old_info.get("id_db"):
+                            esistente = old_info
+                        old_eph = old_info.get("ep_hash")
+                        if old_eph and old_eph != ep_h:
+                            _STATO["hash_to_ep"].pop(old_eph, None)
+                            _STATO["stato_device"].pop(old_eph, None)
+                        _STATO["fallimenti_ep"].pop(old_ep, None)
+                        _STATO["subscriptions"].pop(old_ep, None)
+
                 _STATO["subscriptions"][ep] = {
                     "id_db": esistente.get("id_db") if esistente else None,
                     "sub": sub_obj,
                     "ep_hash": ep_h,
-                    "device_id": did or ep_h
+                    "device_id": did or ep_h,
+                    "hw_id": hw_id,
+                    "ultimo_accesso_ts": int(time.time()),
+                    "ultimo_ack_ts": esistente.get("ultimo_ack_ts", 0) if esistente else 0
                 }
                 _STATO["hash_to_ep"][ep_h] = ep
+                if did:
+                    _STATO["did_to_ep"][did] = ep
                 _STATO["fallimenti_ep"].pop(ep, None)
 
-            _associa_device_a_pagina(did or ep_h, ep, disp_attivo=True)
+            _associa_device_a_pagina(did or ep_h, ep, disp_attivo=True, fp=fp, ua_h=ua_h)
             _aggiorna_ui_pagine()
-            threading.Thread(target=_salva_sub_db_sync, args=(ep, sub_obj, did or ep_h, ep_h), daemon=True).start()
+            await asyncio.to_thread(_salva_sub_db_sync, ep, sub_obj, did or ep_h, ep_h, hw_id)
 
             if send_test:
                 ora_str = _ora_italia().strftime("%H:%M")
                 push_status, push_msg = await asyncio.to_thread(_invia_push_singolo, sub_obj, {
                     "title": f"🔔 Notifica di Prova ELF ({ora_str})",
                     "body": "✅ Questo dispositivo è registrato in modo indipendente e riceve tutti gli avvisi.",
-                    "tag": f"elf_test_{int(time.time())}"
+                    "tag": f"elf_test_{int(time.time())}",
+                    "ep_hash": ep_h,
+                    "device_id": did or ep_h
                 })
 
         return JSONResponse({
@@ -1612,11 +2296,16 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             _STATO["url_pubblico"] = f"{request.url.scheme}://{request.url.netloc}"
 
         if path in ["/", "/index.html"]:
+            fp, ua_h = _calcola_fp_http(request)
             ep_h_cookie = (request.cookies.get("elf_ep_h") or "").strip()
             did_cookie = (request.cookies.get("elf_did") or "").strip()
             with _LOCK:
                 _STATO["ultimo_ep_attivo"] = ep_h_cookie
                 _STATO["ultimo_did_attivo"] = did_cookie
+                if fp and did_cookie:
+                    _STATO["fp_to_did"][fp] = did_cookie
+                if ua_h and did_cookie:
+                    _STATO["ua_to_did"][ua_h] = did_cookie
 
         if path in ["/", "/index.html", "/flutter_service_worker.js"]:
             request.scope["headers"] = [
@@ -1630,7 +2319,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             body = b""
             async for chunk in response.body_iterator:
                 body += chunk
-            prefisso = ("// v-elf-push-21\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
+            prefisso = ("// v-elf-push-28\n" + SW_PUSH_HANDLERS_JS + "\n").encode("utf-8")
             nuovo_body = prefisso + body
             headers = {k: v for k, v in response.headers.items() if k.lower() not in ("content-length", "etag", "last-modified", "content-encoding")}
             headers["content-length"] = str(len(nuovo_body))
