@@ -613,10 +613,9 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None, righe_mese_pr
             nome_gen = info_g["nome_gen"]
             righe_g = info_g["righe"]
             is_manuale = any(x.get("subcategoria") == "Manuale" for x in righe_g)
-            preso_unificato = any(bool(x.get("preso")) for x in righe_g)
 
-            # Non rimuovere MAI se l'utente lo ha già segnato come preso o se è stato inserito manualmente ed è attivo
-            if (k_low not in richiesti_low_set) and (not preso_unificato) and (not is_manuale or k_low not in nomi_dispensa_attivi):
+            # Se l'ingrediente non è usato in nessuna ricetta del mese e non è un'aggiunta manuale, lo rimuove dalla Dispensa del mese
+            if (k_low not in richiesti_low_set) and (not is_manuale or k_low not in nomi_dispensa_attivi):
                 for r_del in righe_g:
                     try:
                         supabase.table("menu_giornalieri").delete().eq("id", r_del["id"]).execute()
@@ -631,7 +630,8 @@ def sincronizza_e_pulisci_dispensa_mese(data_rif: datetime = None, righe_mese_pr
             if not is_valid_uuid(id_canonico):
                 continue
 
-            sub_unificata = "Manuale" if is_manuale else None
+            preso_unificato = any(bool(x.get("preso")) for x in righe_g)
+            sub_unificata = "Manuale" if (is_manuale and k_low not in richiesti_low_set) else None
             riga_principale = next((x for x in righe_g if str(x.get("id_ingrediente")) == str(id_canonico)), righe_g[0])
 
             if (str(riga_principale.get("id_ingrediente")) != str(id_canonico)
