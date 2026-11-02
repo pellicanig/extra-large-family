@@ -161,8 +161,15 @@ def main(page: ft.Page):
         modulo_notifiche.registra_pagina(page)
 
         def gestisci_click_notifiche():
-            url_attiva = f"{RENDER_URL.rstrip('/')}/api/notifiche/pagina-attiva"
+            import urllib.parse
             attivo_qui = modulo_notifiche.is_notifiche_attive(page)
+            did_curr, diag = modulo_notifiche.ottieni_diag_dispositivo(page)
+            url_attiva = f"{RENDER_URL.rstrip('/')}/api/notifiche/pagina-attiva?did={urllib.parse.quote(did_curr or '')}"
+
+            def chiudi_dlg_n(e=None):
+                dlg_n.open = False
+                aggiorna_testo_menu_notifiche()
+                page.update()
 
             def silenzia_qui(e):
                 dlg_n.open = False
@@ -173,22 +180,54 @@ def main(page: ft.Page):
                 snack.open = True
                 page.update()
 
-            azioni_dlg = [
-                ft.TextButton("Annulla", on_click=lambda e: setattr(dlg_n, "open", False) or page.update()),
+            stato_perm = "✅ Autorizzate" if attivo_qui else ("❌ Bloccate da OS" if diag.get("perm") == "denied" else "⚪ Da attivare")
+            stato_pwa = "✅ Schermata Home" if diag.get("standalone") == "1" else "⚠️ Browser standard (Consigliata Home)"
+            stato_persist = "✅ Protetto" if (diag.get("persisted") == "1" and attivo_qui) else "⚠️ Standard"
+            stato_os_bat = "✅ Sbloccata" if diag.get("os_cfg") == "1" else "🟠 Da verificare in Impostazioni"
+
+            box_diag = ft.Container(
+                content=ft.Column([
+                    ft.Text("🔍 Controllo Impostazioni Dispositivo:", weight=ft.FontWeight.BOLD, size=12, color="#0D47A1"),
+                    ft.Text(f"• Permesso Notifiche OS: {stato_perm}", size=11.5, color="#263238"),
+                    ft.Text(f"• Modalità App: {stato_pwa}", size=11.5, color="#263238"),
+                    ft.Text(f"• Protezione Sospensione Dati: {stato_persist}", size=11.5, color="#263238"),
+                    ft.Text(f"• Batteria Senza Restrizioni: {stato_os_bat}", size=11.5, color="#263238"),
+                ], spacing=3, tight=True),
+                bgcolor="#F5F7FA", padding=10, border_radius=8
+            )
+
+            azioni_col = [
+                ft.Button(
+                    "📲 Attiva Notifiche e Configura Dispositivo" if not attivo_qui else "⚙️ Verifica / Sblocca Impostazioni Batteria e Test",
+                    bgcolor="#0D47A1", color=ft.Colors.WHITE, width=float("inf"),
+                    url=url_attiva, on_click=chiudi_dlg_n
+                )
             ]
             if attivo_qui:
-                azioni_dlg.append(ft.TextButton("🔕 Silenzia questo Telefono", on_click=silenzia_qui))
-                azioni_dlg.append(ft.TextButton("🔔 Test / Gestisci Dispositivo", url=url_attiva))
-            else:
-                azioni_dlg.append(ft.TextButton("📲 Attiva su questo Telefono", url=url_attiva))
+                azioni_col.append(
+                    ft.Button(
+                        "🔕 Silenzia questo Telefono",
+                        bgcolor="#C62828", color=ft.Colors.WHITE, width=float("inf"),
+                        on_click=silenzia_qui
+                    )
+                )
+            azioni_col.append(ft.TextButton("Chiudi", on_click=chiudi_dlg_n))
+
+            stato_str = "🟢 ATTIVE SU QUESTO DISPOSITIVO" if attivo_qui else "🔴 NON ATTIVE SU QUESTO DISPOSITIVO"
+            colore_stato = "#1B5E20" if attivo_qui else "#B71C1C"
 
             dlg_n = ft.AlertDialog(
-                title=ft.Text("🔔 Notifiche Dispositivo", size=16, weight=ft.FontWeight.BOLD),
-                content=ft.Text(
-                    "Ogni telefono gestisce le proprie notifiche in modo indipendente (15 min prima di inizio e fine impegno e contatore sull'icona).",
-                    size=13
-                ),
-                actions=azioni_dlg
+                title=ft.Text("🔔 Notifiche Dispositivo", size=16, weight=ft.FontWeight.BOLD, color="#0D47A1"),
+                content=ft.Column([
+                    ft.Text(f"Stato attuale: {stato_str}", weight=ft.FontWeight.BOLD, size=13, color=colore_stato),
+                    box_diag,
+                    ft.Text(
+                        "Ogni telefono gestisce le proprie notifiche in modo indipendente (15 min prima di inizio e fine impegno). Tocca il pulsante blu per attivare i permessi o sbloccare la Batteria.",
+                        size=11.5, color="#455A64"
+                    )
+                ], tight=True, spacing=8),
+                actions=[ft.Column(azioni_col, tight=True, spacing=6)],
+                content_padding=15, inset_padding=10
             )
             try:
                 page.open(dlg_n)
