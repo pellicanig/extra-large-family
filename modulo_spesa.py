@@ -1,6 +1,7 @@
 import flet as ft
 import calendar
 import threading
+import json
 from datetime import datetime, timedelta
 from modulo_ricette import (
     supabase,
@@ -81,9 +82,62 @@ def apri_popup_usi_ingrediente(page: ft.Page, nome_i: str, usi_raw: list, tot_st
 # PANNELLO SPESA INLINE (INTEGRATO NELLA PAGINA DEL MENU)
 # ==========================================================
 def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=None, on_ridisegna_ram_fn=None):
-    spuntati_sessione = set()
+    import json
+    spuntati_sessione = set(CACHE_ANAGRAFICA.get("spesa_presi_set") or set())
     stato_filtro = {"scelta": None, "mese_anno": None}
     dati_aggregati = []
+
+    def _carica_presi_spesa_db_sync() -> set:
+        if not supabase:
+            return set(spuntati_sessione)
+        try:
+            res = (
+                supabase.table("menu_giornalieri")
+                .select("id, subcategoria")
+                .eq("data_menu", "1970-01-01")
+                .eq("categoria", "SYS_SPESA_PRESI")
+                .limit(1)
+                .execute()
+            )
+            if res.data and res.data[0].get("subcategoria"):
+                raw = json.loads(res.data[0]["subcategoria"])
+                if isinstance(raw, list):
+                    loaded = {str(x) for x in raw if x}
+                    CACHE_ANAGRAFICA["spesa_presi_set"] = set(loaded)
+                    return loaded
+        except Exception as ex:
+            log_render(f"[AVVISO] Lettura SYS_SPESA_PRESI: {ex}")
+        return set(CACHE_ANAGRAFICA.get("spesa_presi_set") or spuntati_sessione)
+
+    def _salva_presi_spesa_db_sync():
+        if not supabase:
+            return
+        try:
+            payload_json = json.dumps(sorted(list(spuntati_sessione)))
+            res = (
+                supabase.table("menu_giornalieri")
+                .select("id")
+                .eq("data_menu", "1970-01-01")
+                .eq("categoria", "SYS_SPESA_PRESI")
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                supabase.table("menu_giornalieri").update({
+                    "subcategoria": payload_json,
+                    "preso": False
+                }).eq("id", res.data[0]["id"]).execute()
+            else:
+                supabase.table("menu_giornalieri").insert({
+                    "data_menu": "1970-01-01",
+                    "categoria": "SYS_SPESA_PRESI",
+                    "subcategoria": payload_json,
+                    "quantita": 0,
+                    "unita_misura": "pz",
+                    "preso": False
+                }).execute()
+        except Exception as ex:
+            log_render(f"[AVVISO] Salvataggio SYS_SPESA_PRESI: {ex}")
 
     spinner_spesa = ft.ProgressRing(width=16, height=16, stroke_width=2.5, color=ft.Colors.WHITE, visible=False)
     riga_bottoni_filtro = ft.Row(wrap=True, spacing=6, run_spacing=6)
@@ -161,9 +215,22 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
         def toggle_spunta(e, key_ing, item_obj):
             nuovo_stato = bool(e.control.value)
             (spuntati_sessione.add if nuovo_stato else spuntati_sessione.discard)(key_ing)
+            CACHE_ANAGRAFICA["spesa_presi_set"] = set(spuntati_sessione)
+            item_obj["preso_db"] = nuovo_stato
+
             ids_dir = item_obj.get("ids_menu_diretti") or []
-            if ids_dir:
-                threading.Thread(target=lambda: [aggiorna_flag_preso_db(mid, nuovo_stato) for mid in ids_dir], daemon=True).start()
+            if ids_dir and CACHE_ANAGRAFICA.get("righe_menu_finestra"):
+                set_ids = {str(x) for x in ids_dir}
+                for r_cache in CACHE_ANAGRAFICA["righe_menu_finestra"]:
+                    if str(r_cache.get("id")) in set_ids:
+                        r_cache["preso"] = nuovo_stato
+
+            def _persisti_spunta():
+                for mid in ids_dir:
+                    aggiorna_flag_preso_db(mid, nuovo_stato)
+                _salva_presi_spesa_db_sync()
+
+            threading.Thread(target=_persisti_spunta, daemon=True).start()
             disegna_lista_inline()
             try:
                 page.update()
@@ -380,9 +447,21 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                             aggiungi_voce(ri["ingredienti"], ri.get("quantita") or 0, ri.get("unita_misura"), "", cat, is_preso_db, d_m_str, nome_r_m)
 
             CACHE_ANAGRAFICA["usi_dispensa_periodo"] = usi_dispensa_map
+            presi_ram = CACHE_ANAGRAFICA.get("spesa_presi_set")
+            if presi_ram is not None:
+                spuntati_sessione.clear()
+                spuntati_sessione.update(presi_ram)
+
+            nuovo_preso_da_riga_db = False
             for v in somme.values():
-                if v["preso_db"]:
-                    spuntati_sessione.add(f"{v['nome'].lower()}_{v['unita']}")
+                k_v = f"{v['nome'].lower()}_{v['unita']}"
+                if v["preso_db"] and k_v not in spuntati_sessione:
+                    spuntati_sessione.add(k_v)
+                    nuovo_preso_da_riga_db = True
+
+            if nuovo_preso_da_riga_db:
+                CACHE_ANAGRAFICA["spesa_presi_set"] = set(spuntati_sessione)
+                threading.Thread(target=_salva_presi_spesa_db_sync, daemon=True).start()
 
             dati_aggregati = sorted(list(somme.values()), key=lambda x: x["nome"].lower())
             spinner_spesa.visible = False
@@ -424,6 +503,8 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                         mappa_ri.setdefault(str(ri["id_ricetta"]), []).append(ri)
                 CACHE_ANAGRAFICA["righe_menu_finestra"] = righe_db
                 CACHE_ANAGRAFICA["mappa_ri_finestra"] = mappa_ri
+                
+                _carica_presi_spesa_db_sync()
                 esegui_calcolo(righe_db, mappa_ri)
                 try:
                     page.update()
