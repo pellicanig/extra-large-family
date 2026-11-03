@@ -160,20 +160,33 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             if info_sub_per_did:
                 info_sub_per_did["ultimo_accesso_ts"] = int(time.time())
 
+            forza_rinnovo_token = bool(
+                (ep and _STATO["fallimenti_ep"].get(ep, 0) > 0)
+                or (did and did in _STATO.get("rinnovo_token_devices", set()))
+            )
+            if forza_rinnovo_token and did and "rinnovo_token_devices" in _STATO:
+                _STATO["rinnovo_token_devices"].discard(did)
+
             token_disallineato = False
             if perm == "1" and not force_unsub:
-                if info_sub_per_did is not None and not info_sub_per_did.get("muted", False):
+                if forza_rinnovo_token:
+                    token_disallineato = True
+                elif info_sub_per_did is not None and not info_sub_per_did.get("muted", False):
                     ep_db = str(info_sub_per_did.get("endpoint") or "").strip()
                     p256_db = str(info_sub_per_did.get("p256dh") or "").strip()
                     auth_db = str(info_sub_per_did.get("auth") or "").strip()
                     did_db = str(info_sub_per_did.get("device_id") or "").strip()
+                    hw_db = str(info_sub_per_did.get("hw_id") or "").strip()
                     if not ep or ep != ep_db:
                         token_disallineato = True
                     elif (p256dh_q and p256dh_q != p256_db) or (auth_q and auth_q != auth_db):
                         token_disallineato = True
                     elif did and did_db and did != did_db:
                         token_disallineato = True
-                elif ep and info_sub is None:
+                    elif hw_id and hw_id != hw_db:
+                        token_disallineato = True
+                elif info_sub is None:
+                    # Dispositivo con permessi attivi nel browser ma non ancora allineato su DB
                     token_disallineato = True
 
             disp_attivo = (
@@ -215,6 +228,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             "dispositivo_registrato": disp_attivo,
             "dispositivo_attivo": disp_attivo,
             "token_disallineato": token_disallineato,
+            "forza_rinnovo_token": forza_rinnovo_token,
             "pending_ack_keys": pending_ack_keys,
             "ep_hash": ep_h or "",
             "force_unsub": force_unsub,
