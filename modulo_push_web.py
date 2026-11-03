@@ -331,6 +331,18 @@ CLIENT_JS_CODE = r"""
         return reg;
     }
 
+    function arrayBufferToBase64Url(buffer) {
+        if (!buffer) return "";
+        try {
+            const bytes = new Uint8Array(buffer);
+            let binary = "";
+            for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+            return window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        } catch (e) {
+            return "";
+        }
+    }
+
     function estraiChiaviSub(subObj) {
         if (!subObj) return { endpoint: "", p256dh: "", auth: "" };
         try {
@@ -458,35 +470,56 @@ CLIENT_JS_CODE = r"""
                 return;
             }
 
-            if (permGranted && !mutedLocal && reg && (cfg.token_disallineato || !cfg.dispositivo_attivo) && cfg.vapid_public) {
-                if (!sub) {
-                    try {
-                        sub = await reg.pushManager.subscribe({
-                            userVisibleOnly: true,
-                            applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
-                        });
-                        chiaviSub = estraiChiaviSub(sub);
-                        cachedEndpoint = chiaviSub.endpoint;
-                    } catch (eSub) {}
+            // Verifica se il token locale appartiene a una vecchia chiave VAPID o se il server ha richiesto il rinnovo
+            let vapidMismatch = false;
+            if (sub && cfg.vapid_public && sub.options && sub.options.applicationServerKey) {
+                const subKeyB64 = arrayBufferToBase64Url(sub.options.applicationServerKey);
+                const serverKeyB64 = cfg.vapid_public.replace(/=+$/, "");
+                if (subKeyB64 && subKeyB64 !== serverKeyB64) {
+                    vapidMismatch = true;
                 }
-                if (sub && chiaviSub.endpoint) {
-                    const improntaSync = did + "|" + chiaviSub.endpoint + "|" + chiaviSub.p256dh + "|" + chiaviSub.auth;
-                    if (ultimoTokenSincronizzato !== improntaSync) {
-                        const resSync = await fetch("/api/notifiche/subscribe", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                sub: sub,
-                                device_id: did,
-                                hw_id: hwId,
-                                send_test: false
-                            })
-                        });
-                        if (resSync && resSync.ok) {
-                            const outSync = await resSync.json();
-                            ultimoTokenSincronizzato = improntaSync;
-                            cfg.dispositivo_attivo = true;
-                            if (outSync.ep_hash) cfg.ep_hash = outSync.ep_hash;
+            }
+
+            if (permGranted && !mutedLocal && reg && cfg.vapid_public) {
+                if (vapidMismatch || cfg.forza_rinnovo_token) {
+                    try {
+                        if (sub) await sub.unsubscribe();
+                    } catch (eUnsub) {}
+                    sub = null;
+                    chiaviSub = { endpoint: "", p256dh: "", auth: "" };
+                    ultimoTokenSincronizzato = "";
+                }
+
+                if (!sub || cfg.token_disallineato || !cfg.dispositivo_attivo) {
+                    if (!sub) {
+                        try {
+                            sub = await reg.pushManager.subscribe({
+                                userVisibleOnly: true,
+                                applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public)
+                            });
+                            chiaviSub = estraiChiaviSub(sub);
+                            cachedEndpoint = chiaviSub.endpoint;
+                        } catch (eSub) {}
+                    }
+                    if (sub && chiaviSub.endpoint) {
+                        const improntaSync = did + "|" + hwId + "|" + chiaviSub.endpoint + "|" + chiaviSub.p256dh + "|" + chiaviSub.auth;
+                        if (ultimoTokenSincronizzato !== improntaSync || cfg.token_disallineato || !cfg.dispositivo_attivo) {
+                            const resSync = await fetch("/api/notifiche/subscribe", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    sub: sub,
+                                    device_id: did,
+                                    hw_id: hwId,
+                                    send_test: false
+                                })
+                            });
+                            if (resSync && resSync.ok) {
+                                const outSync = await resSync.json();
+                                ultimoTokenSincronizzato = improntaSync;
+                                cfg.dispositivo_attivo = true;
+                                if (outSync.ep_hash) cfg.ep_hash = outSync.ep_hash;
+                            }
                         }
                     }
                 }
