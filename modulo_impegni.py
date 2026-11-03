@@ -152,37 +152,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         txt_fine = ft.TextField(label="Fine", hint_text="HH:MM", value=fine_iniziale, text_size=12, dense=True, content_padding=ft.Padding(2, 10, 2, 10), on_change=formatta_ora_fine, text_align=ft.TextAlign.CENTER, expand=3)
         
         riga_date_orari = ft.Row([txt_data, txt_inizio, txt_fine], spacing=4)
-
-        # 🔔 NUOVI CAMPI PER IL PREAVVISO E LA RIPETIZIONE
-        preavviso_val_init = int(impegno_esistente.get('preavviso_valore') or 15) if impegno_esistente else 15
-        preavviso_unita_init = str(impegno_esistente.get('preavviso_unita') or 'minuti') if impegno_esistente else 'minuti'
-        preavviso_ripeti_init = bool(impegno_esistente.get('preavviso_ripeti')) if impegno_esistente else False
-
-        txt_preavviso_val = ft.TextField(
-            value=str(preavviso_val_init), width=65, height=34, text_size=12,
-            dense=True, text_align=ft.TextAlign.CENTER, content_padding=ft.Padding(2, 0, 2, 0)
-        )
-        dd_preavviso_unita = ft.Dropdown(
-            value=preavviso_unita_init if preavviso_unita_init in ["minuti", "ore", "giorni", "settimane"] else "minuti",
-            options=[
-                ft.dropdown.Option("minuti"),
-                ft.dropdown.Option("ore"),
-                ft.dropdown.Option("giorni"),
-                ft.dropdown.Option("settimane"),
-            ],
-            width=110, height=34, text_size=12, dense=True, content_padding=ft.Padding(8, 0, 4, 0)
-        )
-        switch_preavviso_ripeti = ft.Switch(label="Ripeti promemoria", value=preavviso_ripeti_init)
-
-        riga_config_promemoria = ft.Container(
-            content=ft.Column([
-                ft.Text("🔔 Promemoria prima dell'inizio:", weight=ft.FontWeight.BOLD, size=12),
-                ft.Row([txt_preavviso_val, dd_preavviso_unita], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                switch_preavviso_ripeti
-            ], spacing=4),
-            bgcolor="#F5F7FA", padding=8, border_radius=8, border=bordo_campo_uniforme("#CFD8DC")
-        )
-
         txt_note = ft.TextField(label="Note aggiuntive", hint_text="Eventuali dettagli...", value=note_iniziali, multiline=True, min_lines=2, max_lines=4)
         txt_errore_form = ft.Text(value="", color=ft.Colors.RED_700, size=13, weight=ft.FontWeight.BOLD, visible=False)
 
@@ -460,22 +429,13 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             note_grezze = txt_note.value.replace("\u200b", "").strip() if txt_note.value else ""
             note_pulite = formatta_titolo_intelligente(note_grezze) if note_grezze else None
 
-            try:
-                valore_p = int(txt_preavviso_val.value.strip())
-                if valore_p < 1: valore_p = 1
-            except Exception:
-                valore_p = 15
-
             dati_base = {
                 "titolo": titolo_pulito,
                 "ora_inizio": ora_inizio_db,
                 "ora_fine": ora_fine_db,
                 "id_categoria": dd_categoria.value,
                 "note": note_pulite,
-                "is_evidenziato": switch_evidenziato.value,
-                "preavviso_valore": valore_p,
-                "preavviso_unita": dd_preavviso_unita.value,
-                "preavviso_ripeti": switch_preavviso_ripeti.value
+                "is_evidenziato": switch_evidenziato.value
             }
 
             # Se modifichiamo un evento GIA' periodico, apriamo il popup per chiedere come applicare
@@ -708,7 +668,6 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             txt_titolo,
             ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             riga_date_orari,
-            riga_config_promemoria, # 🔔 INSERITO QUI
             ft.Divider(height=1, color="#E0E0E0"),
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
             griglia_assegnatari,
