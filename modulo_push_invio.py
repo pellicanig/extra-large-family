@@ -163,11 +163,12 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "", forz
             with _LOCK:
                 cnt = _STATO["fallimenti_ep"].get(ep, 0) + 1
                 _STATO["fallimenti_ep"][ep] = cnt
-            log_push(f"⚠️ Endpoint rifiutato da FCM/Push [dev={did}] -> {msg} (fallimento #{cnt})")
+                _STATO.setdefault("rinnovo_token_devices", set()).add(did)
+            log_push(f"⚠️ Endpoint rifiutato da FCM/Push [dev={did}] -> {msg} (fallimento #{cnt}, prenotato rinnovo automatico token all'accesso)")
             if cnt >= 2:
                 destinatari_validi = [d for d in destinatari_validi if d[0] != ep]
                 da_rimuovere.append((ep, info.get("id_db"), did, ep_h))
-                log_push(f"🗑️ Endpoint scaduto rimosso definitivamente [dev={did}] ({code})")
+                log_push(f"🗑️ Endpoint scaduto rimosso [dev={did}] ({code}): verrà rigenerato automaticamente appena il dispositivo apre l'app")
         else:
             log_push(f"⚠️ Errore temporaneo invio push a [dev={did}] ({code} - {msg}) -> riproverò al prossimo ciclo")
 
@@ -433,17 +434,15 @@ def _aggiorna_coda_impegni_da_db():
 
     with _DB_LOCK:
         try:
-            # Legge TUTTI gli impegni (inclusi i futuri!) senza bloccare a oggi_str
-            res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").execute()
+            res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").lte("data_evento", oggi_str).execute()
             tutti = res.data or []
         except Exception as ex:
             _rinnova_client_se_chiuso(ex)
             log_push(f"❌ Errore lettura tabella impegni: {ex}")
             return
 
-    # Espande gli impegni per OGGI e per il FUTURO (fino a +14 giorni per i periodici, e tutti i futuri per i singoli)
+    # Carica in push_subscriptions ESCLUSIVAMENTE gli impegni di OGGI (singoli e periodici attivi oggi)
     istanze_attive = []
-    orizzonte_periodici = oggi_date + timedelta(days=14)
 
     for imp in tutti:
         val_p = imp.get("is_periodico")
@@ -454,24 +453,21 @@ def _aggiorna_coda_impegni_da_db():
                 d_stop = datetime.strptime(imp["data_fine_periodo"], "%Y-%m-%d").date() if imp.get("data_fine_periodo") else None
             except Exception:
                 continue
+            if oggi_date < d_start or (d_stop and oggi_date > d_stop):
+                continue
             escluse = {x.strip() for x in (imp.get("date_escluse") or "").split(",") if x.strip()}
+            if oggi_str in escluse:
+                continue
             g_str = imp.get("giorni_periodici") or ""
             giorni_rep = [int(g) for g in g_str.split(",") if g.strip().isdigit()] if g_str else [d_start.weekday()]
-
-            curr_d = max(oggi_date, d_start)
-            fine_d = min(orizzonte_periodici, d_stop) if d_stop else orizzonte_periodici
-            while curr_d <= fine_d:
-                d_s = curr_d.strftime("%Y-%m-%d")
-                if curr_d.weekday() in giorni_rep and d_s not in escluse:
-                    copia = dict(imp)
-                    copia["data_evento_istanza"] = d_s
-                    istanze_attive.append(copia)
-                curr_d += timedelta(days=1)
-        else:
-            d_s = str(imp.get("data_evento") or "").strip()
-            if d_s >= oggi_str:
+            if oggi_date.weekday() in giorni_rep:
                 copia = dict(imp)
-                copia["data_evento_istanza"] = d_s
+                copia["data_evento_istanza"] = oggi_str
+                istanze_attive.append(copia)
+        else:
+            if str(imp.get("data_evento") or "").strip() == oggi_str:
+                copia = dict(imp)
+                copia["data_evento_istanza"] = oggi_str
                 istanze_attive.append(copia)
 
     istanze_attive.sort(key=lambda x: (x.get("data_evento_istanza", ""), x.get("ora_inizio") or "00:00"))
