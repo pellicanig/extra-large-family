@@ -168,10 +168,11 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
         txt_preavviso_val = ft.TextField(
             label="Anticipo",
             value=str(preavviso_val_init),
-            width=75,
+            width=54,
             text_size=12,
+            label_style=ft.TextStyle(size=10),
             dense=True,
-            content_padding=ft.Padding(4, 10, 4, 10),
+            content_padding=ft.Padding(2, 8, 2, 8),
             text_align=ft.TextAlign.CENTER
         )
         dd_preavviso_unita = ft.Dropdown(
@@ -185,14 +186,25 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ],
             dense=True,
             text_size=12,
+            label_style=ft.TextStyle(size=10),
+            content_padding=ft.Padding(8, 8, 4, 8),
             expand=True
         )
-        switch_preavviso_ripeti = ft.Switch(label="Ripeti", value=preavviso_ripeti_init)
+        switch_preavviso_ripeti = ft.Switch(value=preavviso_ripeti_init, scale=0.75)
+        box_switch_ripeti = ft.Row(
+            [
+                ft.Container(content=switch_preavviso_ripeti, width=40, height=28, alignment=ft.Alignment(0, 0)),
+                ft.Text("Ripeti", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
+            ],
+            spacing=2,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER
+        )
 
         riga_config_promemoria = ft.Container(
             content=ft.Column([
                 ft.Text("🔔 Promemoria prima dell'inizio:", weight=ft.FontWeight.BOLD, size=12, color=ft.Colors.BLUE_900),
-                ft.Row([txt_preavviso_val, dd_preavviso_unita, switch_preavviso_ripeti], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([txt_preavviso_val, dd_preavviso_unita, box_switch_ripeti], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ], spacing=4, tight=True),
             bgcolor="#F5F7FA",
             padding=8,
