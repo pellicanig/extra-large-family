@@ -147,8 +147,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
             for info_cand in _STATO["subscriptions"].values():
                 match_did = bool(did and (info_cand.get("device_id") == did or info_cand.get("ep_hash") == did))
                 match_ep = bool(ep and info_cand.get("endpoint") == ep)
-                match_hw = bool(hw_id and info_cand.get("hw_id") == hw_id)
-                if match_did or match_ep or match_hw:
+                if match_did or match_ep:
                     info_sub_per_did = info_cand
                     break
 
@@ -176,14 +175,11 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
                     p256_db = str(info_sub_per_did.get("p256dh") or "").strip()
                     auth_db = str(info_sub_per_did.get("auth") or "").strip()
                     did_db = str(info_sub_per_did.get("device_id") or "").strip()
-                    hw_db = str(info_sub_per_did.get("hw_id") or "").strip()
                     if not ep or ep != ep_db:
                         token_disallineato = True
                     elif (p256dh_q and p256dh_q != p256_db) or (auth_q and auth_q != auth_db):
                         token_disallineato = True
                     elif did and did_db and did != did_db:
-                        token_disallineato = True
-                    elif hw_id and hw_id != hw_db:
                         token_disallineato = True
                 elif info_sub is None:
                     # Dispositivo con permessi attivi nel browser ma non ancora allineato su DB
@@ -291,10 +287,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
 
                 esistente = _STATO["subscriptions"].get(ep)
                 for old_k, old_info in list(_STATO["subscriptions"].items()):
-                    if old_k != ep and (
-                        (did and old_info.get("device_id") == did)
-                        or (hw_id and old_info.get("hw_id") == hw_id)
-                    ):
+                    if old_k != ep and (did and old_info.get("device_id") == did):
                         if esistente is None and old_info.get("id_db"):
                             esistente = old_info
                         old_eph = old_info.get("ep_hash")
