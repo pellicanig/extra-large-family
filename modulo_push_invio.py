@@ -161,14 +161,15 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "", forz
             log_push(f"📤 Inviata push [{chiave_notifica or 'diretta'}] a [dev={did}] -> HTTP {code} OK")
         elif code in [401, 403, 404, 410]:
             with _LOCK:
-                cnt = _STATO["fallimenti_ep"].get(ep, 0) + 1
-                _STATO["fallimenti_ep"][ep] = cnt
+                cnt = (_STATO["fallimenti_ep"].get(ep, 0) + 1) if code == 410 else _STATO["fallimenti_ep"].get(ep, 0)
+                if code == 410:
+                    _STATO["fallimenti_ep"][ep] = cnt
                 _STATO.setdefault("rinnovo_token_devices", set()).add(did)
-            log_push(f"⚠️ Endpoint rifiutato da FCM/Push [dev={did}] -> {msg} (fallimento #{cnt}, prenotato rinnovo automatico token all'accesso)")
-            if cnt >= 2:
+            log_push(f"⚠️ Endpoint rifiutato da FCM/Push [dev={did}] -> {msg} (fallimento 410 #{cnt}, prenotato riallineamento token all'accesso)")
+            if code == 410 and cnt >= 30:
                 destinatari_validi = [d for d in destinatari_validi if d[0] != ep]
                 da_rimuovere.append((ep, info.get("id_db"), did, ep_h))
-                log_push(f"🗑️ Endpoint scaduto rimosso [dev={did}] ({code}): verrà rigenerato automaticamente appena il dispositivo apre l'app")
+                log_push(f"🗑️ Endpoint disinstallato rimosso dopo 30 conferme 410 [dev={did}] ({code})")
         else:
             log_push(f"⚠️ Errore temporaneo invio push a [dev={did}] ({code} - {msg}) -> riproverò al prossimo ciclo")
 
