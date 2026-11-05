@@ -187,25 +187,22 @@ def _ricarica_subscriptions_da_db_sync(log_sempre: bool = True) -> tuple[str, st
                     ultimo_ack_eff = max(db_ack_ts, ram_ack_ts)
                     ultima_attivita_combinata = max(ultimo_accesso_eff, ultimo_ack_eff)
 
-                    # Pulizia dispositivi orfani inattivi da oltre 30 giorni senza accesso né ACK
-                    if ultima_attivita_combinata > 0 and (ora_now - ultima_attivita_combinata) > (30 * 86400):
+                    # Pulizia dispositivi orfani inattivi da oltre 365 giorni senza accesso né ACK
+                    if ultima_attivita_combinata > 0 and (ora_now - ultima_attivita_combinata) > (365 * 86400):
                         if r.get("id"):
                             ids_duplicati_da_pulire.append(r["id"])
-                            log_push(f"🧹 Rimosso dispositivo inattivo da oltre 30gg [dev={did_finale}] (id={r.get('id')})")
+                            log_push(f"🧹 Rimosso dispositivo inattivo da oltre 365gg [dev={did_finale}] (id={r.get('id')})")
                         continue
 
                     if r.get("id") and ram_acc_ts > db_accesso_ts and (ram_acc_ts - db_accesso_ts) > 43200:
                         aggiornamenti_ts_attivi.append((r["id"], ram_acc_ts))
 
-                    hw_key = f"hw:{hw_id_row}" if hw_id_row else ""
-                    if ep in subs_loaded or did_finale in seen_did_hw or (hw_key and hw_key in seen_did_hw):
+                    if ep in subs_loaded or did_finale in seen_did_hw:
                         if r.get("id"):
                             ids_duplicati_da_pulire.append(r["id"])
                         continue
 
                     seen_did_hw.add(did_finale)
-                    if hw_key:
-                        seen_did_hw.add(hw_key)
 
                     for k_ev, val_stato in st_consegna.items():
                         if str(k_ev).startswith("_"):
@@ -360,9 +357,8 @@ def _salva_sub_db_sync(ep: str, sub_obj: dict, did: str, ep_h: str, is_muted: bo
 
                 stesso_ep = (r_ep == ep)
                 stesso_did = bool(did_clean and r_did == did_clean)
-                stesso_hw = bool(hw_clean and r_hw == hw_clean)
 
-                if stesso_did or stesso_ep or stesso_hw:
+                if stesso_did or stesso_ep:
                     if id_target is None:
                         id_target = r["id"]
                         riga_target = r
