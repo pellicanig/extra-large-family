@@ -276,11 +276,13 @@ CLIENT_JS_CODE = r"""
         let did = "";
         try {
             did = localStorage.getItem("elf_device_id") || leggiCookie("elf_did") || "";
-            if (!did) did = generaIdHardwareStabile();
+            if (!did || did.split("_").length < 4) {
+                did = generaIdHardwareStabile() + "_" + Math.random().toString(36).substring(2, 7);
+            }
             localStorage.setItem("elf_device_id", did);
             document.cookie = "elf_did=" + encodeURIComponent(did) + "; path=/; max-age=31536000; SameSite=Lax";
         } catch (e) {}
-        return did || generaIdHardwareStabile();
+        return did || (generaIdHardwareStabile() + "_" + Math.random().toString(36).substring(2, 7));
     }
 
     function isStandalonePWA() {
@@ -481,12 +483,14 @@ CLIENT_JS_CODE = r"""
             }
 
             if (permGranted && !mutedLocal && reg && cfg.vapid_public) {
-                if (vapidMismatch || cfg.forza_rinnovo_token) {
+                if (vapidMismatch) {
                     try {
                         if (sub) await sub.unsubscribe();
                     } catch (eUnsub) {}
                     sub = null;
                     chiaviSub = { endpoint: "", p256dh: "", auth: "" };
+                    ultimoTokenSincronizzato = "";
+                } else if (cfg.forza_rinnovo_token) {
                     ultimoTokenSincronizzato = "";
                 }
 
@@ -641,11 +645,13 @@ function getDeviceId() {
     let did = "";
     try {
         did = localStorage.getItem("elf_device_id") || DID_URL || "";
-        if (!did) did = generaIdHardwareStabile();
+        if (!did || did.split("_").length < 4) {
+            did = generaIdHardwareStabile() + "_" + Math.random().toString(36).substring(2, 7);
+        }
         localStorage.setItem("elf_device_id", did);
         document.cookie = "elf_did=" + encodeURIComponent(did) + "; path=/; max-age=31536000; SameSite=Lax";
     } catch (e) {}
-    return did || generaIdHardwareStabile();
+    return did || (generaIdHardwareStabile() + "_" + Math.random().toString(36).substring(2, 7));
 }
 
 function isStandalonePWA() {
