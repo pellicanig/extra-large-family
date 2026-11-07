@@ -2,6 +2,7 @@ import flet as ft
 import calendar
 import threading
 from datetime import datetime, timedelta
+from modulo_ui import inizia_operazione, termina_operazione
 from modulo_ricette import (
     supabase,
     MESI,
@@ -231,6 +232,8 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
         txt_riepilogo.value = f"Ingredienti da acquistare: {len(da_comprare)}  |  Già presi: {len(gia_presi)}"
 
         def toggle_spunta(e, key_ing, item_obj):
+            if not inizia_operazione(page):
+                return
             nuovo_stato = bool(e.control.value)
             km = _chiave_mese_ing(data_riferimento, key_ing)
             if nuovo_stato:
@@ -256,7 +259,13 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                     aggiorna_flag_preso_db(mid, nuovo_stato)
                 _salva_presi_spesa_db_sync()
 
-            threading.Thread(target=_salva_su_db, daemon=True).start()
+            def worker_spunta():
+                try:
+                    _salva_su_db()
+                finally:
+                    termina_operazione(page)
+
+            threading.Thread(target=worker_spunta, daemon=True).start()
             disegna_lista_inline()
             try:
                 page.update()
@@ -264,17 +273,23 @@ def crea_pannello_spesa_inline(page: ft.Page, get_data_fn, on_refresh_menu_fn=No
                 pass
 
         def sposta_in_dispensa_rapido(e, nome_ing):
+            if not inizia_operazione(page):
+                return
             spinner_spesa.visible = True
             try:
                 page.update()
             except Exception:
                 pass
             def w_sposta():
-                imposta_stato_dispensa_ingrediente_db(nome_ing, "", True, data_riferimento)
-                if on_refresh_menu_fn:
-                    on_refresh_menu_fn()
-                else:
-                    ricalcola_spesa_inline()
+                try:
+                    imposta_stato_dispensa_ingrediente_db(nome_ing, "", True, data_riferimento)
+                    if on_refresh_menu_fn:
+                        on_refresh_menu_fn()
+                    else:
+                        ricalcola_spesa_inline()
+                finally:
+                    spinner_spesa.visible = False
+                    termina_operazione(page)
             threading.Thread(target=w_sposta, daemon=True).start()
 
         if not da_comprare and not gia_presi:

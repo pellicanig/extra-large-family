@@ -77,7 +77,8 @@ def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
 
     data_json = json.dumps(payload_dict)
 
-    for tentativo in range(2):
+    attese_retry = (0.5, 1.5)
+    for tentativo in range(3):
         try:
             webpush(
                 subscription_info=sub_info,
@@ -97,13 +98,14 @@ def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
                     body_err = ex.response.text[:120]
             except Exception:
                 pass
-            if code in [401, 403, 404, 410] or tentativo == 1:
+            errore_temporaneo = code in (408, 425, 429) or code >= 500
+            if not errore_temporaneo or tentativo == len(attese_retry):
                 return code, f"HTTP {code} {body_err}".strip()
-            time.sleep(0.4)
+            time.sleep(attese_retry[tentativo])
         except Exception as ex:
-            if tentativo == 1:
+            if tentativo == len(attese_retry):
                 return 500, str(ex)
-            time.sleep(0.4)
+            time.sleep(attese_retry[tentativo])
     return 500, "Errore invio"
 
 

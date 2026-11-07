@@ -1,5 +1,6 @@
 import flet as ft
 from datetime import datetime
+from modulo_ui import inizia_operazione, termina_operazione
 
 # ⚡ TAVOLOZZA COLORI: ESCLUSIVAMENTE 9 PALLINI SENZA TESTO ⚡
 PALETTE_COLORI = [
@@ -152,6 +153,8 @@ def vista_famiglia(page: ft.Page, supabase):
     def crea_scheda_ui(db_id, nome, ruolo, data_nascita, colore_assegnato):
         
         def elimina_dal_db(e):
+             if not inizia_operazione(page):
+                 return
              try:
                  supabase.table("famiglia").delete().eq("id", db_id).execute()
                  if id_in_modifica[0] == db_id:
@@ -164,6 +167,8 @@ def vista_famiglia(page: ft.Page, supabase):
                  page.update()
              except Exception as err:
                  print("Errore cancellazione:", err)
+             finally:
+                 termina_operazione(page)
         
         def avvia_modifica(e):
             id_in_modifica[0] = db_id
@@ -227,6 +232,8 @@ def vista_famiglia(page: ft.Page, supabase):
                 page.update()
                 return
 
+        if not inizia_operazione(page):
+            return
         try:
             record = {
                 "nome": nome_input.value,
@@ -256,6 +263,8 @@ def vista_famiglia(page: ft.Page, supabase):
             page.overlay.append(snack)
             snack.open = True
             page.update()
+        finally:
+            termina_operazione(page)
 
     bottone_salva.on_click = salva_componente
 

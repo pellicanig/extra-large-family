@@ -41,6 +41,7 @@ from modulo_ricette import (
     apri_popup_aggiungi_voce_diretta
 )
 from modulo_spesa import crea_pannello_spesa_inline, apri_popup_usi_ingrediente
+from modulo_ui import inizia_operazione, termina_operazione
 
 
 # ==========================================================
@@ -138,6 +139,8 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             log_render(f"[ERRORE] carica_dati_giorno_db ({data_str}): {ex}")
 
     def esegui_azione_db(testo_loading, funzione_db, ricarica_giorno=True):
+        if not inizia_operazione(page):
+            return
         log_render(f"[MENU GIORNO] Azione richiesta su {data_str}: {testo_loading}")
         mostra_loading(testo_loading)
 
@@ -152,7 +155,10 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
             except Exception as ex:
                 log_render(f"[ERRORE] esegui_azione_db ({testo_loading}): {ex}")
             finally:
-                nascondi_loading()
+                try:
+                    nascondi_loading()
+                finally:
+                    termina_operazione(page)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -285,15 +291,20 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
 
                 def toggle_disp_giorno(e, info_ref=ing_info):
                     nuovo_stato = bool(e.control.value)
+                    if not inizia_operazione(page):
+                        return
                     modifiche_effettuate[0] = True
 
                     def w_tg():
-                        imposta_stato_dispensa_ingrediente_db(
-                            info_ref.get("nome", ""),
-                            info_ref.get("id", ""),
-                            nuovo_stato,
-                            data_selezionata
-                        )
+                        try:
+                            imposta_stato_dispensa_ingrediente_db(
+                                info_ref.get("nome", ""),
+                                info_ref.get("id", ""),
+                                nuovo_stato,
+                                data_selezionata
+                            )
+                        finally:
+                            termina_operazione(page)
                     threading.Thread(target=w_tg, daemon=True).start()
 
                 chk_disp_g.on_change = toggle_disp_giorno
@@ -459,8 +470,14 @@ def apri_form_menu_giorno(page: ft.Page, data_selezionata: datetime, on_success_
         except Exception as ex:
             print("Errore avvio form giorno:", ex)
         finally:
-            nascondi_loading()
+            try:
+                nascondi_loading()
+            finally:
+                termina_operazione(page)
 
+    if not inizia_operazione(page):
+        chiudi_dialog_sicuro(page, dlg_menu)
+        return
     threading.Thread(target=avvio, daemon=True).start()
 
 
@@ -628,15 +645,20 @@ def crea_calendario_menu(page: ft.Page):
                 q_str = ""
 
                 def del_varie(e, id_v=vv["id"], nome_log=nome_v):
+                    if is_valid_uuid(id_v) and not inizia_operazione(page):
+                        return
                     log_render(f"[UTENTE] Rimozione voce Varie '{nome_log}' del {d_str_g}")
                     if d_str_g in ram_menu["dizionario_menu"]:
                         ram_menu["dizionario_menu"][d_str_g] = [x for x in ram_menu["dizionario_menu"][d_str_g] if x.get("id") != id_v]
                     disegna_vista_da_ram()
                     if is_valid_uuid(id_v):
                         def w_del_v():
-                            supabase.table("menu_giornalieri").delete().eq("id", id_v).execute()
-                            sincronizza_e_pulisci_dispensa_mese(dt_giorno)
-                            aggiorna_calendario_menu()
+                            try:
+                                supabase.table("menu_giornalieri").delete().eq("id", id_v).execute()
+                                sincronizza_e_pulisci_dispensa_mese(dt_giorno)
+                                aggiorna_calendario_menu()
+                            finally:
+                                termina_operazione(page)
                         threading.Thread(target=w_del_v, daemon=True).start()
 
                 righe_varie_ui.append(
@@ -699,23 +721,38 @@ def crea_calendario_menu(page: ft.Page):
                 is_preso = bool(vm.get("preso"))
 
                 def cambia_spunta_mese(e, voce_ref=vm, np_log=nome_p):
+                    if not inizia_operazione(page):
+                        e.control.value = not bool(e.control.value)
+                        return
                     voce_ref["preso"] = bool(e.control.value)
                     log_render(f"[UTENTE] Spunta '{categoria_db}' per '{np_log}': preso={voce_ref['preso']}")
                     disegna_vista_da_ram()
-                    threading.Thread(target=lambda: aggiorna_flag_preso_db(voce_ref["id"], voce_ref["preso"]), daemon=True).start()
+
+                    def w_spunta_mese():
+                        try:
+                            aggiorna_flag_preso_db(voce_ref["id"], voce_ref["preso"])
+                        finally:
+                            termina_operazione(page)
+
+                    threading.Thread(target=w_spunta_mese, daemon=True).start()
 
                 def elimina_voce_mese(e, id_riga=vm["id"], id_ing_r=vm.get("id_ingrediente"), np_log=nome_p):
+                    if is_valid_uuid(id_riga) and not inizia_operazione(page):
+                        return
                     log_render(f"[UTENTE] Eliminazione voce '{np_log}' da card '{categoria_db}' ({nome_mese})")
                     chiave_ram = "voci_dispensa_mese" if categoria_db == "Dispensa" else "voci_detersivi_mese"
                     ram_menu[chiave_ram] = [x for x in ram_menu[chiave_ram] if x.get("id") != id_riga]
                     disegna_vista_da_ram()
                     if is_valid_uuid(id_riga):
                         def w_del_m():
-                            if categoria_db == "Dispensa":
-                                imposta_stato_dispensa_ingrediente_db(np_log, id_ing_r or "", False, data_rif_mese)
-                            else:
-                                supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute()
-                            aggiorna_calendario_menu()
+                            try:
+                                if categoria_db == "Dispensa":
+                                    imposta_stato_dispensa_ingrediente_db(np_log, id_ing_r or "", False, data_rif_mese)
+                                else:
+                                    supabase.table("menu_giornalieri").delete().eq("id", id_riga).execute()
+                                aggiorna_calendario_menu()
+                            finally:
+                                termina_operazione(page)
                         threading.Thread(target=w_del_m, daemon=True).start()
 
                 usi_disp = (CACHE_ANAGRAFICA.get("usi_dispensa_periodo") or {}).get(nome_p.strip().lower(), []) if categoria_db == "Dispensa" else []

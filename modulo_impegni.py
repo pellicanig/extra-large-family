@@ -1,8 +1,10 @@
 import flet as ft
 import os
+import threading
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from modulo_ui import inizia_operazione, termina_operazione
 
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -346,6 +348,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     txt_nuova_cat.error_text = "Obbligatorio"
                     page.update()
                     return
+                if not inizia_operazione(page):
+                    return
                 try:
                     res = supabase.table('categorie').insert({"nome": nome_cat, "colore": dd_colore.value}).execute()
                     nuovo_id = res.data[0]['id']
@@ -359,6 +363,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                     txt_errore_cat.visible = True
                     page.update()
                     return
+                finally:
+                    termina_operazione(page)
                 chiudi_cat()
 
             dlg_categoria = ft.AlertDialog(
@@ -401,6 +407,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             def salva_modifica_cat(e):
                 txt_errore_mod.visible = False
                 if dd_colore_mod.value:
+                    if not inizia_operazione(page):
+                        return
                     try:
                         supabase.table('categorie').update({"colore": dd_colore_mod.value}).eq('id', cat_corrente['id']).execute()
                         page.pubsub.send_all("aggiorna_dati")
@@ -410,6 +418,8 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                         txt_errore_mod.visible = True
                         page.update()
                         return
+                    finally:
+                        termina_operazione(page)
                 chiudi_mod_cat()
 
             dlg_modifica_cat = ft.AlertDialog(
@@ -553,7 +563,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             try: page.open(dlg_salvataggio_periodico)
             except AttributeError: page.overlay.append(dlg_salvataggio_periodico); dlg_salvataggio_periodico.open = True; page.update()
 
-        def esegui_scrittura_finale(dati_impegno, data_db, ambito):
+        def _scrivi_impegno_db(dati_impegno, data_db, ambito):
             # Valuta i parametri di periodicità
             if is_p_db and ambito == "Solo questo evento":
                 dati_impegno['giorni_periodici'] = None
@@ -636,7 +646,22 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 txt_errore_form.visible = True
                 page.update()
 
-        def esegui_elimina_singolo():
+        def esegui_db_con_loading(funzione):
+            if not inizia_operazione(page):
+                return
+
+            def worker():
+                try:
+                    funzione()
+                finally:
+                    termina_operazione(page)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def esegui_scrittura_finale(dati_impegno, data_db, ambito):
+            esegui_db_con_loading(lambda: _scrivi_impegno_db(dati_impegno, data_db, ambito))
+
+        def elimina_singolo_db():
             try:
                 nuove_escluse = date_escluse_db + "," + data_istanza_str if date_escluse_db else data_istanza_str
                 supabase.table('impegni').update({'date_escluse': nuove_escluse}).eq('id', impegno_esistente['id']).execute()
@@ -644,7 +669,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if on_success_callback: on_success_callback()
             except Exception as ex: print(f"Errore: {ex}")
 
-        def esegui_elimina_successivi():
+        def elimina_successivi_db():
             try:
                 ieri = data_istanza - timedelta(days=1)
                 ieri_str = ieri.strftime("%Y-%m-%d")
@@ -666,7 +691,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 if on_success_callback: on_success_callback()
             except Exception as ex: print(f"Errore: {ex}")
 
-        def esegui_elimina_serie():
+        def elimina_serie_db():
             try:
                 supabase.table('impegni').delete().eq('id', impegno_esistente['id']).execute()
                 chiudi_form()
@@ -698,9 +723,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 dd_scelta_elimina.on_change = on_change_scelta
 
                 def esegui_scelta(ev):
-                    if dd_scelta_elimina.value == "Solo questo evento": esegui_elimina_singolo()
-                    elif dd_scelta_elimina.value == "Da questo in poi": esegui_elimina_successivi()
-                    elif dd_scelta_elimina.value == "Tutta la serie": esegui_elimina_serie()
+                    if dd_scelta_elimina.value == "Solo questo evento": esegui_db_con_loading(elimina_singolo_db)
+                    elif dd_scelta_elimina.value == "Da questo in poi": esegui_db_con_loading(elimina_successivi_db)
+                    elif dd_scelta_elimina.value == "Tutta la serie": esegui_db_con_loading(elimina_serie_db)
                     chiudi_conferma()
 
                 dlg_conferma = ft.AlertDialog(
@@ -713,7 +738,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 )
             else:
                 def esegui_scelta(ev):
-                    esegui_elimina_serie()
+                    esegui_db_con_loading(elimina_serie_db)
                     chiudi_conferma()
                     
                 dlg_conferma = ft.AlertDialog(
