@@ -19,6 +19,8 @@ from modulo_push_stato import (
     _salva_vapid_su_db_e_disco,
 )
 
+_LOCK_SYNC_SUBSCRIPTIONS = threading.Lock()
+
 
 def _migra_vecchie_sub_da_menu_giornalieri_sync():
     """
@@ -95,7 +97,7 @@ def _migra_vecchie_sub_da_menu_giornalieri_sync():
     return pub_old, priv_old
 
 
-def _ricarica_subscriptions_da_db_sync(log_sempre: bool = True) -> tuple[str, str]:
+def _ricarica_subscriptions_da_db_sync_impl(log_sempre: bool = True) -> tuple[str, str]:
     """
     Ricarica dalla tabella push_subscriptions di Supabase tutti i dispositivi registrati
     e allinea la RAM, eliminando quelli inattivi da oltre 30 giorni consecutivi (senza accesso né ACK).
@@ -278,6 +280,17 @@ def _ricarica_subscriptions_da_db_sync(log_sempre: bool = True) -> tuple[str, st
             _aggiorna_ui_pagine()
 
     return pub_db, priv_db
+
+
+def _ricarica_subscriptions_da_db_sync(log_sempre: bool = True, max_age_seconds: float = None) -> tuple[str, str]:
+    if max_age_seconds is None:
+        return _ricarica_subscriptions_da_db_sync_impl(log_sempre)
+
+    with _LOCK_SYNC_SUBSCRIPTIONS:
+        with _LOCK:
+            if time.time() - _STATO["ultimo_sync_db_ts"] <= max_age_seconds:
+                return _STATO["vapid_public"], _STATO["vapid_private"]
+        return _ricarica_subscriptions_da_db_sync_impl(log_sempre)
 
 
 def _carica_o_inizializza_config_db():

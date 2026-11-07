@@ -110,7 +110,7 @@ def collega_api_fastapi(app: fastapi.FastAPI, supabase_client):
         if not _STATO["inizializzato"]:
             await asyncio.to_thread(_carica_o_inizializza_config_db)
         elif time.time() - _STATO["ultimo_sync_db_ts"] > 8.0:
-            await asyncio.to_thread(_ricarica_subscriptions_da_db_sync, False)
+            await asyncio.to_thread(_ricarica_subscriptions_da_db_sync, False, 8.0)
 
         fp, ua_h = _calcola_fp_http(req)
         did = (req.query_params.get("did") or req.cookies.get("elf_did") or "").strip()

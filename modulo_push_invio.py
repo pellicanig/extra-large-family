@@ -1,5 +1,4 @@
 import os
-import gc
 import json
 import time
 import threading
@@ -809,7 +808,7 @@ def _processa_coda_impegni():
 
     # Sincronizza i dispositivi da Supabase ogni 20 secondi
     if time.time() - _STATO["ultimo_sync_db_ts"] > 20.0:
-        _ricarica_subscriptions_da_db_sync(log_sempre=False)
+        _ricarica_subscriptions_da_db_sync(log_sempre=False, max_age_seconds=20.0)
 
     _aggiorna_coda_impegni_da_db()
 
@@ -891,7 +890,6 @@ def _loop_scheduler():
     while True:
         try:
             _processa_coda_impegni()
-            gc.collect()
         except Exception as ex:
             log_push(f"❌ Errore nel ciclo _processa_coda_impegni: {ex}")
             traceback.print_exc()

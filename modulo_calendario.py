@@ -31,6 +31,7 @@ def crea_calendario(page: ft.Page):
 
     lista_categorie = []
     lista_famiglia = []
+    mappa_famiglia = {}
     
     def ricarica_dati_base():
         if not supabase:
@@ -177,6 +178,8 @@ def crea_calendario(page: ft.Page):
         return gruppi
 
     def aggiorna_tutto():
+        nonlocal mappa_famiglia
+        mappa_famiglia = {f["id"]: f for f in lista_famiglia}
         vista = stato["vista"]
         data = stato["data"]
 
@@ -246,7 +249,17 @@ def crea_calendario(page: ft.Page):
                 primo_g = inizio_finestra.strftime("%Y-%m-%d")
                 ultimo_g = fine_finestra.strftime("%Y-%m-%d")
                 
-                res = supabase.table('impegni').select('*, categorie(colore, nome), impegni_familiari(id_familiare)').lte('data_evento', ultimo_g).execute()
+                filtro_finestra = (
+                    f"and(data_evento.gte.{primo_g},data_evento.lte.{ultimo_g}),"
+                    f"and(is_periodico.eq.true,data_evento.lt.{primo_g},"
+                    f"or(data_fine_periodo.is.null,data_fine_periodo.gte.{primo_g}))"
+                )
+                res = (
+                    supabase.table('impegni')
+                    .select('*, categorie(colore, nome), impegni_familiari(id_familiare)')
+                    .or_(filtro_finestra)
+                    .execute()
+                )
                 
                 if res.data:
                     for imp in res.data:
@@ -347,7 +360,7 @@ def crea_calendario(page: ft.Page):
             colori_assegnatari = []
             if len(assegnatari_ids) > 0:
                 for f_id in assegnatari_ids:
-                    fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                    fam_match = mappa_famiglia.get(f_id)
                     if fam_match and fam_match.get('colore'):
                         colori_assegnatari.append(fam_match['colore'])
             else:
@@ -387,7 +400,7 @@ def crea_calendario(page: ft.Page):
 
             if len(assegnatari_ids) > 0:
                 for i, f_id in enumerate(assegnatari_ids):
-                    fam_match = next((f for f in lista_famiglia if f['id'] == f_id), None)
+                    fam_match = mappa_famiglia.get(f_id)
                     if fam_match:
                         nome_testo = fam_match['nome'] + ("," if i < len(assegnatari_ids) - 1 else "")
                         col_asg = colore_testo if is_evidenziato else fam_match.get('colore', ft.Colors.BLUE_900)
