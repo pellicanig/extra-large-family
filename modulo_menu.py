@@ -40,7 +40,15 @@ from modulo_ricette import (
     apri_popup_aggiungi_piatto_semplificato,
     apri_popup_aggiungi_voce_diretta
 )
-from modulo_spesa import crea_pannello_spesa_inline, apri_popup_usi_ingrediente
+from modulo_spesa import (
+    apri_popup_usi_ingrediente,
+    chiave_spesa_mese,
+    crea_pannello_spesa_inline,
+    quantita_per_unita_usi,
+    registra_acquisto_spesa,
+    salva_mappa_presi_spesa_db,
+    verifica_acquisto_spesa
+)
 from modulo_ui import inizia_operazione, termina_operazione
 
 
@@ -718,7 +726,6 @@ def crea_calendario_menu(page: ft.Page):
                 q_p = vm.get("quantita") or 0
                 u_p = str(vm.get("unita_misura") or "").replace("|DET", "").replace("|DISPENSA", "").strip()
                 q_str = f" ({formatta_numero(q_p)} {u_p})" if q_p else ""
-                is_preso = bool(vm.get("preso"))
 
                 def cambia_spunta_mese(e, voce_ref=vm, np_log=nome_p):
                     if not inizia_operazione(page):
@@ -726,11 +733,26 @@ def crea_calendario_menu(page: ft.Page):
                         return
                     voce_ref["preso"] = bool(e.control.value)
                     log_render(f"[UTENTE] Spunta '{categoria_db}' per '{np_log}': preso={voce_ref['preso']}")
+                    if categoria_db == "Dispensa":
+                        nome_ing = ((voce_ref.get("ingredienti") or {}).get("nome") or np_log).strip().lower()
+                        key_ing = f"{nome_ing}_promemoria"
+                        usi_ing = (CACHE_ANAGRAFICA.get("usi_dispensa_mese") or {}).get(nome_ing, [])
+                        qta_ing = quantita_per_unita_usi(usi_ing)
+                        registra_acquisto_spesa(
+                            data_rif_mese,
+                            key_ing,
+                            qta=sum(qta_ing.values()),
+                            usi=len(usi_ing),
+                            preso=voce_ref["preso"],
+                            qta_per_unita=qta_ing
+                        )
                     disegna_vista_da_ram()
 
                     def w_spunta_mese():
                         try:
                             aggiorna_flag_preso_db(voce_ref["id"], voce_ref["preso"])
+                            if categoria_db == "Dispensa":
+                                salva_mappa_presi_spesa_db()
                         finally:
                             termina_operazione(page)
 
@@ -756,6 +778,29 @@ def crea_calendario_menu(page: ft.Page):
                         threading.Thread(target=w_del_m, daemon=True).start()
 
                 usi_disp = (CACHE_ANAGRAFICA.get("usi_dispensa_periodo") or {}).get(nome_p.strip().lower(), []) if categoria_db == "Dispensa" else []
+                is_preso = bool(vm.get("preso"))
+                usi_disp_mese = (CACHE_ANAGRAFICA.get("usi_dispensa_mese") or {}).get(nome_p.strip().lower(), []) if categoria_db == "Dispensa" else []
+                if categoria_db == "Dispensa" and usi_disp_mese:
+                    qta_disp = quantita_per_unita_usi(usi_disp_mese)
+                    key_disp = chiave_spesa_mese(data_rif_mese, f"{nome_p.strip().lower()}_promemoria")
+                    acquisto_disp = (CACHE_ANAGRAFICA.get("spesa_presi_map") or {}).get(key_disp)
+                    if acquisto_disp is None and is_preso:
+                        acquisto_disp = {
+                            "qta": round(sum(qta_disp.values()), 2),
+                            "usi": len(usi_disp_mese),
+                            "disponibile": True,
+                            "qta_per_unita": dict(qta_disp)
+                        }
+                        CACHE_ANAGRAFICA.setdefault("spesa_presi_map", {})[key_disp] = acquisto_disp
+                        threading.Thread(target=salva_mappa_presi_spesa_db, daemon=True).start()
+                    if acquisto_disp is not None:
+                        is_preso, stato_modificato = verifica_acquisto_spesa(
+                            acquisto_disp,
+                            usi=len(usi_disp_mese),
+                            qta_per_unita=qta_disp
+                        )
+                        if stato_modificato:
+                            threading.Thread(target=salva_mappa_presi_spesa_db, daemon=True).start()
                 ha_usi_d = len(usi_disp) > 0
                 lista_voci_ui.controls.append(
                     ft.Container(
