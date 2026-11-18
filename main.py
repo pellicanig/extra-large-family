@@ -91,6 +91,10 @@ def main(page: ft.Page):
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
+            if hasattr(page, "aggiorna_calendario_impegni") and callable(page.aggiorna_calendario_impegni):
+                page.aggiorna_calendario_impegni()
+            if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
+                page.aggiorna_vista_budget()
         elif messaggio == "aggiorna_budget":
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
@@ -145,6 +149,7 @@ def main(page: ft.Page):
             stato_condiviso=stato_impegni,
             on_switch_budget=passa_a_budget_da_giorno
         )
+        page.aggiorna_calendario_impegni = cal_impegni_ctrl.ricarica_e_aggiorna
         vista_impegni_box = ft.Container(content=cal_impegni_ctrl, visible=True, expand=True)
         vista_budget_box = ft.Container(content=None, visible=False, expand=True)
         vista_menu_box = ft.Container(content=None, visible=False, expand=True)
