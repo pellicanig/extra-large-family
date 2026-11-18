@@ -2351,6 +2351,15 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         run_spacing=6,
     )
 
+    sezione_filtri = ft.Column([
+        ft.Text("Filtra per Stato:", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        row_filtri_stato,
+        ft.Text("Filtra per Categoria Budget (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        row_filtri_cat,
+        ft.Text("Filtra per Componente Famiglia (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        row_filtri_fam,
+    ], spacing=4)
+
     barra_rapida_mensile = ft.Row([
         ft.Container(
             content=ft.Text("⚡ + Spesa Sporadica Oggi", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11.5, no_wrap=True),
@@ -2378,21 +2387,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         content=ft.Column([
             header,
             box_cruscotto_mese,
-            barra_rapida_mensile,  # <-- AGGIUNTA QUI
-            area_dinamica,
-            ft.Divider(height=12, color="#EEEEEE"),
-            sezione_filtri,
-        ], spacing=6, scroll=ft.ScrollMode.AUTO),
-        padding=5,
-        expand=True,
-    )
-
-    aggiorna_tutto()
-
-    container_principale = ft.Container(
-        content=ft.Column([
-            header,
-            box_cruscotto_mese,
+            barra_rapida_mensile,
             area_dinamica,
             ft.Divider(height=12, color="#EEEEEE"),
             sezione_filtri,
