@@ -6,6 +6,7 @@ import urllib.request
 from datetime import datetime
 import modulo_famiglia
 import modulo_calendario
+import modulo_budget
 import modulo_menu
 import modulo_notifiche
 
@@ -85,12 +86,15 @@ def main(page: ft.Page):
         return
 
     # ⚡ SINCRONIZZAZIONE SELETTIVA PER AZZERARE LA LATENZA ⚡
-    # ⚡ SINCRONIZZAZIONE SELETTIVA PER AZZERARE LA LATENZA ⚡
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
+        elif messaggio == "aggiorna_budget":
+            modulo_notifiche.forza_ricalcolo_impegni()
+            if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
+                page.aggiorna_vista_budget()
         elif messaggio == "aggiorna_menu":
             if hasattr(page, "aggiorna_vista_menu") and callable(page.aggiorna_vista_menu):
                 page.aggiorna_vista_menu()
@@ -122,28 +126,100 @@ def main(page: ft.Page):
         # Precarica in background l'anagrafica del menu mentre l'utente vede subito gli impegni
         threading.Thread(target=lambda: modulo_menu.assicura_cache_anagrafica(forza_ricarica=False), daemon=True).start()
 
-        vista_impegni_box = ft.Container(content=modulo_calendario.crea_calendario(page), visible=True, expand=True)
-        vista_menu_box = ft.Container(content=None, visible=False, expand=True)
+        stato_condiviso_cal = {"data": oggi, "vista": "Settimana"}
+        budget_inizializzato = [False]
         menu_inizializzato = [False]
 
-        def cambia_modalita_home(ev):
-            is_menu = switch_modalita.value
-            if is_menu and not menu_inizializzato[0]:
+        def passa_a_budget_da_giorno(dt_target):
+            stato_condiviso_cal["data"] = dt_target
+            stato_condiviso_cal["vista"] = "Giorno"
+            imposta_sezione_home("BUDGET", forza_vista_giorno=dt_target)
+
+        def passa_a_impegni_da_giorno(dt_target):
+            stato_condiviso_cal["data"] = dt_target
+            stato_condiviso_cal["vista"] = "Giorno"
+            imposta_sezione_home("IMPEGNI", forza_vista_giorno=dt_target)
+
+        cal_impegni_ctrl = modulo_calendario.crea_calendario(
+            page,
+            stato_condiviso=stato_condiviso_cal,
+            on_switch_budget=passa_a_budget_da_giorno
+        )
+        vista_impegni_box = ft.Container(content=cal_impegni_ctrl, visible=True, expand=True)
+        vista_budget_box = ft.Container(content=None, visible=False, expand=True)
+        vista_menu_box = ft.Container(content=None, visible=False, expand=True)
+
+        btn_tab_impegni = ft.Container(
+            content=ft.Text("📅 IMPEGNI", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+            bgcolor=ft.Colors.BLUE_900,
+            padding=ft.Padding(12, 6, 12, 6),
+            border_radius=15,
+            on_click=lambda _: imposta_sezione_home("IMPEGNI")
+        )
+        btn_tab_budget = ft.Container(
+            content=ft.Text("💰 SPESE & BUDGET", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(12, 6, 12, 6),
+            border_radius=15,
+            on_click=lambda _: imposta_sezione_home("BUDGET")
+        )
+        btn_tab_menu = ft.Container(
+            content=ft.Text("🍽️ MENU", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            bgcolor=ft.Colors.WHITE,
+            padding=ft.Padding(12, 6, 12, 6),
+            border_radius=15,
+            on_click=lambda _: imposta_sezione_home("MENU")
+        )
+
+        def imposta_sezione_home(sezione: str, forza_vista_giorno=None):
+            if sezione == "BUDGET" and not budget_inizializzato[0]:
+                vista_budget_box.content = modulo_budget.crea_calendario_budget(
+                    page,
+                    stato_condiviso=stato_condiviso_cal,
+                    on_switch_impegni=passa_a_impegni_da_giorno
+                )
+                budget_inizializzato[0] = True
+            elif sezione == "MENU" and not menu_inizializzato[0]:
                 vista_menu_box.content = modulo_menu.crea_calendario_menu(page)
                 menu_inizializzato[0] = True
-            vista_impegni_box.visible = not is_menu
-            vista_menu_box.visible = is_menu
-            lbl_impegni.weight = ft.FontWeight.NORMAL if is_menu else ft.FontWeight.BOLD
-            lbl_menu.weight = ft.FontWeight.BOLD if is_menu else ft.FontWeight.NORMAL
+
+            if sezione == "IMPEGNI" and vista_impegni_box.content:
+                if forza_vista_giorno is not None and hasattr(vista_impegni_box.content, "imposta_data_e_vista"):
+                    vista_impegni_box.content.imposta_data_e_vista(forza_vista_giorno, "Giorno")
+                elif hasattr(vista_impegni_box.content, "imposta_data_e_vista"):
+                    vista_impegni_box.content.imposta_data_e_vista(
+                        stato_condiviso_cal.get("data", oggi),
+                        stato_condiviso_cal.get("vista", "Settimana")
+                    )
+            elif sezione == "BUDGET" and vista_budget_box.content:
+                if forza_vista_giorno is not None and hasattr(vista_budget_box.content, "imposta_data_e_vista"):
+                    vista_budget_box.content.imposta_data_e_vista(forza_vista_giorno, "Giorno")
+                elif hasattr(vista_budget_box.content, "imposta_data_e_vista"):
+                    vista_budget_box.content.imposta_data_e_vista(
+                        stato_condiviso_cal.get("data", oggi),
+                        stato_condiviso_cal.get("vista", "Giorno")
+                    )
+
+            vista_impegni_box.visible = (sezione == "IMPEGNI")
+            vista_budget_box.visible = (sezione == "BUDGET")
+            vista_menu_box.visible = (sezione == "MENU")
+
+            for btn_t, nome_t in [(btn_tab_impegni, "IMPEGNI"), (btn_tab_budget, "BUDGET"), (btn_tab_menu, "MENU")]:
+                att = (sezione == nome_t)
+                btn_t.bgcolor = ft.Colors.BLUE_900 if att else ft.Colors.WHITE
+                btn_t.content.color = ft.Colors.WHITE if att else ft.Colors.BLUE_900
+
             page.update()
 
-        lbl_impegni = ft.Text("📅 IMPEGNI", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
-        switch_modalita = ft.Switch(value=False, on_change=cambia_modalita_home)
-        lbl_menu = ft.Text("🍽️ MENU", size=13, weight=ft.FontWeight.NORMAL, color=ft.Colors.BLUE_900)
-
         barra_switch = ft.Container(
-            content=ft.Row([lbl_impegni, switch_modalita, lbl_menu], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-            bgcolor="#EEF2F6", padding=4
+            content=ft.Row(
+                [btn_tab_impegni, btn_tab_budget, btn_tab_menu],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=8,
+                wrap=True
+            ),
+            bgcolor="#EEF2F6",
+            padding=6
         )
 
         txt_menu_notifiche = ft.Text(
@@ -222,7 +298,7 @@ def main(page: ft.Page):
                     ft.Text(f"Stato attuale: {stato_str}", weight=ft.FontWeight.BOLD, size=13, color=colore_stato),
                     box_diag,
                     ft.Text(
-                        "Ogni telefono gestisce le proprie notifiche in modo indipendente (15 min prima di inizio e fine impegno). Tocca il pulsante blu per attivare i permessi o sbloccare la Batteria.",
+                        "Ogni telefono gestisce le proprie notifiche in modo indipendente (impegni e scadenze spese previste). Tocca il pulsante blu per attivare i permessi o sbloccare la Batteria.",
                         size=11.5, color="#455A64"
                     )
                 ], tight=True, spacing=8),
@@ -270,6 +346,7 @@ def main(page: ft.Page):
                     ),
                     barra_switch,
                     vista_impegni_box,
+                    vista_budget_box,
                     vista_menu_box
                 ],
                 padding=0
