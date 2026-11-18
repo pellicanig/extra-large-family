@@ -601,7 +601,7 @@ def _aggiorna_coda_impegni_da_db():
             res_b = (
                 sb.table("movimenti_budget")
                 .select("*, movimenti_budget_familiari(id_familiare)")
-                .eq("stato", "PREVISTA")
+                .in_("stato", ["PREVISTO", "PREVISTA"])
                 .execute()
             )
             tutti_budget = res_b.data or []
