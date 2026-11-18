@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import calendar
 import threading
 import traceback
 import urllib.parse
@@ -32,6 +33,15 @@ except ImportError:
     WebPushException = Exception
 
 
+STEP_MESI_PERIODICITA = {
+    "MENSILE": 1,
+    "BIMESTRALE": 2,
+    "TRIMESTRALE": 3,
+    "SEMESTRALE": 6,
+    "ANNUALE": 12,
+}
+
+
 def _calcola_minuti(orario_str) -> int:
     if not orario_str:
         return -1
@@ -50,6 +60,37 @@ def _formatta_minuti_hhmm(min_tot: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def _formatta_euro_push(valore) -> str:
+    try:
+        num = float(valore or 0)
+    except Exception:
+        num = 0.0
+    s = f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"€ {s}"
+
+
+def _data_cade_in_periodicita_budget(curr_d, d_start, tipo_per: str, giorni_str: str) -> bool:
+    if curr_d < d_start:
+        return False
+    tipo_u = (tipo_per or "MENSILE").strip().upper()
+    if tipo_u == "SETTIMANALE":
+        giorni_rep = [int(g) for g in (giorni_str or "").split(",") if g.strip().isdigit()]
+        if not giorni_rep:
+            giorni_rep = [d_start.weekday()]
+        return curr_d.weekday() in giorni_rep
+
+    step_mesi = STEP_MESI_PERIODICITA.get(tipo_u, 1)
+    diff_mesi = (curr_d.year - d_start.year) * 12 + (curr_d.month - d_start.month)
+    if diff_mesi < 0 or (diff_mesi % step_mesi) != 0:
+        return False
+
+    giorno_target = d_start.day
+    if giorni_str and giorni_str.strip().isdigit():
+        giorno_target = int(giorni_str.strip())
+    ultimo_del_mese = calendar.monthrange(curr_d.year, curr_d.month)[1]
+    return curr_d.day == min(giorno_target, ultimo_del_mese)
+
+
 def _is_dispositivo_confermato_ack(ack_set: set, ep: str, ep_h: str, did: str) -> bool:
     if not ack_set:
         return False
@@ -61,7 +102,7 @@ def _is_dispositivo_confermato_ack(ack_set: set, ep: str, ep_h: str, did: str) -
 
 
 def _invia_push_singolo(sub_info: dict, payload_dict: dict) -> tuple[int, str]:
-    """Invio singolo con doppio tentativo immediato (0.4s) per annullare micro-errori di rete."""
+    """Invio singolo con doppio tentativo immediato (0.5s) per annullare micro-errori di rete."""
     if not webpush:
         return 500, "Libreria pywebpush non installata"
     if not _STATO["vapid_private"]:
@@ -228,7 +269,7 @@ def _invia_push_a_tutti_sync(payload_dict: dict, chiave_notifica: str = "", forz
 def _salva_ack_su_db_async():
     """
     Aggiorna sulla riga di ciascun telefono in push_subscriptions:
-    - eventi_in_essere: lista di tutti gli impegni in essere (di oggi e futuri)
+    - eventi_in_essere: lista di tutti gli impegni e scadenze budget in essere
     - stato_consegna: mappa {chiave_notifica: "CONSEGNATA (...)" | "IN_CODA (...)" | "PROGRAMMATA (...)"}
     - ultimo_accesso_ts: timestamp reale dell'ultimo accesso/ACK
     """
@@ -395,30 +436,22 @@ def _esegui_keepalive_render():
     threading.Thread(target=_ping, daemon=True).start()
 
 
-def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetime, p_val: int, p_unita: str, p_ripeti: bool) -> list[dict]:
+def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetime, p_val: int, p_unita: str, p_ripeti: bool, is_budget: bool = False) -> list[dict]:
     """
-    Costruisce l'elenco ordinato delle tappe di notifica prima dell'inizio dell'impegno:
-    - Se p_ripeti è False: 1 sola notifica all'anticipo impostato.
-    - Se p_ripeti è True:
-      * 'minuti': notifica a -p_val minuti (e a -15 min se p_val > 15).
-      * 'ore': notifica ogni ora da -p_val ore fino a -1 ora + notifica finale a -15 min.
-      * 'giorni' / 'settimane': 1 notifica al giorno da -N giorni fino a -1 giorno + il giorno dell'evento
-        da -3 ore ogni ora (-3h, -2h, -1h) fino a -15 min.
-    Ogni tappa ha 'scade_ts' pari all'inizio della tappa successiva, e l'ultima tappa ha 'scade_ts'
-    pari alla FINE dell'impegno (dt_fine_ev), così i tentativi proseguono fino a fine evento!
+    Costruisce l'elenco ordinato delle tappe di notifica prima dell'inizio dell'impegno o della scadenza budget.
     """
-    tz = dt_inizio_ev.tzinfo
-    p_val = max(1, int(p_val or 15))
+    p_val = max(0 if is_budget else 1, int(p_val if p_val is not None else 15))
     p_unita = (p_unita or "minuti").strip().lower()
     tappe_raw = []
 
     def _normalizza_orario_diurno(dt_t: datetime) -> datetime:
-        # Se una notifica giornaliera dei giorni precedenti cade tra le 00:00 e le 07:59, la sposta alle 08:00
         if 0 <= dt_t.hour < 8 and dt_t.date() < dt_inizio_ev.date():
             return dt_t.replace(hour=8, minute=0, second=0, microsecond=0)
         return dt_t
 
-    if not p_ripeti:
+    if p_val == 0:
+        tappe_raw.append({"codice": "oggi", "dt_trigger": dt_inizio_ev, "label": "Oggi in scadenza"})
+    elif not p_ripeti:
         if p_unita == "minuti":
             dt_tr = dt_inizio_ev - timedelta(minutes=p_val)
             lbl = f"Tra {p_val} min"
@@ -436,6 +469,8 @@ def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetim
             lbl = f"Tra {p_val} {'settimana' if p_val == 1 else 'settimane'}"
             cod = f"w{p_val}"
         tappe_raw.append({"codice": cod, "dt_trigger": dt_tr, "label": lbl})
+        if is_budget and p_unita in ("giorni", "settimane"):
+            tappe_raw.append({"codice": "oggi", "dt_trigger": dt_inizio_ev, "label": "Oggi in scadenza"})
     else:
         if p_unita == "minuti":
             tappe_raw.append({
@@ -470,18 +505,25 @@ def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetim
                     "dt_trigger": dt_tr_d,
                     "label": f"Mancano {d} {'giorno' if d == 1 else 'giorni'} ({dt_inizio_ev.strftime('%d/%m')})"
                 })
-            for h in (3, 2, 1):
-                dt_tr_h = dt_inizio_ev - timedelta(hours=h)
+            if is_budget:
                 tappe_raw.append({
-                    "codice": f"h{h}",
-                    "dt_trigger": dt_tr_h,
-                    "label": f"Tra {h} {'ora' if h == 1 else 'ore'}"
+                    "codice": "oggi",
+                    "dt_trigger": dt_inizio_ev,
+                    "label": "Oggi in scadenza"
                 })
-            tappe_raw.append({
-                "codice": "m15",
-                "dt_trigger": dt_inizio_ev - timedelta(minutes=15),
-                "label": "Tra 15 min"
-            })
+            else:
+                for h in (3, 2, 1):
+                    dt_tr_h = dt_inizio_ev - timedelta(hours=h)
+                    tappe_raw.append({
+                        "codice": f"h{h}",
+                        "dt_trigger": dt_tr_h,
+                        "label": f"Tra {h} {'ora' if h == 1 else 'ore'}"
+                    })
+                tappe_raw.append({
+                    "codice": "m15",
+                    "dt_trigger": dt_inizio_ev - timedelta(minutes=15),
+                    "label": "Tra 15 min"
+                })
 
     tappe_raw.sort(key=lambda x: x["dt_trigger"])
     tappe_finali = []
@@ -495,10 +537,8 @@ def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetim
     fine_ev_ts = dt_fine_ev.timestamp()
     for idx, t in enumerate(tappe_finali):
         if idx + 1 < len(tappe_finali):
-            # Ogni tappa intermedia resta valida fino all'attivazione della tappa successiva
             t["scade_ts"] = min(fine_ev_ts, tappe_finali[idx + 1]["dt_trigger"].timestamp())
         else:
-            # L'ultima tappa d'inizio continua a ritentare fino alla FINE dell'evento
             t["scade_ts"] = fine_ev_ts
 
     return tappe_finali
@@ -506,11 +546,10 @@ def _calcola_tappe_promemoria_inizio(dt_inizio_ev: datetime, dt_fine_ev: datetim
 
 def _aggiorna_coda_impegni_da_db():
     """
-    Legge tutti gli impegni da Supabase, calcola le tappe di preavviso/ripetizione e:
-    1) Popola push_subscriptions (eventi_in_essere e stato_consegna) con tutti gli impegni di oggi
-       + tutti gli impegni futuri la cui finestra di preavviso è già iniziata o attiva.
+    Legge tutti gli impegni e i movimenti budget previsti da Supabase, calcola le tappe di preavviso/ripetizione e:
+    1) Popola push_subscriptions (eventi_in_essere e stato_consegna) con tutti gli impegni e scadenze in essere.
     2) Accoda in _STATO['coda_impegni_push'] le tappe di notifica scattate e non ancora scadute.
-    3) Interrompe e pulisce automaticamente gli impegni passati o cancellati.
+    3) Interrompe e pulisce automaticamente gli impegni passati, cancellati o le spese trasformate in Effettive.
     """
     sb = _STATO["supabase"]
     if not sb:
@@ -538,6 +577,11 @@ def _aggiorna_coda_impegni_da_db():
                 _STATO["cache_famiglia"] = {str(x["id"]): x["nome"] for x in (rf.data or [])}
                 rc = sb.table("categorie").select("id, nome").execute()
                 _STATO["cache_categorie"] = {str(x["id"]): x["nome"] for x in (rc.data or [])}
+                try:
+                    rcb = sb.table("categorie_budget").select("id, nome").execute()
+                    _STATO["cache_categorie_budget"] = {str(x["id"]): x["nome"] for x in (rcb.data or [])}
+                except Exception:
+                    _STATO.setdefault("cache_categorie_budget", {})
                 _STATO["ultimo_sync_anagrafica"] = ora_ts
             except Exception as ex:
                 _rinnova_client_se_chiuso(ex)
@@ -551,6 +595,18 @@ def _aggiorna_coda_impegni_da_db():
             _rinnova_client_se_chiuso(ex)
             log_push(f"❌ Errore lettura tabella impegni: {ex}")
             return
+
+        tutti_budget = []
+        try:
+            res_b = (
+                sb.table("movimenti_budget")
+                .select("*, movimenti_budget_familiari(id_familiare)")
+                .eq("stato", "PREVISTA")
+                .execute()
+            )
+            tutti_budget = res_b.data or []
+        except Exception:
+            tutti_budget = []
 
     istanze_attive = []
 
@@ -591,7 +647,6 @@ def _aggiorna_coda_impegni_da_db():
                     d_ev_date = datetime.strptime(d_s, "%Y-%m-%d").date()
                 except Exception:
                     continue
-                # Include l'impegno singolo se è oggi o se la sua finestra di preavviso è già attiva
                 if d_ev_date <= orizzonte_imp:
                     copia = dict(imp)
                     copia["data_evento_istanza"] = d_s
@@ -638,7 +693,6 @@ def _aggiorna_coda_impegni_da_db():
         if is_oggi and fine_effettiva > minuti_ora:
             residui_oggi += 1
 
-        # Se l'impegno di oggi è già terminato, non teniamolo né in coda né tra gli eventi in essere
         if is_oggi and fine_effettiva <= minuti_ora:
             continue
 
@@ -665,13 +719,12 @@ def _aggiorna_coda_impegni_da_db():
         dt_inizio_ev = dt_base_ev + timedelta(minutes=min_i)
         dt_fine_ev = dt_base_ev + timedelta(minutes=fine_effettiva)
 
-        # --- 1. PROMEMORIA PRIMA DELL'INIZIO (CON ANTICIPO E RIPETIZIONI) ---
         p_val = max(1, int(ev.get("preavviso_valore") or 15))
         p_unita = str(ev.get("preavviso_unita") or "minuti").strip().lower()
         val_rip = ev.get("preavviso_ripeti")
         p_ripeti = True if val_rip is None else (str(val_rip).lower() in ["true", "1", "t", "y", "yes"])
 
-        tappe_inizio = _calcola_tappe_promemoria_inizio(dt_inizio_ev, dt_fine_ev, p_val, p_unita, p_ripeti)
+        tappe_inizio = _calcola_tappe_promemoria_inizio(dt_inizio_ev, dt_fine_ev, p_val, p_unita, p_ripeti, is_budget=False)
 
         for tappa in tappe_inizio:
             cod_t = tappa["codice"]
@@ -683,7 +736,6 @@ def _aggiorna_coda_impegni_da_db():
             chiave_start = f"start_{d_ev}_{id_ev}_{ora_i_vis}_{cod_t}"
             gi_ack_o_inv = (chiave_start in _STATO["inviate_per_ep"]) or (chiave_start in _STATO["ack_per_ep"])
 
-            # Mostra su Supabase le tappe di oggi + la tappa attiva o in arrivo entro le prossime 24h
             if (dt_trig.date() == oggi_date or is_oggi or (trig_ts <= ora_ts <= scade_t_ts) or (0 < trig_ts - ora_ts <= 86400)) and (ora_ts <= scade_t_ts or gi_ack_o_inv):
                 ora_tr_str = dt_trig.strftime("%d/%m ore %H:%M")
                 nuova_mappa_programmati[chiave_start] = {
@@ -691,7 +743,6 @@ def _aggiorna_coda_impegni_da_db():
                     "stato_programmata": f"PROGRAMMATA (invio {ora_tr_str} - {titolo} [{chi_testo}])"
                 }
 
-            # Se siamo nella finestra attiva della tappa [trig_ts, scade_t_ts] e l'evento non è terminato
             if trig_ts <= ora_ts < scade_t_ts and ora_ts < dt_fine_ev.timestamp():
                 with _LOCK:
                     gia_in_coda = chiave_start in _STATO["coda_impegni_push"]
@@ -702,7 +753,6 @@ def _aggiorna_coda_impegni_da_db():
                         for v in subs_attive
                     )
                     if not gia_in_coda and not tutti_gia_ack:
-                        # Se scatta una nuova tappa dello stesso impegno, rimuove eventuali tappe precedenti scadute dalla coda
                         for k_old in [k for k in list(_STATO["coda_impegni_push"].keys()) if k.startswith(f"start_{d_ev}_{id_ev}_") and k != chiave_start]:
                             _STATO["coda_impegni_push"].pop(k_old, None)
 
@@ -721,9 +771,8 @@ def _aggiorna_coda_impegni_da_db():
                         }
                         _STATO["impegni_notificati_oggi"].setdefault(id_ev, set()).add(chiave_start)
                         nuove_accodate += 1
-                        log_push(f"🔔 Accodata notifica INIZIO [{cod_t}] ({lbl_t}): '{titolo}' ({dt_vis} {ora_i_vis}) -> attiva fino a {datetime.fromtimestamp(scade_t_ts, adesso.tzinfo).strftime('%H:%M')}")
+                        log_push(f"🔔 Accodata notifica INIZIO [{cod_t}] ({lbl_t}): '{titolo}' ({dt_vis} {ora_i_vis})")
 
-        # --- 2. NOTIFICA FISSA 15 MINUTI PRIMA DELLA FINE (SOLO IL GIORNO DELL'EVENTO) ---
         if is_oggi and min_f > min_i:
             chiave_end = f"end15_{d_ev}_{id_ev}_{ora_f_vis}"
             dt_trig_end = dt_fine_ev - timedelta(minutes=15)
@@ -766,6 +815,150 @@ def _aggiorna_coda_impegni_da_db():
                         nuove_accodate += 1
                         log_push(f"🏁 Accodata notifica FINE ({label_fine}): '{titolo}' ({ora_f_vis}) [{chiave_end}]")
 
+    # =========================================================================
+    # GESTIONE NOTIFICHE SCADENZE BUDGET (SPESE ED ENTRATE PREVISTE)
+    # =========================================================================
+    istanze_budget_attive = []
+    for mov in tutti_budget:
+        val_not = mov.get("notifica_attiva")
+        not_attiva = True if val_not is None else (str(val_not).lower() in ["true", "1", "t", "y", "yes"])
+        if not not_attiva:
+            continue
+
+        p_val_b = max(0, int(mov.get("preavviso_valore") if mov.get("preavviso_valore") is not None else 1))
+        p_uni_b = str(mov.get("preavviso_unita") or "giorni").strip().lower()
+        giorni_preavviso_b = (
+            p_val_b if p_uni_b == "giorni"
+            else (p_val_b * 7 if p_uni_b == "settimane" else max(1, (p_val_b // 24) + 1 if p_uni_b == "ore" else 0))
+        )
+        orizzonte_b = oggi_date + timedelta(days=max(1, giorni_preavviso_b))
+
+        val_p_b = mov.get("is_periodico")
+        is_p_b = str(val_p_b).lower() in ["true", "1", "t", "y", "yes"]
+        if is_p_b:
+            try:
+                d_start_b = datetime.strptime(mov["data_movimento"], "%Y-%m-%d").date()
+                d_stop_b = datetime.strptime(mov["data_fine_periodo"], "%Y-%m-%d").date() if mov.get("data_fine_periodo") else None
+            except Exception:
+                continue
+            escluse_b = {x.strip() for x in (mov.get("date_escluse") or "").split(",") if x.strip()}
+            tipo_per_b = mov.get("tipo_periodicita") or "MENSILE"
+            giorni_per_b = mov.get("giorni_periodici") or ""
+
+            curr_d = max(oggi_date, d_start_b)
+            fine_d = min(orizzonte_b, d_stop_b) if d_stop_b else orizzonte_b
+            while curr_d <= fine_d:
+                d_s = curr_d.strftime("%Y-%m-%d")
+                if d_s not in escluse_b and _data_cade_in_periodicita_budget(curr_d, d_start_b, tipo_per_b, giorni_per_b):
+                    copia_b = dict(mov)
+                    copia_b["data_movimento_istanza"] = d_s
+                    istanze_budget_attive.append(copia_b)
+                curr_d += timedelta(days=1)
+        else:
+            d_s = str(mov.get("data_movimento") or "").strip()
+            if d_s >= oggi_str:
+                try:
+                    d_mov_date = datetime.strptime(d_s, "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if d_mov_date <= orizzonte_b:
+                    copia_b = dict(mov)
+                    copia_b["data_movimento_istanza"] = d_s
+                    istanze_budget_attive.append(copia_b)
+
+    for mov in istanze_budget_attive:
+        id_mov_raw = str(mov.get("id"))
+        d_mov = mov.get("data_movimento_istanza") or oggi_str
+        id_istanza_b = f"b_{id_mov_raw}_{d_mov}"
+        ids_istanze_valide.add(id_istanza_b)
+
+        is_oggi_b = (d_mov == oggi_str)
+        if is_oggi_b:
+            residui_oggi += 1
+
+        try:
+            dt_vis_b = datetime.strptime(d_mov, "%Y-%m-%d").strftime("%d/%m")
+        except Exception:
+            dt_vis_b = d_mov
+
+        tipo_mov = str(mov.get("tipo") or "SPESA").upper()
+        titolo_b = (mov.get("titolo") or "Movimento").strip()
+        fornitore_b = (mov.get("fornitore_luogo") or "").strip()
+        note_b = (mov.get("note") or "").strip()
+        imp_str = _formatta_euro_push(mov.get("importo"))
+
+        ora_n_str = str(mov.get("ora_notifica") or "09:00").strip()[:5]
+        min_n = _calcola_minuti(ora_n_str)
+        if min_n < 0:
+            min_n = 540
+            ora_n_str = "09:00"
+
+        ids_fam_b = [str(f["id_familiare"]) for f in (mov.get("movimenti_budget_familiari") or []) if f.get("id_familiare")]
+        nomi_lista_b = [_STATO["cache_famiglia"].get(fid, "") for fid in ids_fam_b if _STATO["cache_famiglia"].get(fid)]
+        chi_testo_b = ", ".join(nomi_lista_b) if nomi_lista_b else "Tutta la famiglia"
+        nome_cat_b = (_STATO.get("cache_categorie_budget") or {}).get(str(mov.get("id_categoria")), "BUDGET")
+
+        dt_base_b = datetime.strptime(d_mov, "%Y-%m-%d").replace(tzinfo=adesso.tzinfo)
+        dt_inizio_b = dt_base_b + timedelta(minutes=min_n)
+        dt_fine_b = dt_base_b + timedelta(minutes=1439)
+
+        p_val_b = max(0, int(mov.get("preavviso_valore") if mov.get("preavviso_valore") is not None else 1))
+        p_unita_b = str(mov.get("preavviso_unita") or "giorni").strip().lower()
+        val_rip_b = mov.get("preavviso_ripeti")
+        p_ripeti_b = True if val_rip_b is None else (str(val_rip_b).lower() in ["true", "1", "t", "y", "yes"])
+
+        tappe_b = _calcola_tappe_promemoria_inizio(dt_inizio_b, dt_fine_b, p_val_b, p_unita_b, p_ripeti_b, is_budget=True)
+        icona_b = "💸 Spesa Prevista" if tipo_mov == "SPESA" else "💰 Entrata Prevista"
+        str_forn = f" • 🏪 {fornitore_b}" if fornitore_b else ""
+        riga_note_b = f"\n📝 {note_b}" if note_b else ""
+
+        for tappa in tappe_b:
+            cod_t = tappa["codice"]
+            dt_trig = tappa["dt_trigger"]
+            trig_ts = dt_trig.timestamp()
+            scade_t_ts = tappa["scade_ts"]
+            lbl_t = tappa["label"]
+
+            chiave_b = f"budget_{d_mov}_{id_mov_raw}_{cod_t}"
+            gi_ack_o_inv = (chiave_b in _STATO["inviate_per_ep"]) or (chiave_b in _STATO["ack_per_ep"])
+
+            if (dt_trig.date() == oggi_date or is_oggi_b or (trig_ts <= ora_ts <= scade_t_ts) or (0 < trig_ts - ora_ts <= 86400)) and (ora_ts <= scade_t_ts or gi_ack_o_inv):
+                ora_tr_str = dt_trig.strftime("%d/%m ore %H:%M")
+                nuova_mappa_programmati[chiave_b] = {
+                    "titolo": f"{titolo_b} {imp_str} ({dt_vis_b}) [{cod_t}]",
+                    "stato_programmata": f"PROGRAMMATA (invio {ora_tr_str} - {titolo_b} {imp_str} [{chi_testo_b}])"
+                }
+
+            if trig_ts <= ora_ts < scade_t_ts and ora_ts < dt_fine_b.timestamp():
+                with _LOCK:
+                    gia_in_coda = chiave_b in _STATO["coda_impegni_push"]
+                    ack_set = _STATO["ack_per_ep"].get(chiave_b, set())
+                    subs_attive = [v for v in _STATO["subscriptions"].values() if not v.get("muted")]
+                    tutti_gia_ack = bool(subs_attive) and all(
+                        _is_dispositivo_confermato_ack(ack_set, v["endpoint"], v["ep_hash"], v["device_id"])
+                        for v in subs_attive
+                    )
+                    if not gia_in_coda and not tutti_gia_ack:
+                        for k_old in [k for k in list(_STATO["coda_impegni_push"].keys()) if k.startswith(f"budget_{d_mov}_{id_mov_raw}_") and k != chiave_b]:
+                            _STATO["coda_impegni_push"].pop(k_old, None)
+
+                        _STATO["coda_impegni_push"][chiave_b] = {
+                            "id_ev": id_istanza_b,
+                            "creato_ts": ora_ts,
+                            "scade_ts": scade_t_ts,
+                            "tentativi": 0,
+                            "ultimo_invio_ts": 0.0,
+                            "payload": {
+                                "title": f"{icona_b} ({lbl_t}) • {imp_str}",
+                                "body": f"🏷️ [{nome_cat_b}] {titolo_b}{str_forn}\n📅 Scadenza: {dt_vis_b} • 👤 {chi_testo_b}{riga_note_b}",
+                                "tag": f"elf_budget_{id_mov_raw}_{d_mov}_{cod_t}",
+                                "notif_key": chiave_b,
+                            }
+                        }
+                        _STATO["impegni_notificati_oggi"].setdefault(id_istanza_b, set()).add(chiave_b)
+                        nuove_accodate += 1
+                        log_push(f"💰 Accodata notifica BUDGET [{cod_t}] ({lbl_t}): '{titolo_b}' {imp_str} ({dt_vis_b})")
+
     _STATO["residui_attuali"] = residui_oggi
 
     mappa_cambiata = False
@@ -776,9 +969,9 @@ def _aggiorna_coda_impegni_da_db():
             mappa_cambiata = True
 
     if mappa_cambiata:
-        log_push(f"📋 Piano impegni sincronizzato: {len(nuova_mappa_programmati)} notifiche in essere pronte in push_subscriptions.")
+        log_push(f"📋 Piano impegni e budget sincronizzato: {len(nuova_mappa_programmati)} notifiche in essere pronte in push_subscriptions.")
 
-    # 3. Se un impegno già notificato è stato eliminato o è terminato, rimuovilo dalla coda
+    # 3. Se un impegno o una scadenza budget è stata eliminata o trasformata in Effettiva, rimuovila dalla coda
     with _LOCK:
         ids_notificati = set(_STATO["impegni_notificati_oggi"].keys())
     eliminati = ids_notificati - ids_istanze_valide
@@ -795,7 +988,7 @@ def _aggiorna_coda_impegni_da_db():
                     _STATO["ack_per_ep"].pop(kd, None)
                 tags_da_chiudere.append(f"elf_start_{id_del}_{oggi_str}")
                 tags_da_chiudere.append(f"elf_end_{id_del}_{oggi_str}")
-        log_push(f"🗑️ Impegno terminato o eliminato ({eliminati}): pulizia coda e chiusura notifiche ({tags_da_chiudere}).")
+        log_push(f"🗑️ Voce terminata, eliminata o resa effettiva ({eliminati}): pulizia coda e chiusura notifiche ({tags_da_chiudere}).")
         _invia_push_a_tutti_sync({"close_tags": list(set(tags_da_chiudere))})
         mappa_cambiata = True
 
@@ -806,7 +999,6 @@ def _aggiorna_coda_impegni_da_db():
 def _processa_coda_impegni():
     _esegui_keepalive_render()
 
-    # Sincronizza i dispositivi da Supabase ogni 20 secondi
     if time.time() - _STATO["ultimo_sync_db_ts"] > 20.0:
         _ricarica_subscriptions_da_db_sync(log_sempre=False, max_age_seconds=20.0)
 
@@ -815,7 +1007,6 @@ def _processa_coda_impegni():
     adesso_it = _ora_italia()
     ora_ts = adesso_it.timestamp()
 
-    # Rimuove subito eventuali notifiche il cui evento/finestra è ormai passato
     scadute_ora = []
     with _LOCK:
         for k_j, v_j in list(_STATO["coda_impegni_push"].items()):
@@ -854,7 +1045,6 @@ def _processa_coda_impegni():
             threading.Thread(target=_salva_ack_su_db_async, daemon=True).start()
             continue
 
-        # Spunto rapido: 12s per i primi 2 retry, poi ogni 45s fino alla fine dell'evento
         intervallo_attesa = 12 if tentativi <= 2 else INTERVALLO_RETRY_SECONDI
         if not primo_tentativo and (ora_ts - ultimo_invio < intervallo_attesa):
             continue
@@ -880,7 +1070,7 @@ def _processa_coda_impegni():
 
 
 def _loop_scheduler():
-    log_push("🚀 Avvio thread scheduler notifiche impegni ELF...")
+    log_push("🚀 Avvio thread scheduler notifiche impegni e budget ELF...")
     try:
         _carica_o_inizializza_config_db()
     except Exception as ex:
@@ -900,8 +1090,8 @@ def _loop_scheduler():
 
 
 def forza_ricalcolo_impegni():
-    """Sveglia immediatamente lo scheduler quando un impegno viene creato, modificato o cancellato."""
-    log_push("⚡ Richiesto ricalcolo immediato impegni da interfaccia utente.")
+    """Sveglia immediatamente lo scheduler quando un impegno o un movimento budget viene creato, modificato o cancellato."""
+    log_push("⚡ Richiesto ricalcolo immediato impegni/budget da interfaccia utente.")
     _STATO["ultimo_sync_anagrafica"] = 0.0
     _STATO["evento_ricalcolo"].set()
 
@@ -920,7 +1110,7 @@ def invia_notifica_test_globale():
             "ultimo_invio_ts": 0.0,
             "payload": {
                 "title": f"🔔 Test Notifica ELF ({ora_str})",
-                "body": "✅ Ricezione notifiche impegni verificata correttamente!",
+                "body": "✅ Ricezione notifiche impegni e budget verificata correttamente!",
                 "tag": f"elf_test_{int(time.time())}",
                 "notif_key": chiave_test,
             }
