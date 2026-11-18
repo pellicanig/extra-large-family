@@ -20,14 +20,19 @@ except Exception as e:
 MESI = ["", "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"]
 GIORNI = ["LUN", "MAR", "MER", "GIO", "VEN", "SAB", "DOM"]
 
-def crea_calendario(page: ft.Page):
+def crea_calendario(page: ft.Page, stato_condiviso: dict = None, on_switch_budget=None):
     stato = {
-        "data": datetime.now(), 
-        "vista": "Settimana",
+        "data": (stato_condiviso.get("data") if stato_condiviso else None) or datetime.now(), 
+        "vista": (stato_condiviso.get("vista") if stato_condiviso else None) or "Settimana",
         "filtro_categoria": [],
         "filtro_familiare": []
     }
     oggi = datetime.now()
+
+    def sincronizza_stato_esterno():
+        if stato_condiviso is not None:
+            stato_condiviso["data"] = stato["data"]
+            stato_condiviso["vista"] = stato["vista"]
 
     lista_categorie = []
     lista_famiglia = []
@@ -69,10 +74,10 @@ def crea_calendario(page: ft.Page):
 
     def bordo_evidenziato_blu():
         return ft.Border(
-            top=ft.BorderSide(2.5, "#64B5F6"),    # Blu chiaro (Alto)
-            left=ft.BorderSide(2.5, "#2196F3"),   # Blu medio (Sinistra)
-            right=ft.BorderSide(2.5, "#1565C0"),  # Blu intenso (Destra)
-            bottom=ft.BorderSide(2.5, "#0D47A1")  # Blu scuro (Basso)
+            top=ft.BorderSide(2.5, "#64B5F6"),
+            left=ft.BorderSide(2.5, "#2196F3"),
+            right=ft.BorderSide(2.5, "#1565C0"),
+            bottom=ft.BorderSide(2.5, "#0D47A1")
         )
 
     def ha_eventi_evidenziati(lista_ev):
@@ -95,12 +100,14 @@ def crea_calendario(page: ft.Page):
 
     def cambia_vista(nuova_vista):
         stato["vista"] = nuova_vista
+        sincronizza_stato_esterno()
         aggiorna_tutto()
     
     def vai_a_giorno(e):
         valore = e.control.data
         if isinstance(valore, int): stato["data"] = stato["data"].replace(day=valore)
         else: stato["data"] = valore
+        sincronizza_stato_esterno()
         cambia_vista("Giorno")
 
     def nav_prec(e):
@@ -110,6 +117,7 @@ def crea_calendario(page: ft.Page):
             stato["data"] = stato["data"].replace(year=scorso.year, month=scorso.month, day=1)
         elif stato["vista"] == "Settimana": stato["data"] -= timedelta(days=7)
         elif stato["vista"] == "Giorno": stato["data"] -= timedelta(days=1)
+        sincronizza_stato_esterno()
         aggiorna_tutto()
 
     def nav_succ(e):
@@ -120,6 +128,7 @@ def crea_calendario(page: ft.Page):
             else: stato["data"] = stato["data"].replace(month=mese+1, day=1)
         elif stato["vista"] == "Settimana": stato["data"] += timedelta(days=7)
         elif stato["vista"] == "Giorno": stato["data"] += timedelta(days=1)
+        sincronizza_stato_esterno()
         aggiorna_tutto()
 
     def imposta_filtro_cat(id_cat):
@@ -154,7 +163,7 @@ def crea_calendario(page: ft.Page):
         for ev in lista_eventi:
             inizio = calcola_minuti(ev.get('ora_inizio'))
             fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
-            if fine <= inizio and ev.get('ora_fine'): fine += 1440 # Gestione orario oltre la mezzanotte
+            if fine <= inizio and ev.get('ora_fine'): fine += 1440
             
             inserito = False
             if gruppi:
@@ -283,19 +292,16 @@ def crea_calendario(page: ft.Page):
                             date_escluse_str = imp.get('date_escluse') or ""
                             lista_escluse = date_escluse_str.split(',') if date_escluse_str else []
                             
-                            # ⚡ LEGGE I GIORNI SELEZIONATI DAL DB ⚡
                             giorni_str = imp.get('giorni_periodici')
                             if giorni_str:
                                 giorni_da_ripetere = [int(g) for g in giorni_str.split(',') if g.strip().isdigit()]
                             else:
-                                # Retrocompatibilità: se vuoto, usa il giorno originario (L=0, D=6)
                                 giorni_da_ripetere = [data_start.weekday()]
 
                             corrente = inizio_finestra.date()
                             fine_f = fine_finestra.date()
                             
                             while corrente <= fine_f:
-                                # ⚡ MOSTRA L'EVENTO IN TUTTI I GIORNI DELLA SETTIMANA SELEZIONATI ⚡
                                 if corrente >= data_start and corrente.weekday() in giorni_da_ripetere:
                                     if data_stop is None or corrente <= data_stop:
                                         d_str = corrente.strftime("%Y-%m-%d")
@@ -321,10 +327,6 @@ def crea_calendario(page: ft.Page):
             except Exception as e:
                 print("Errore caricamento impegni:", e)
 
-       
-        # =======================================================
-        # COSTRUTTORE UNIVERSALE DELLE CARD (COMPATTO IN ALTEZZA)
-        # =======================================================
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
             ora_i = imp.get('ora_inizio')
@@ -340,7 +342,6 @@ def crea_calendario(page: ft.Page):
             is_p = True if str(val_p).lower() in ['true', '1', 't', 'y', 'yes'] else False
             icona_periodico = " 🔄" if is_p else ""
 
-            # STATO EVIDENZIATO (Default: Singoli = True, Periodici = False)
             val_ev = imp.get('is_evidenziato')
             if val_ev is None:
                 is_evidenziato = not is_p
@@ -356,7 +357,6 @@ def crea_calendario(page: ft.Page):
                 elif livello_sovrapposizione == 'media': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
                 elif livello_sovrapposizione == 'grave': icona_conflitto = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
 
-            # --- LOGICA COLORI (EVIDENZIATO vs SFONDO CHIARO) ---
             colori_assegnatari = []
             if len(assegnatari_ids) > 0:
                 for f_id in assegnatari_ids:
@@ -364,7 +364,6 @@ def crea_calendario(page: ft.Page):
                     if fam_match and fam_match.get('colore'):
                         colori_assegnatari.append(fam_match['colore'])
             else:
-                # Tutta la famiglia: raccoglie i colori di tutti i componenti
                 colori_assegnatari = [f['colore'] for f in lista_famiglia if f.get('colore')]
 
             sfondo_card = None
@@ -394,7 +393,6 @@ def crea_calendario(page: ft.Page):
                 colore_orario = ft.Colors.GREY_700
                 colore_note = ft.Colors.GREY_600
 
-            # RIGA ASSEGNATARI (Per Giorno, Settimana e Mese)
             riga_assegnatari = ft.Row(spacing=2, wrap=True)
             elementi_mese_assegnatari = []
 
@@ -417,13 +415,11 @@ def crea_calendario(page: ft.Page):
 
             border_card = ft.Border(left=ft.BorderSide(4 if vista in ["Mese", "Settimana"] else 5, cat_colore), top=ft.BorderSide(1, "#E0E0E0"), bottom=ft.BorderSide(1, "#E0E0E0"), right=ft.BorderSide(1, "#E0E0E0"))
 
-            # --- ALTEZZE, SPAZIATURE E TESTI COMPATTATI ---
             if vista == "Mese":
                 testo_base_mese = ft.Text(f"{ora_i[:5] if ora_i else ''} {titolo}", size=7, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=True)
                 content_col = ft.Row([testo_base_mese] + elementi_mese_assegnatari, spacing=3, alignment=ft.MainAxisAlignment.START)
                 altezza_card = 20 
                 spazio_vuoto = 0 
-                
             elif vista == "Settimana":
                 elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_cat_header, size=7), ft.Text(cat_nome + icona_periodico, size=8, weight=ft.FontWeight.BOLD, color=colore_cat_header)]
                 if icona_conflitto: elementi_intestazione.append(icona_conflitto)
@@ -440,351 +436,94 @@ def crea_calendario(page: ft.Page):
                 content_col = ft.Column(elementi_settimana, spacing=1, alignment=ft.MainAxisAlignment.START)
                 altezza_card = max(durata_minuti * 0.9, 65)
                 spazio_vuoto = offset_minuti * 0.9
-                
-            else: # Giorno
-                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_cat_header, size=9), ft.Text(cat_nome + icona_periodico, size=10, weight=ft.FontWeight.BOLD, color=colore_cat_header)]
-                if icona_conflitto:
-                    elementi_intestazione.append(icona_conflitto)
-
-                content_col = ft.Column([
-                    ft.Row(elementi_intestazione, spacing=4, alignment=ft.MainAxisAlignment.START),
-                    ft.Text(orario, size=11, color=colore_orario, weight=ft.FontWeight.BOLD),
-                    ft.Text(titolo, size=14, color=colore_testo, weight=ft.FontWeight.BOLD, no_wrap=False),
-                    riga_assegnatari,
-                    ft.Text(note, size=10, color=colore_note) if note else ft.Container()
-                ], spacing=1)
-                
-                altezza_card = max(durata_minuti * 1.3, 75)
-                spazio_vuoto = offset_minuti * 1.3
-
-            if vista == "Mese":
-                card_container = ft.Container(
-                    content=content_col, bgcolor=sfondo_card, gradient=gradiente_card, padding=2,
-                    border_radius=2, border=border_card, height=altezza_card
-                )
             else:
-                card_container = ft.Container(
-                    content=content_col, bgcolor=sfondo_card, gradient=gradiente_card, 
-                    padding=4 if vista=="Giorno" else 3,
-                    border_radius=6 if vista=="Giorno" else 4, border=border_card, ink=True, height=altezza_card,
-                    on_click=lambda e, impegno_corrente=imp: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"), impegno_corrente)
-                )
+                elementi_intestazione = [ft.Icon(ft.Icons.CIRCLE, color=colore_cat_header, size=9), ft.Text(cat_nome + icona_periodico, size=10, weight=ft.FontWeight.BOLD, color=colore_cat_Per integrare il modulo **Spese, Entrate e Budget** mantenendo l'architettura, la grafica e il sistema di notifiche Web Push di **ELF**[cite: 1, 2, 6, 9], la soluzione prevede:
 
-            if spazio_vuoto > 0:
-                card_container.width = float('inf')
-                wrapper = ft.Column([ft.Container(height=spazio_vuoto), card_container], spacing=0)
-                if espandi: wrapper.expand = 1
-                return wrapper
-            else:
-                if espandi: card_container.expand = 1
-                else: card_container.width = float('inf')
-                return card_container
+1. **Tabella e Categorie su Supabase**: Script SQL per creare `categorie_budget`, `movimenti_budget` e `movimenti_budget_familiari` (con allineamento automatico al tipo di ID della tabella `famiglia` esistente[cite: 2, 3, 4]).
+2. **Nuovo file `modulo_budget.py` (Indipendente)**:
+   * Stessa struttura del calendario (**Mese**, **Settimana**, **Giorno**)[cite: 2] + **Cruscotto Budget Mensile** (Entrate Previste/Effettive, Spese Previste/Effettive, Saldo Attuale e Saldo Previsionale di fine mese) + filtri multipli per Tipo, Stato, Categoria e Familiare[cite: 2].
+   * **Spese Sporadiche e Pianificate**: Campi per **Tipo** (*Spesa* / *Entrata*), **Stato** (*Prevista* / *Effettiva*), **Importo (€)**, **Luogo / Fornitore** (es. *Decò*, *Plenitude* con autocompletamento dai fornitori già usati) e **Titolo/Descrizione** (opzionale: se lasciato vuoto per una spesa veloce, viene generato automaticamente da *Categoria - Luogo/Fornitore*).
+   * **Trasformazione Prevista ➔ Effettiva in 1 click**: Sia tramite il pulsante rapido **✅ Paga / Incassa** sulle card, sia dentro il form di modifica, puoi trasformare una voce prevista in effettiva modificando **data reale** e **importo effettivo**. Se la voce fa parte di una serie periodica (es. *Mutuo* o *Stipendio*), il sistema segna come saldata quella specifica scadenza mensile e crea il movimento effettivo senza alterare le scadenze future[cite: 4].
+   * **Periodicità Completa**: Supporta ricorrenze **Mensili** (es. giorno 27 per lo stipendio o giorno 1 per il mutuo), **Bimestrali** (es. utenze), **Trimestrali**, **Semestrali**, **Annuali** o **Settimanali**, con modifica su *"Solo questa scadenza"*, *"Da questa in poi"* o *"Tutta la serie"* come per gli impegni[cite: 4].
+   * **Notifiche alla Scadenza**: Switch dedicato **🔔 Avvisami alla scadenza** per scegliere se ricevere la notifica e con quale anticipo/ripetizione[cite: 4, 9].
+3. **Switch immediato tra Impegni e Spese nel Giorno**: Aprendo qualsiasi giorno nel calendario puoi passare istantaneamente tra **📅 Impegni** e **💶 Spese / Entrate** di quel giorno, oltre a poter navigare dalla barra principale in alto[cite: 1, 2].
 
+---
 
-        # ==========================================
-        # VISUALIZZAZIONE MESE CON AFFIANCAMENTO
-        # ==========================================
-        if vista == "Mese":
-            testo_header.value = f"{MESI[data.month]} {data.year}"
-            layer_mese.controls.clear()
-            griglia = ft.Column(spacing=0)
-            matrice = calendar.monthcalendar(data.year, data.month)
-            
-            for settimana in matrice:
-                riga = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
-                for giorno in settimana:
-                    if giorno == 0:
-                        # ALTEZZA FISSA A 90
-                        riga.controls.append(ft.Container(expand=1, height=90, border=bordo_standard()))
-                    else:
-                        is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
-                        is_sel = (giorno == data.day)
-                        data_str = data.replace(day=giorno).strftime("%Y-%m-%d")
-                        
-                        eventi_oggi = dizionario_eventi.get(data_str, [])
-                        gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
+### 1. Script SQL da eseguire su Supabase (SQL Editor)
 
-                        livello_giorno = None
-                        if eventi_oggi:
-                            lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio') or "00:00", 'ora_fine': ev.get('ora_fine') or "23:59", 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
-                            mappa = analizza_sovrapposizioni_giornata(lista_analisi)
-                            valori = list(mappa.values())
-                            if 'grave' in valori: livello_giorno = 'grave'
-                            elif 'media' in valori: livello_giorno = 'media'
-                            elif 'lieve' in valori: livello_giorno = 'lieve'
+Esegui questo script nell'**SQL Editor** di Supabase per creare le tabelle necessarie e precaricare le categorie base:
 
-                        icona_header = None
-                        if livello_giorno == 'lieve': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=14)
-                        elif livello_giorno == 'media': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=14)
-                        elif livello_giorno == 'grave': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=14)
+```sql
+-- 1. Tabella Categorie Budget (Spese ed Entrate)
+CREATE TABLE IF NOT EXISTS public.categorie_budget (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    nome text NOT NULL,
+    colore text DEFAULT '#2196F3',
+    tipo_default text DEFAULT 'spesa', -- 'spesa', 'entrata', 'entrambi'
+    creato_il timestamptz DEFAULT now()
+);
 
-                        cerchio = ft.Container(
-                            content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
-                            bgcolor=ft.Colors.BLUE_900 if is_oggi else (ft.Colors.BLUE_100 if is_sel else ft.Colors.TRANSPARENT),
-                            border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
-                        )
-                        
-                        riga_cerchio = ft.Row([cerchio, icona_header] if icona_header else [cerchio], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
+-- 2. Tabella Movimenti Budget (Spese ed Entrate, Previste ed Effettive, Singole e Periodiche)
+CREATE TABLE IF NOT EXISTS public.movimenti_budget (
+    id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    tipo text NOT NULL DEFAULT 'spesa',              -- 'spesa' oppure 'entrata'
+    stato text NOT NULL DEFAULT 'effettivo',         -- 'previsto' oppure 'effettivo'
+    titolo text NOT NULL,
+    luogo_fornitore text,                            -- es. Decò, Plenitude, Enel, INPS...
+    importo numeric(12,2) NOT NULL DEFAULT 0,
+    importo_previsto_orig numeric(12,2),             -- conserva l'importo previsto originario post-trasformazione
+    data_movimento date NOT NULL,
+    ora_scadenza text DEFAULT '09:00',               -- orario di riferimento per la notifica di scadenza
+    id_categoria uuid REFERENCES public.categorie_budget(id) ON DELETE SET NULL,
+    note text,
+    is_periodico boolean DEFAULT false,
+    tipo_periodicita text DEFAULT 'mensile',         -- 'mensile', 'bimestrale', 'trimestrale', 'semestrale', 'annuale', 'settimanale'
+    giorni_periodici text,                           -- usato se tipo_periodicita = 'settimanale'
+    data_fine_periodo date,
+    date_escluse text,
+    notifica_attiva boolean DEFAULT true,
+    preavviso_valore integer DEFAULT 1,
+    preavviso_unita text DEFAULT 'giorni',           -- 'minuti', 'ore', 'giorni', 'settimane'
+    preavviso_ripeti boolean DEFAULT true,
+    is_evidenziato boolean DEFAULT true,
+    creato_il timestamptz DEFAULT now()
+);
 
-                        # NO SCROLL
-                        colonna_indicatori = ft.Column(spacing=1, expand=True)
-                        
-                        gruppi_mostrati = 0
-                        eventi_mostrati = 0
-                        for gruppo in gruppi_oggi:
-                            if gruppi_mostrati >= 2: break # Mostra massimo 2 righe nel mese
-                            
-                            if len(gruppo) == 1:
-                                colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Mese", espandi=False))
-                            else:
-                                riga_ind = ft.Row(spacing=1, vertical_alignment=ft.CrossAxisAlignment.START)
-                                for ev in gruppo:
-                                    riga_ind.controls.append(crea_card(ev, vista="Mese", espandi=True))
-                                colonna_indicatori.controls.append(riga_ind)
-                                
-                            eventi_mostrati += len(gruppo)
-                            gruppi_mostrati += 1
-                        
-                        # CONTEGGIO ESATTO DEGLI EVENTI RIMANENTI E NASCOSTI
-                        eventi_nascosti = len(eventi_oggi) - eventi_mostrati
-                        if eventi_nascosti > 0:
-                            colonna_indicatori.controls.append(
-                                ft.Container(
-                                    content=ft.Text(f"+ {eventi_nascosti} altri", size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
-                                    alignment=ft.Alignment(0, 0), padding=2
-                                )
-                            )
+-- 3. Tabella di associazione Movimenti <-> Componenti della Famiglia
+-- (Rileva automaticamente il tipo della colonna id di public.famiglia)
+DO $$
+DECLARE
+    tipo_id_fam text;
+BEGIN
+    SELECT data_type INTO tipo_id_fam
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'famiglia' AND column_name = 'id';
 
-                        riga.controls.append(
-                            ft.Container(
-                                content=ft.Column([
-                                    ft.Container(content=riga_cerchio, alignment=ft.Alignment(0,0)), 
-                                    ft.Container(content=colonna_indicatori, expand=True)
-                                ], alignment=ft.MainAxisAlignment.START, horizontal_alignment=ft.CrossAxisAlignment.STRETCH, spacing=2),
-                                # ALTEZZA FISSA A 90. IL CLICK APRE LA VISTA GIORNO.
-                                expand=1, height=90, border=bordo_evidenziato_blu() if ha_eventi_evidenziati(eventi_oggi) else bordo_standard(), padding=2, data=giorno, on_click=vai_a_giorno
-                            )
-                        )
-                griglia.controls.append(riga)
-            layer_mese.controls.extend([
-                ft.Row(
-                    controls=[
-                        ft.Container(content=ft.Text(g, size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700), expand=1, alignment=ft.Alignment(0, 0), border=bordo_standard(), padding=2) 
-                        for g in GIORNI
-                    ], 
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0
-                ),
-                griglia
-            ])
+    IF tipo_id_fam IS NULL THEN
+        tipo_id_fam := 'bigint';
+    END IF;
 
-        # ==========================================
-        # VISUALIZZAZIONE SETTIMANA CON AFFIANCAMENTO
-        # ==========================================
-        elif vista == "Settimana":
-            lunedi = data - timedelta(days=data.weekday())
-            domenica = lunedi + timedelta(days=6)
-            testo_header.value = f"{lunedi.day} - {domenica.day} {MESI[lunedi.month][:3]} {lunedi.year}" if lunedi.month == domenica.month else f"{lunedi.day} {MESI[lunedi.month][:3]} - {domenica.day} {MESI[domenica.month][:3]} {domenica.year}"
-            layer_settimana.controls.clear()
-            
-            # DUE RIGHE PER LA SETTIMANA DA MOBILE
-            riga1 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
-            riga2 = ft.Row(alignment=ft.MainAxisAlignment.START, spacing=0)
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS public.movimenti_budget_familiari (
+            id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+            id_movimento uuid REFERENCES public.movimenti_budget(id) ON DELETE CASCADE,
+            id_familiare %s REFERENCES public.famiglia(id) ON DELETE CASCADE
+        );
+    ', tipo_id_fam);
+END $$;
 
-            for i in range(7):
-                gc = lunedi + timedelta(days=i)
-                data_str = gc.strftime("%Y-%m-%d")
-                
-                eventi_oggi = dizionario_eventi.get(data_str, [])
-                gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
-
-                livello_giorno = None
-                if eventi_oggi:
-                    lista_analisi = [{'id': ev['id'], 'ora_inizio': ev.get('ora_inizio') or "00:00", 'ora_fine': ev.get('ora_fine') or "23:59", 'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []} for ev in eventi_oggi]
-                    mappa = analizza_sovrapposizioni_giornata(lista_analisi)
-                    valori = list(mappa.values())
-                    if 'grave' in valori: livello_giorno = 'grave'
-                    elif 'media' in valori: livello_giorno = 'media'
-                    elif 'lieve' in valori: livello_giorno = 'lieve'
-
-                icona_header = None
-                if livello_giorno == 'lieve': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.YELLOW_700, size=16)
-                elif livello_giorno == 'media': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.ORANGE, size=16)
-                elif livello_giorno == 'grave': icona_header = ft.Icon(ft.Icons.WARNING_ROUNDED, color=ft.Colors.RED, size=16)
-
-                cerchio_sett = ft.Container(
-                    content=ft.Text(str(gc.day), color=ft.Colors.WHITE if (gc.date() == oggi.date()) else ft.Colors.BLACK, size=14, weight=ft.FontWeight.BOLD), 
-                    bgcolor=ft.Colors.BLUE_900 if (gc.date() == oggi.date()) else ft.Colors.TRANSPARENT, 
-                    border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0)
-                )
-                
-                riga_cerchio = ft.Row([cerchio_sett, icona_header] if icona_header else [cerchio_sett], alignment=ft.MainAxisAlignment.CENTER, spacing=2)
-
-                intestazione = ft.Container(
-                    content=ft.Column([
-                        ft.Text(GIORNI[i], size=9, color=ft.Colors.GREY_700),
-                        riga_cerchio
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0), padding=5
-                )
-
-                colonna_indicatori = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
-                
-                for gruppo in gruppi_oggi:
-                    if len(gruppo) == 1:
-                        inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
-                        fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
-                        se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
-                        durata = max((fine + se_notte) - inizio, 30)
-                        
-                        colonna_indicatori.controls.append(crea_card(gruppo[0], vista="Settimana", espandi=False, offset_minuti=0, durata_minuti=durata))
-                    else:
-                        riga_ind = ft.Row(spacing=2, vertical_alignment=ft.CrossAxisAlignment.START)
-                        minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
-                        for ev in gruppo:
-                            inizio = calcola_minuti(ev.get('ora_inizio'))
-                            fine = calcola_minuti(ev.get('ora_fine')) if ev.get('ora_fine') else inizio + 60
-                            se_notte = 1440 if (fine <= inizio and ev.get('ora_fine')) else 0
-                            durata = max((fine + se_notte) - inizio, 30)
-                            offset = inizio - minuti_minimi
-                            
-                            riga_ind.controls.append(crea_card(ev, vista="Settimana", espandi=True, offset_minuti=offset, durata_minuti=durata))
-                        colonna_indicatori.controls.append(riga_ind)
-
-                # Costruisce la colonna del giorno con altezza aumentata a 600 per accogliere i blocchi grandi
-                contenitore_giorno = ft.Container(
-                    content=ft.Column([
-                        intestazione, ft.Divider(height=1, color="#E0E0E0"), 
-                        ft.Container(content=colonna_indicatori, padding=2, expand=True)
-                    ]), 
-                    expand=1, height=400, border=bordo_evidenziato_blu() if ha_eventi_evidenziati(eventi_oggi) else bordo_standard(), data=gc, on_click=vai_a_giorno
-                )
-
-                # Distribuisce i giorni sulle due righe
-                if i < 4:
-                    riga1.controls.append(contenitore_giorno)
-                else:
-                    riga2.controls.append(contenitore_giorno)
-
-            # Aggiungiamo un blocco vuoto per far pareggiare la larghezza delle due righe (4 colonne sopra, 3 sotto + 1 vuota)
-            riga2.controls.append(ft.Container(expand=1, border=ft.Border(top=ft.BorderSide(0, "transparent"))))
-            
-            # Aggiungiamo le due righe e uno spazio separatore al layer principale della settimana
-            layer_settimana.controls.append(riga1)
-            layer_settimana.controls.append(ft.Container(height=20)) # Spazio tra le due righe
-            layer_settimana.controls.append(riga2)
-
-        # ==========================================
-        # VISUALIZZAZIONE GIORNO CON AFFIANCAMENTO
-        # ==========================================
-        elif vista == "Giorno":
-            testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
-            is_oggi = (data.date() == oggi.date())
-            layer_giorno.controls.clear()
-            
-            intestazione = ft.Container(
-                content=ft.Column([
-                    ft.Text(GIORNI[data.weekday()], size=12, color=ft.Colors.GREY_700),
-                    ft.Text(str(data.day), size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if is_oggi else ft.Colors.BLACK)
-                ], alignment=ft.MainAxisAlignment.START, spacing=0),
-                padding=10, border=bordo_standard()
-            )
-            
-            btn_aggiungi_evento = ft.Container(
-                content=ft.Text("➕ Aggiungi Impegno", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
-                bgcolor=ft.Colors.BLUE_900, padding=10, border_radius=5, alignment=ft.Alignment(0, 0),
-                on_click=lambda e: apri_form_impegno(page, data, lambda: page.pubsub.send_all("aggiorna_dati"))
-            )
-
-            colonna_card_eventi = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, spacing=10)
-            data_str = data.strftime("%Y-%m-%d")
-            
-            eventi_oggi = dizionario_eventi.get(data_str, [])
-
-            if eventi_oggi:
-                lista_per_analisi = []
-                for ev in eventi_oggi:
-                    lista_per_analisi.append({
-                        'id': ev['id'],
-                        'ora_inizio': ev.get('ora_inizio') or "00:00",
-                        'ora_fine': ev.get('ora_fine') or "23:59",
-                        'assegnatari_ids': [f['id_familiare'] for f in ev.get('impegni_familiari', [])] if ev.get('impegni_familiari') else []
-                    })
-                mappa_conflitti = analizza_sovrapposizioni_giornata(lista_per_analisi)
-
-                gruppi_oggi = ottieni_gruppi_sovrapposti(eventi_oggi)
-                
-                for gruppo in gruppi_oggi:
-                    if len(gruppo) == 1:
-                        inizio = calcola_minuti(gruppo[0].get('ora_inizio'))
-                        fine = calcola_minuti(gruppo[0].get('ora_fine')) if gruppo[0].get('ora_fine') else inizio + 60
-                        se_notte = 1440 if (fine <= inizio and gruppo[0].get('ora_fine')) else 0
-                        durata = max((fine + se_notte) - inizio, 30)
-                        
-                        livello = mappa_conflitti.get(gruppo[0]['id'])
-                        colonna_card_eventi.controls.append(crea_card(gruppo[0], vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=durata, livello_sovrapposizione=livello))
-                    else:
-                        riga_sovrapposti = ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
-                        minuti_minimi = min([calcola_minuti(ev.get('ora_inizio')) for ev in gruppo])
-                        
-                        for imp in gruppo:
-                            inizio = calcola_minuti(imp.get('ora_inizio'))
-                            fine = calcola_minuti(imp.get('ora_fine')) if imp.get('ora_fine') else inizio + 60
-                            se_notte = 1440 if (fine <= inizio and imp.get('ora_fine')) else 0
-                            durata = max((fine + se_notte) - inizio, 30)
-                            offset = inizio - minuti_minimi
-                            
-                            livello = mappa_conflitti.get(imp['id'])
-                            riga_sovrapposti.controls.append(crea_card(imp, vista="Giorno", espandi=True, offset_minuti=offset, durata_minuti=durata, livello_sovrapposizione=livello))
-                            
-                        colonna_card_eventi.controls.append(riga_sovrapposti)
-            else:
-                colonna_card_eventi.controls.append(
-                    ft.Container(
-                        content=ft.Text("Nessun evento corrispondente ai filtri.", color=ft.Colors.GREY_500, italic=True), 
-                        padding=20, alignment=ft.Alignment(0,0)
-                    )
-                )
-
-            layer_giorno.controls.extend([
-                intestazione, btn_aggiungi_evento, ft.Divider(height=10, color="transparent"), 
-                colonna_card_eventi
-            ])
-
-        try:
-            page.update()
-        except Exception:
-            pass
-
-    # ⚡ QUI RICOMPARE LA PARTE MANCANTE DEL TUO CODICE ⚡
-    header = ft.Row(
-        controls=[
-            ft.Row([
-                ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20),
-                ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20),
-                testo_header,
-            ], alignment=ft.MainAxisAlignment.START, spacing=0),
-            
-            ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5)
-        ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        wrap=True,         
-        run_spacing=10     
-    )
-
-    sezione_filtri = ft.Column([
-        ft.Text("Filtra per Categoria (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_cat,
-        ft.Text("Filtra per Assegnatario (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_fam
-    ], spacing=5)
-
-    aggiorna_tutto()
-
-    return ft.Container(
-        content=ft.Column([
-            header, 
-            area_dinamica, 
-            ft.Divider(height=20, color="#EEEEEE"), 
-            sezione_filtri
-        ], spacing=10, scroll=ft.ScrollMode.AUTO), 
-        padding=5, expand=True
-    )
+-- 4. Inserimento Categorie Iniziali (se la tabella è vuota)
+INSERT INTO public.categorie_budget (nome, colore, tipo_default)
+SELECT * FROM (VALUES
+    ('VITTO / SPESA', '#4CAF50', 'spesa'),
+    ('UTENZE DOMESTICHE', '#FF9800', 'spesa'),
+    ('MUTUO / AFFITTO', '#F44336', 'spesa'),
+    ('AUTO / TRASPORTI', '#2196F3', 'spesa'),
+    ('SALUTE / FARMACIA', '#9C27B0', 'spesa'),
+    ('SCUOLA / FIGLI', '#FFC107', 'spesa'),
+    ('CASA / EXTRA', '#795548', 'spesa'),
+    ('STIPENDIO', '#4CAF50', 'entrata'),
+    ('ALTRE ENTRATE', '#2196F3', 'entrata')
+) AS v(nome, colore, tipo_default)
+WHERE NOT EXISTS (SELECT 1 FROM public.categorie_budget LIMIT 1);
