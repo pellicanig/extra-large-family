@@ -2351,14 +2351,41 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         run_spacing=6,
     )
 
-    sezione_filtri = ft.Column([
-        ft.Text("Filtra per Stato:", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_stato,
-        ft.Text("Filtra per Categoria Budget (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_cat,
-        ft.Text("Filtra per Componente Famiglia (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
-        row_filtri_fam,
-    ], spacing=4)
+    barra_rapida_mensile = ft.Row([
+        ft.Container(
+            content=ft.Text("⚡ + Spesa Sporadica Oggi", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11.5, no_wrap=True),
+            bgcolor="#2E7D32",
+            padding=ft.Padding(8, 8, 8, 8),
+            border_radius=6,
+            expand=1,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: apri_form_movimento_budget(page, datetime.now(), ricarica_e_aggiorna, modalita_sporadica=True),
+        ),
+        ft.Container(
+            content=ft.Text("➕ Nuova Prev. / Periodica", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11.5, no_wrap=True),
+            bgcolor=ft.Colors.BLUE_900,
+            padding=ft.Padding(8, 8, 8, 8),
+            border_radius=6,
+            expand=1,
+            alignment=ft.Alignment(0, 0),
+            on_click=lambda e: apri_form_movimento_budget(page, stato["data"], ricarica_e_aggiorna, modalita_sporadica=False),
+        ),
+    ], spacing=6)
+
+    aggiorna_tutto()
+
+    container_principale = ft.Container(
+        content=ft.Column([
+            header,
+            box_cruscotto_mese,
+            barra_rapida_mensile,  # <-- AGGIUNTA QUI
+            area_dinamica,
+            ft.Divider(height=12, color="#EEEEEE"),
+            sezione_filtri,
+        ], spacing=6, scroll=ft.ScrollMode.AUTO),
+        padding=5,
+        expand=True,
+    )
 
     aggiorna_tutto()
 
