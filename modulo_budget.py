@@ -41,13 +41,18 @@ TIPI_PERIODICITA = [
     ("SETTIMANALE", "Settimanale (giorni scelti)"),
 ]
 
- PASSO_MESI_PERIODICITA = {
+PASSO_MESI_PERIODICITA = {
     "MENSILE": 1,
     "BIMESTRALE": 2,
     "TRIMESTRALE": 3,
     "SEMESTRALE": 6,
     "ANNUALE": 12,
 }
+
+
+def normalizza_stato_budget(val) -> str:
+    s = str(val or "PREVISTO").strip().upper()
+    return "EFFETTIVO" if s.startswith("EFFETTIV") else "PREVISTO"
 
 
 def formatta_testo_intelligente(testo: str) -> str:
@@ -167,6 +172,7 @@ def espandi_movimenti_in_finestra(lista_movimenti: list, d_inizio: date, d_fine:
             while curr <= d_fine:
                 if occorrenza_periodica_valida(mov, curr):
                     copia = dict(mov)
+                    copia["stato"] = normalizza_stato_budget(mov.get("stato"))
                     copia["data_originale_serie"] = mov.get("data_movimento")
                     copia["data_movimento"] = curr.strftime("%Y-%m-%d")
                     copia["assegnatari_ids"] = list(assegnatari_ids)
@@ -176,6 +182,7 @@ def espandi_movimenti_in_finestra(lista_movimenti: list, d_inizio: date, d_fine:
             d_str = str(mov.get("data_movimento") or "")[:10]
             if d_inizio.strftime("%Y-%m-%d") <= d_str <= d_fine.strftime("%Y-%m-%d"):
                 copia = dict(mov)
+                copia["stato"] = normalizza_stato_budget(mov.get("stato"))
                 copia["data_originale_serie"] = d_str
                 copia["assegnatari_ids"] = list(assegnatari_ids)
                 risultati.append(copia)
@@ -264,7 +271,6 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
         def worker():
             try:
                 if is_p_db:
-                    # 1. Esclude questa scadenza dalla serie periodica PREVISTA
                     res_orig = supabase.table("movimenti_budget").select("date_escluse").eq("id", mov["id"]).execute()
                     escl_attuali = (res_orig.data[0].get("date_escluse") or "") if res_orig.data else (mov.get("date_escluse") or "")
                     lista_escl = [x.strip() for x in escl_attuali.split(",") if x.strip()]
@@ -273,7 +279,6 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
                     nuove_escl = ",".join(lista_escl)
                     supabase.table("movimenti_budget").update({"date_escluse": nuove_escl}).eq("id", mov["id"]).execute()
 
-                    # 2. Crea il movimento EFFETTIVO singolo nella data e con l'importo reale
                     nuovo_rec = {
                         "tipo": tipo_mov,
                         "stato": "EFFETTIVO",
@@ -305,7 +310,6 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
                                 "id_familiare": id_f
                             }).execute()
                 else:
-                    # Movimento singolo: si aggiorna direttamente da PREVISTO a EFFETTIVO
                     supabase.table("movimenti_budget").update({
                         "stato": "EFFETTIVO",
                         "data_movimento": data_eff_db,
@@ -408,7 +412,7 @@ def apri_form_movimento_budget(
 
     tipo_init = (movimento_esistente.get("tipo") if movimento_esistente else tipo_default) or "SPESA"
     stato_init = (
-        movimento_esistente.get("stato")
+        normalizza_stato_budget(movimento_esistente.get("stato"))
         if movimento_esistente
         else ("EFFETTIVO" if modalita_sporadica else "PREVISTO")
     )
@@ -441,7 +445,6 @@ def apri_form_movimento_budget(
     val_ev_db = movimento_esistente.get("is_evidenziato") if movimento_esistente else None
     evidenziato_init = True if val_ev_db is None else (str(val_ev_db).lower() in ["true", "1", "t", "y", "yes"])
 
-    # --- SELETTORE TIPO (SPESA / ENTRATA) E STATO (PREVISTA / EFFETTIVA) ---
     btn_tipo_spesa = ft.Container(
         content=ft.Text("💸 SPESA", size=12, weight=ft.FontWeight.BOLD),
         padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
@@ -459,7 +462,6 @@ def apri_form_movimento_budget(
         padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
     )
 
-    # --- CAMPI PRINCIPALI ---
     dd_categoria = ft.Dropdown(
         label="Categoria (*)",
         hint_text="Scegli categoria...",
@@ -520,7 +522,6 @@ def apri_form_movimento_budget(
 
     riga_importo_data = ft.Row([txt_importo, txt_data], spacing=8)
 
-    # --- NOTIFICHE SCADENZA (PER SPESE/ENTRATE PREVISTE) ---
     notif_attiva_init = (
         str(movimento_esistente.get("notifica_attiva", True)).lower() in ["true", "1", "t", "y", "yes"]
         if movimento_esistente
@@ -667,7 +668,6 @@ def apri_form_movimento_budget(
     btn_stato_effettivo.on_click = lambda e: imposta_stato("EFFETTIVO")
     aggiorna_stile_selettori()
 
-    # --- ASSEGNAZIONE COMPONENTI FAMIGLIA ---
     selezionati_famiglia = set(assegnatari_init)
 
     def toggle_famiglia(e, f_id, colore_fam):
@@ -713,7 +713,6 @@ def apri_form_movimento_budget(
         vertical_alignment=ft.CrossAxisAlignment.START,
     )
 
-    # --- PERIODICITÀ (STIPENDIO, MUTUO, UTENZE, ECC.) ---
     giorni_db_str = movimento_esistente.get("giorni_periodici") if movimento_esistente else None
     selezionati_giorni = set()
     if giorni_db_str:
@@ -791,7 +790,6 @@ def apri_form_movimento_budget(
     dlg_categoria = None
     dlg_modifica_cat = None
 
-    # --- CREAZIONE E MODIFICA CATEGORIE BUDGET SU SUPABASE ---
     def apri_nuova_categoria(e):
         nonlocal dlg_categoria
         txt_nuova_cat = ft.TextField(label="Nome Categoria (es. VITTO, UTENZE)", dense=True)
@@ -916,7 +914,6 @@ def apri_form_movimento_budget(
     btn_edit_cat = ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, on_click=apri_modifica_categoria)
     btn_add_cat = ft.IconButton(icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.BLUE_900, on_click=apri_nuova_categoria)
 
-    # --- SALVATAGGIO ED ELIMINAZIONE ---
     def esegui_db_con_loading(funzione):
         if not inizia_operazione(page):
             return
@@ -1062,7 +1059,7 @@ def apri_form_movimento_budget(
             ora_n_clean = "09:00"
 
         try:
-            val_preavviso_int = max(1, int("".join(c for c in (txt_preavviso_val.value or "") if c.isdigit()) or "1"))
+            val_preavviso_int = max(0, int("".join(c for c in (txt_preavviso_val.value or "") if c.isdigit()) or "1"))
         except Exception:
             val_preavviso_int = 1
 
@@ -1222,7 +1219,7 @@ def apri_form_movimento_budget(
     )
 
     controlli_extra_modifica = []
-    if movimento_esistente and str(movimento_esistente.get("stato")).upper() == "PREVISTO":
+    if movimento_esistente and normalizza_stato_budget(movimento_esistente.get("stato")) == "PREVISTO":
         controlli_extra_modifica.append(
             ft.Container(
                 content=ft.Row([
@@ -1294,7 +1291,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         "vista": (stato_condiviso.get("vista") if stato_condiviso else None) or "Giorno",
         "filtro_categoria": [],
         "filtro_familiare": [],
-        "filtro_stato": "TUTTI",  # 'TUTTI', 'PREVISTO', 'EFFETTIVO'
+        "filtro_stato": "TUTTI",
     }
     oggi = datetime.now()
 
@@ -1421,7 +1418,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
 
     def crea_card_movimento(mov: dict, vista_card="Giorno"):
         tipo = str(mov.get("tipo") or "SPESA").upper()
-        stato_m = str(mov.get("stato") or "PREVISTO").upper()
+        stato_m = normalizza_stato_budget(mov.get("stato"))
         is_spesa = (tipo == "SPESA")
         is_previsto = (stato_m == "PREVISTO")
 
@@ -1487,7 +1484,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 on_click=lambda e, m_curr=mov, d_c=dt_mov: apri_form_movimento_budget(page, d_c, ricarica_e_aggiorna, m_curr),
             )
 
-        # Vista Giorno (Card completa con pulsante rapido "Converti in Effettiva")
         sottotitolo_luogo = f"📍 Luogo/Fornitore: {fornitore}" if fornitore else ""
         azioni_extra = []
         if is_previsto:
@@ -1564,7 +1560,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         layer_giorno.visible = (vista == "Giorno")
         layer_budget.visible = (vista == "Budget")
 
-        # --- FILTRI STATO, CATEGORIA E FAMILIARE ---
         row_filtri_stato.controls.clear()
         for cod_s, lbl_s in [("TUTTI", "Tutti"), ("PREVISTO", "⏳ Solo Previsti"), ("EFFETTIVO", "✅ Solo Effettivi")]:
             att = (stato["filtro_stato"] == cod_s)
@@ -1630,7 +1625,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 )
             )
 
-        # --- CARICAMENTO ED ESPANSIONE MOVIMENTI DA SUPABASE ---
         dizionario_movimenti = {}
         movimenti_mese_corrente = []
         primo_mese_date = data.replace(day=1).date()
@@ -1658,7 +1652,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 espansi = espandi_movimenti_in_finestra(res.data or [], inizio_finestra, fine_finestra)
 
                 for mov in espansi:
-                    if stato["filtro_stato"] != "TUTTI" and str(mov.get("stato")).upper() != stato["filtro_stato"]:
+                    if stato["filtro_stato"] != "TUTTI" and normalizza_stato_budget(mov.get("stato")) != stato["filtro_stato"]:
                         continue
                     if stato["filtro_categoria"] and mov.get("id_categoria") not in stato["filtro_categoria"]:
                         continue
@@ -1674,11 +1668,10 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             except Exception as ex:
                 print("Errore lettura movimenti_budget:", ex)
 
-        # --- CALCOLO RIEPILOGO BUDGET DEL MESE ---
-        entrate_eff = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and m.get("stato") == "EFFETTIVO")
-        entrate_prev = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and m.get("stato") == "PREVISTO")
-        spese_eff = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "SPESA" and m.get("stato") == "EFFETTIVO")
-        spese_prev = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "SPESA" and m.get("stato") == "PREVISTO")
+        entrate_eff = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO")
+        entrate_prev = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "PREVISTO")
+        spese_eff = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "SPESA" and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO")
+        spese_prev = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "SPESA" and normalizza_stato_budget(m.get("stato")) == "PREVISTO")
 
         tot_entrate = entrate_eff + entrate_prev
         tot_spese = spese_eff + spese_prev
@@ -1734,9 +1727,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             border=bordo_standard(),
         )
 
-        # ==========================================
-        # VISTA MESE
-        # ==========================================
         if vista == "Mese":
             testo_header.value = f"{MESI[data.month]} {data.year}"
             layer_mese.controls.clear()
@@ -1768,7 +1758,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                                 ft.Text(f"+{len(mov_oggi) - 2} altre", size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700)
                             )
 
-                        ha_previsti = any(x.get("stato") == "PREVISTO" for x in mov_oggi)
+                        ha_previsti = any(normalizza_stato_budget(x.get("stato")) == "PREVISTO" for x in mov_oggi)
                         riga.controls.append(
                             ft.Container(
                                 content=ft.Column([
@@ -1793,9 +1783,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 griglia,
             ])
 
-        # ==========================================
-        # VISTA SETTIMANA
-        # ==========================================
         elif vista == "Settimana":
             lunedi = data - timedelta(days=data.weekday())
             domenica = lunedi + timedelta(days=6)
@@ -1839,9 +1826,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             riga2.controls.append(ft.Container(expand=1))
             layer_settimana.controls.extend([riga1, ft.Container(height=12), riga2])
 
-        # ==========================================
-        # VISTA GIORNO (CON SWITCH DIRETTO IMPEGNI / SPESE)
-        # ==========================================
         elif vista == "Giorno":
             testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
             is_oggi = (data.date() == oggi.date())
@@ -1930,20 +1914,16 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 col_cards,
             ])
 
-        # ==========================================
-        # VISTA RIEPILOGO BUDGET PER CATEGORIA E FAMILIARE
-        # ==========================================
         elif vista == "Budget":
             testo_header.value = f"Budget {MESI[data.month]} {data.year}"
             layer_budget.controls.clear()
 
-            # Raggruppamento per Categoria
             per_cat = {}
             for m in movimenti_mese_corrente:
                 cid = m.get("id_categoria")
                 c_info = mappa_categorie.get(cid) or {"nome": "SENZA CATEGORIA", "colore": "#607D8B"}
                 chiave = c_info["nome"]
-                 voce = per_cat.setdefault(chiave, {
+                voce = per_cat.setdefault(chiave, {
                     "colore": c_info["colore"],
                     "spese_eff": 0.0,
                     "spese_prev": 0.0,
@@ -1951,13 +1931,14 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                     "entrate_prev": 0.0,
                 })
                 imp = float(m.get("importo") or 0.0)
+                st_norm = normalizza_stato_budget(m.get("stato"))
                 if m.get("tipo") == "SPESA":
-                    if m.get("stato") == "EFFETTIVO":
+                    if st_norm == "EFFETTIVO":
                         voce["spese_eff"] += imp
                     else:
                         voce["spese_prev"] += imp
                 else:
-                    if m.get("stato") == "EFFETTIVO":
+                    if st_norm == "EFFETTIVO":
                         voce["entrate_eff"] += imp
                     else:
                         voce["entrate_prev"] += imp
@@ -1994,8 +1975,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                         )
                     )
 
-            # Elenco Scadenze Previste ancora da saldare nel mese
-            previsti_mese = [m for m in movimenti_mese_corrente if m.get("stato") == "PREVISTO"]
+            previsti_mese = [m for m in movimenti_mese_corrente if normalizza_stato_budget(m.get("stato")) == "PREVISTO"]
             previsti_mese.sort(key=lambda x: x.get("data_movimento", ""))
             layer_budget.controls.append(ft.Divider(height=10))
             layer_budget.controls.append(
