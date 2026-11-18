@@ -44,7 +44,7 @@ connetti_e_sveglia_supabase()
 # ⚡ CUSTODE SILENZIOSO: PING OGNI 4 MINUTI CON ANTI-CACHE PER NON FAR SPEGNERE RENDER ⚡
 def custode_keep_alive():
     while True:
-        time.sleep(240)  # Ogni 4 minuti (sotto la soglia dei 15 minuti di Render)
+        time.sleep(240)
         try:
             connetti_e_sveglia_supabase()
         except Exception:
@@ -101,7 +101,6 @@ def main(page: ft.Page):
 
     page.pubsub.subscribe(ricevi_broadcast)
 
-    # ⚡ GESTIONE RITORNO DALLO STANDBY SU SMARTPHONE ⚡
     def gestisci_riconnessione_standby(e):
         def sveglia_bg():
             try:
@@ -123,26 +122,27 @@ def main(page: ft.Page):
         oggi = datetime.now()
         data_odierna_str = f"{oggi.day} {MESI[oggi.month]} {oggi.year}"
 
-        # Precarica in background l'anagrafica del menu mentre l'utente vede subito gli impegni
         threading.Thread(target=lambda: modulo_menu.assicura_cache_anagrafica(forza_ricarica=False), daemon=True).start()
 
-        stato_condiviso_cal = {"data": oggi, "vista": "Settimana"}
+        # Viste indipendenti: Impegni parte in "Settimana", Budget parte in "Mese"
+        stato_impegni = {"data": oggi, "vista": "Settimana"}
+        stato_budget = {"data": oggi, "vista": "Mese"}
         budget_inizializzato = [False]
         menu_inizializzato = [False]
 
         def passa_a_budget_da_giorno(dt_target):
-            stato_condiviso_cal["data"] = dt_target
-            stato_condiviso_cal["vista"] = "Giorno"
+            stato_budget["data"] = dt_target
+            stato_budget["vista"] = "Giorno"
             imposta_sezione_home("BUDGET", forza_vista_giorno=dt_target)
 
         def passa_a_impegni_da_giorno(dt_target):
-            stato_condiviso_cal["data"] = dt_target
-            stato_condiviso_cal["vista"] = "Giorno"
+            stato_impegni["data"] = dt_target
+            stato_impegni["vista"] = "Giorno"
             imposta_sezione_home("IMPEGNI", forza_vista_giorno=dt_target)
 
         cal_impegni_ctrl = modulo_calendario.crea_calendario(
             page,
-            stato_condiviso=stato_condiviso_cal,
+            stato_condiviso=stato_impegni,
             on_switch_budget=passa_a_budget_da_giorno
         )
         vista_impegni_box = ft.Container(content=cal_impegni_ctrl, visible=True, expand=True)
@@ -150,23 +150,23 @@ def main(page: ft.Page):
         vista_menu_box = ft.Container(content=None, visible=False, expand=True)
 
         btn_tab_impegni = ft.Container(
-            content=ft.Text("📅 IMPEGNI", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+            content=ft.Text("📅 IMPEGNI", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
             bgcolor=ft.Colors.BLUE_900,
-            padding=ft.Padding(12, 6, 12, 6),
+            padding=ft.Padding(11, 5, 11, 5),
             border_radius=15,
             on_click=lambda _: imposta_sezione_home("IMPEGNI")
         )
         btn_tab_budget = ft.Container(
-            content=ft.Text("💰 SPESE & BUDGET", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            content=ft.Text("💰 SPESE & BUDGET", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
             bgcolor=ft.Colors.WHITE,
-            padding=ft.Padding(12, 6, 12, 6),
+            padding=ft.Padding(11, 5, 11, 5),
             border_radius=15,
             on_click=lambda _: imposta_sezione_home("BUDGET")
         )
         btn_tab_menu = ft.Container(
-            content=ft.Text("🍽️ MENU", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            content=ft.Text("🍽️ MENU", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
             bgcolor=ft.Colors.WHITE,
-            padding=ft.Padding(12, 6, 12, 6),
+            padding=ft.Padding(11, 5, 11, 5),
             border_radius=15,
             on_click=lambda _: imposta_sezione_home("MENU")
         )
@@ -175,7 +175,7 @@ def main(page: ft.Page):
             if sezione == "BUDGET" and not budget_inizializzato[0]:
                 vista_budget_box.content = modulo_budget.crea_calendario_budget(
                     page,
-                    stato_condiviso=stato_condiviso_cal,
+                    stato_condiviso=stato_budget,
                     on_switch_impegni=passa_a_impegni_da_giorno
                 )
                 budget_inizializzato[0] = True
@@ -186,19 +186,9 @@ def main(page: ft.Page):
             if sezione == "IMPEGNI" and vista_impegni_box.content:
                 if forza_vista_giorno is not None and hasattr(vista_impegni_box.content, "imposta_data_e_vista"):
                     vista_impegni_box.content.imposta_data_e_vista(forza_vista_giorno, "Giorno")
-                elif hasattr(vista_impegni_box.content, "imposta_data_e_vista"):
-                    vista_impegni_box.content.imposta_data_e_vista(
-                        stato_condiviso_cal.get("data", oggi),
-                        stato_condiviso_cal.get("vista", "Settimana")
-                    )
             elif sezione == "BUDGET" and vista_budget_box.content:
                 if forza_vista_giorno is not None and hasattr(vista_budget_box.content, "imposta_data_e_vista"):
                     vista_budget_box.content.imposta_data_e_vista(forza_vista_giorno, "Giorno")
-                elif hasattr(vista_budget_box.content, "imposta_data_e_vista"):
-                    vista_budget_box.content.imposta_data_e_vista(
-                        stato_condiviso_cal.get("data", oggi),
-                        stato_condiviso_cal.get("vista", "Giorno")
-                    )
 
             vista_impegni_box.visible = (sezione == "IMPEGNI")
             vista_budget_box.visible = (sezione == "BUDGET")
@@ -215,11 +205,11 @@ def main(page: ft.Page):
             content=ft.Row(
                 [btn_tab_impegni, btn_tab_budget, btn_tab_menu],
                 alignment=ft.MainAxisAlignment.CENTER,
-                spacing=8,
+                spacing=6,
                 wrap=True
             ),
             bgcolor="#EEF2F6",
-            padding=6
+            padding=5
         )
 
         txt_menu_notifiche = ft.Text(
