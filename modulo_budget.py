@@ -1250,7 +1250,14 @@ def apri_form_movimento_budget(
                         res_ins = supabase.table("movimenti_budget").insert(dati_mov).execute()
                         id_op = res_ins.data[0]["id"]
                 else:
-                    dati_mov["data_movimento"] = vero_inizio if (is_p_db and data_db == data_istanza_str) else data_db
+                    else:
+                    if is_p_db and vero_inizio < data_db:
+                        dt_v = datetime.strptime(vero_inizio, "%Y-%m-%d")
+                        dt_n = datetime.strptime(data_db, "%Y-%m-%d")
+                        ultimo_g_v = calendar.monthrange(dt_v.year, dt_v.month)[1]
+                        dati_mov["data_movimento"] = dt_v.replace(day=min(dt_n.day, ultimo_g_v)).strftime("%Y-%m-%d")
+                    else:
+                        dati_mov["data_movimento"] = data_db
                     supabase.table("movimenti_budget").update(dati_mov).eq("id", movimento_esistente["id"]).execute()
                     supabase.table("movimenti_budget_familiari").delete().eq("id_movimento", movimento_esistente["id"]).execute()
                     id_op = movimento_esistente["id"]
@@ -1852,6 +1859,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         layer_settimana.visible = (vista == "Settimana")
         layer_giorno.visible = (vista == "Giorno")
         layer_budget.visible = (vista == "Budget")
+        barra_rapida_mensile.visible = (vista != "Giorno")
 
         row_filtri_stato.controls.clear()
         for cod_s, lbl_s in [("TUTTI", "Tutti"), ("PREVISTO", "⏳ Solo Previsti"), ("EFFETTIVO", "✅ Solo Effettivi")]:
