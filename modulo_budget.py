@@ -55,6 +55,15 @@ def normalizza_stato_budget(val) -> str:
     return "EFFETTIVO" if s.startswith("EFFETTIV") else "PREVISTO"
 
 
+def is_movimento_evidenziato(mov: dict) -> bool:
+    val_p = mov.get("is_periodico")
+    is_p = str(val_p).lower() in ["true", "1", "t", "y", "yes"]
+    val_ev = mov.get("is_evidenziato")
+    if val_ev is None:
+        return not is_p
+    return str(val_ev).lower() in ["true", "1", "t", "y", "yes"]
+
+
 def formatta_testo_intelligente(testo: str) -> str:
     t = (testo or "").strip()
     if not t:
@@ -114,6 +123,82 @@ def _chiudi_dlg(page: ft.Page, dlg: ft.AlertDialog):
         pass
     try:
         page.update()
+    except Exception:
+        pass
+
+
+# ==========================================================
+# GESTIONE MEMORIA AUTOCOMPILAZIONE FORNITORI / ENTI / FONTI
+# ==========================================================
+def carica_fornitori_enti_memoria() -> list:
+    """
+    Carica l'elenco dei Fornitori/Luoghi/Enti dalla tabella dedicata 'fornitori_enti_budget'
+    e lo integra con eventuali voci storiche presenti in 'movimenti_budget'.
+    """
+    if not supabase:
+        return []
+    mappa = {}
+    try:
+        res_f = supabase.table("fornitori_enti_budget").select("*").order("nome").execute()
+        for r in (res_f.data or []):
+            nome_clean = (r.get("nome") or "").strip()
+            if nome_clean:
+                mappa[nome_clean.lower()] = {
+                    "id": r.get("id"),
+                    "nome": nome_clean,
+                    "tipo": str(r.get("tipo") or "SPESA").upper(),
+                    "id_categoria_default": r.get("id_categoria_default"),
+                }
+    except Exception:
+        pass
+
+    try:
+        res_m = (
+            supabase.table("movimenti_budget")
+            .select("fornitore_luogo, tipo, id_categoria")
+            .not_.is_("fornitore_luogo", "null")
+            .limit(500)
+            .execute()
+        )
+        for r in (res_m.data or []):
+            nome_clean = (r.get("fornitore_luogo") or "").strip()
+            if nome_clean and nome_clean.lower() not in mappa:
+                mappa[nome_clean.lower()] = {
+                    "id": None,
+                    "nome": nome_clean,
+                    "tipo": str(r.get("tipo") or "SPESA").upper(),
+                    "id_categoria_default": r.get("id_categoria"),
+                }
+    except Exception:
+        pass
+
+    return sorted(list(mappa.values()), key=lambda x: x["nome"].lower())
+
+
+def salva_fornitore_ente_in_memoria(nome: str, tipo: str = "SPESA", id_categoria=None):
+    """Salva o aggiorna automaticamente il Fornitore / Ente nella tabella memoria su Supabase."""
+    if not supabase or not nome:
+        return
+    nome_pulito = formatta_testo_intelligente(nome)
+    if not nome_pulito:
+        return
+    try:
+        esist = (
+            supabase.table("fornitori_enti_budget")
+            .select("id")
+            .ilike("nome", nome_pulito)
+            .limit(1)
+            .execute()
+        )
+        payload = {
+            "nome": nome_pulito,
+            "tipo": (tipo or "SPESA").upper(),
+            "id_categoria_default": id_categoria,
+        }
+        if esist.data:
+            supabase.table("fornitori_enti_budget").update(payload).eq("id", esist.data[0]["id"]).execute()
+        else:
+            supabase.table("fornitori_enti_budget").insert(payload).execute()
     except Exception:
         pass
 
@@ -223,7 +308,8 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
             page.update()
 
     txt_data_eff = ft.TextField(
-        label="Data Effettiva Pagamento / Incasso",
+        label="Data Effettiva",
+        hint_text="GG/MM/AAAA",
         value=dt_ist.strftime("%d/%m/%Y"),
         on_change=formatta_data_eff,
         dense=True,
@@ -237,7 +323,8 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
         autofocus=True,
     )
     txt_fornitore_eff = ft.TextField(
-        label="Luogo / Fornitore (es. Decò, Plenitude...)",
+        label="Luogo / Fornitore" if tipo_mov == "SPESA" else "Fonte / Ente",
+        hint_text="Es. Decò, Plenitude, Regione...",
         value=fornitore_mov,
         dense=True,
         text_size=13,
@@ -251,14 +338,14 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
             dt_eff = datetime.strptime((txt_data_eff.value or "").strip(), "%d/%m/%Y")
             data_eff_db = dt_eff.strftime("%Y-%m-%d")
         except Exception:
-            txt_err.value = "⚠️ Data non valida! Usa il formato GG/MM/AAAA."
+            txt_err.value = "⚠️ Data non valida! Usa GG/MM/AAAA."
             txt_err.visible = True
             page.update()
             return
 
         imp_eff = parse_importo(txt_importo_eff.value)
         if imp_eff <= 0:
-            txt_err.value = "⚠️ Inserisci un importo effettivo maggiore di 0."
+            txt_err.value = "⚠️ Inserisci un importo maggiore di 0."
             txt_err.visible = True
             page.update()
             return
@@ -270,6 +357,9 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
 
         def worker():
             try:
+                if forn_clean:
+                    salva_fornitore_ente_in_memoria(forn_clean, tipo_mov, mov.get("id_categoria"))
+
                 if is_p_db:
                     res_orig = supabase.table("movimenti_budget").select("date_escluse").eq("id", mov["id"]).execute()
                     escl_attuali = (res_orig.data[0].get("date_escluse") or "") if res_orig.data else (mov.get("date_escluse") or "")
@@ -299,7 +389,7 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
                         "preavviso_valore": mov.get("preavviso_valore") or 1,
                         "preavviso_unita": mov.get("preavviso_unita") or "giorni",
                         "preavviso_ripeti": False,
-                        "is_evidenziato": True,
+                        "is_evidenziato": bool(mov.get("is_evidenziato", False)),
                     }
                     res_ins = supabase.table("movimenti_budget").insert(nuovo_rec).execute()
                     if res_ins.data:
@@ -335,7 +425,7 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
 
     dlg_conv = ft.AlertDialog(
         title=ft.Text(
-            f"✅ Da Prevista a Effettiva ({'Spesa' if tipo_mov == 'SPESA' else 'Entrata'})",
+            f"✅ Rendi Effettiva ({'Spesa' if tipo_mov == 'SPESA' else 'Entrata'})",
             size=15,
             weight=ft.FontWeight.BOLD,
             color=ft.Colors.GREEN_800,
@@ -344,7 +434,7 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
             content=ft.Column([
                 ft.Text(f"📌 {titolo_mov}", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
                 ft.Text(
-                    f"Importo previsto: {formatta_euro(imp_previsto)} • Scadenza: {dt_ist.strftime('%d/%m/%Y')}",
+                    f"Previsto: {formatta_euro(imp_previsto)} • Scadenza: {dt_ist.strftime('%d/%m/%Y')}",
                     size=11,
                     color=ft.Colors.GREY_700,
                 ),
@@ -354,12 +444,12 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
                 txt_fornitore_eff,
                 txt_err,
             ], tight=True, spacing=8),
-            width=330,
+            width=325,
         ),
         actions=[
             ft.TextButton("Annulla", on_click=lambda e: _chiudi_dlg(page, dlg_conv)),
             ft.Container(
-                content=ft.Text("✅ Conferma Effettiva", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                content=ft.Text("✅ Conferma", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
                 bgcolor=ft.Colors.GREEN_700,
                 padding=ft.Padding(12, 8, 12, 8),
                 border_radius=6,
@@ -367,12 +457,13 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
             ),
         ],
         shape=ft.RoundedRectangleBorder(radius=10),
+        inset_padding=ft.Padding(12, 16, 12, 16),
     )
     _apri_dlg(page, dlg_conv)
 
 
 # ==========================================================
-# FORM COMPLETO NUOVA / MODIFICA SPESA O ENTRATA
+# FORM COMPLETO NUOVA / MODIFICA SPESA O ENTRATA (OTTIMIZZATO MOBILE)
 # ==========================================================
 def apri_form_movimento_budget(
     page: ft.Page,
@@ -394,6 +485,8 @@ def apri_form_movimento_budget(
 
     res_fam = supabase.table("famiglia").select("*").order("nome").execute()
     lista_famiglia = res_fam.data if res_fam.data else []
+
+    lista_fornitori = carica_fornitori_enti_memoria()
 
     def get_colori_liberi_cat(id_cat_esclusa=None):
         occupati = [c["colore"] for c in lista_categorie if c.get("colore") and str(c["id"]) != str(id_cat_esclusa)]
@@ -442,55 +535,164 @@ def apri_form_movimento_budget(
         if data_fine_db is None or str(data_fine_db) >= data_istanza_str:
             switch_per_init = True
 
+    # DEFAULT: Evento Sporadico/Singolo = Evidenziato (True), Evento Periodico = Non Evidenziato (False)
     val_ev_db = movimento_esistente.get("is_evidenziato") if movimento_esistente else None
-    evidenziato_init = True if val_ev_db is None else (str(val_ev_db).lower() in ["true", "1", "t", "y", "yes"])
+    if val_ev_db is None:
+        evidenziato_init = not switch_per_init
+    else:
+        evidenziato_init = str(val_ev_db).lower() in ["true", "1", "t", "y", "yes"]
 
     btn_tipo_spesa = ft.Container(
-        content=ft.Text("💸 SPESA", size=12, weight=ft.FontWeight.BOLD),
-        padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
+        content=ft.Text("💸 SPESA", size=11.5, weight=ft.FontWeight.BOLD),
+        padding=7, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
     )
     btn_tipo_entrata = ft.Container(
-        content=ft.Text("💰 ENTRATA", size=12, weight=ft.FontWeight.BOLD),
-        padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
+        content=ft.Text("💰 ENTRATA", size=11.5, weight=ft.FontWeight.BOLD),
+        padding=7, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
     )
     btn_stato_previsto = ft.Container(
-        content=ft.Text("⏳ PREVISTA", size=12, weight=ft.FontWeight.BOLD),
-        padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
+        content=ft.Text("⏳ PREVISTA", size=11.5, weight=ft.FontWeight.BOLD),
+        padding=7, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
     )
     btn_stato_effettivo = ft.Container(
-        content=ft.Text("✅ EFFETTIVA", size=12, weight=ft.FontWeight.BOLD),
-        padding=8, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
+        content=ft.Text("✅ EFFETTIVA", size=11.5, weight=ft.FontWeight.BOLD),
+        padding=7, border_radius=6, expand=1, alignment=ft.Alignment(0, 0),
     )
 
     dd_categoria = ft.Dropdown(
         label="Categoria (*)",
-        hint_text="Scegli categoria...",
+        hint_text="Scegli...",
         value=cat_init,
         options=[ft.dropdown.Option(key=c["id"], text=c["nome"]) for c in lista_categorie],
         expand=True,
         dense=True,
-        text_size=13,
+        text_size=12,
+        content_padding=ft.Padding(8, 8, 4, 8),
     )
+
+    # --- CAMPO LUOGO / FORNITORE / FONTE / ENTE CON AUTOCOMPILAZIONE ---
     txt_fornitore = ft.TextField(
-        label="Luogo / Fornitore (es. Decò, Plenitude, Datore...)",
-        hint_text="Dove o da chi...",
+        label="Luogo / Fornitore",
+        hint_text="Es. Decò, Plenitude, Regione...",
         value=fornitore_init,
-        text_size=13,
+        text_size=12,
         dense=True,
+        content_padding=ft.Padding(8, 10, 8, 10),
+        expand=True,
     )
+    riga_sugg_fornitori = ft.Row(wrap=True, spacing=4, run_spacing=4, visible=False)
+
+    def seleziona_fornitore_sugg(item_f: dict):
+        txt_fornitore.value = item_f["nome"]
+        if not dd_categoria.value and item_f.get("id_categoria_default"):
+            if any(str(c["id"]) == str(item_f["id_categoria_default"]) for c in lista_categorie):
+                dd_categoria.value = item_f["id_categoria_default"]
+        riga_sugg_fornitori.visible = False
+        page.update()
+
+    def elimina_fornitore_memoria(item_f: dict):
+        if not supabase:
+            return
+        try:
+            if item_f.get("id"):
+                supabase.table("fornitori_enti_budget").delete().eq("id", item_f["id"]).execute()
+            lista_fornitori[:] = [x for x in lista_fornitori if x["nome"].lower() != item_f["nome"].lower()]
+            aggiorna_suggerimenti_fornitore(mostra_anche_vuoto=True)
+        except Exception:
+            pass
+
+    def aggiorna_suggerimenti_fornitore(e=None, mostra_anche_vuoto=False):
+        testo_q = (txt_fornitore.value or "").strip().lower()
+        riga_sugg_fornitori.controls.clear()
+        tipo_corr = stato_form["tipo"]
+
+        if not testo_q and not mostra_anche_vuoto:
+            riga_sugg_fornitori.visible = False
+            try:
+                riga_sugg_fornitori.update()
+            except Exception:
+                pass
+            return
+
+        # Filtra dando priorità a quelli dello stesso tipo (SPESA vs ENTRATA)
+        candidati = [
+            f for f in lista_fornitori
+            if (not testo_q or testo_q in f["nome"].lower())
+            and f["nome"].lower() != testo_q
+        ]
+        candidati.sort(key=lambda x: (0 if x.get("tipo") == tipo_corr else 1, x["nome"].lower()))
+
+        for item_f in candidati[:6]:
+            icona_f = "🏛️" if item_f.get("tipo") == "ENTRATA" else "🏪"
+            riga_sugg_fornitori.controls.append(
+                ft.Container(
+                    content=ft.Row([
+                        ft.GestureDetector(
+                            content=ft.Text(
+                                f"{icona_f} {item_f['nome']}",
+                                size=10.5,
+                                color=ft.Colors.BLUE_900,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            on_tap=lambda ev, it=item_f: seleziona_fornitore_sugg(it),
+                        ),
+                        *(
+                            [
+                                ft.GestureDetector(
+                                    content=ft.Icon(ft.Icons.CLOSE, size=12, color=ft.Colors.RED_600),
+                                    on_tap=lambda ev, it=item_f: elimina_fornitore_memoria(it),
+                                )
+                            ]
+                            if item_f.get("id")
+                            else []
+                        ),
+                    ], spacing=4, tight=True),
+                    bgcolor="#E3F2FD",
+                    padding=ft.Padding(8, 3, 6, 3),
+                    border_radius=12,
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "#90CAF9"),
+                        bottom=ft.BorderSide(1, "#90CAF9"),
+                        left=ft.BorderSide(1, "#90CAF9"),
+                        right=ft.BorderSide(1, "#90CAF9"),
+                    ),
+                )
+            )
+
+        riga_sugg_fornitori.visible = len(riga_sugg_fornitori.controls) > 0
+        try:
+            page.update()
+        except Exception:
+            pass
+
+    txt_fornitore.on_change = aggiorna_suggerimenti_fornitore
+    txt_fornitore.on_focus = lambda e: aggiorna_suggerimenti_fornitore(mostra_anche_vuoto=True)
+
+    btn_mostra_enti = ft.IconButton(
+        icon=ft.Icons.HISTORY,
+        icon_color=ft.Colors.BLUE_900,
+        icon_size=18,
+        tooltip="Mostra Fornitori / Enti salvati",
+        width=32,
+        height=32,
+        on_click=lambda e: aggiorna_suggerimenti_fornitore(mostra_anche_vuoto=not riga_sugg_fornitori.visible),
+    )
+
     txt_titolo = ft.TextField(
-        label="Descrizione (opzionale se indichi Luogo/Fornitore)",
+        label="Descrizione (opzionale)",
         hint_text="Es. Spesa alimentare, Mutuo, Stipendio...",
         value=titolo_init,
-        text_size=13,
+        text_size=12,
         dense=True,
+        content_padding=ft.Padding(8, 10, 8, 10),
     )
     txt_importo = ft.TextField(
         label="Importo € (*)",
         hint_text="Es. 35,00",
         value=importo_init,
-        text_size=14,
+        text_size=13,
         dense=True,
+        content_padding=ft.Padding(8, 10, 8, 10),
         expand=4,
         text_align=ft.TextAlign.RIGHT,
         autofocus=modalita_sporadica,
@@ -513,20 +715,22 @@ def apri_form_movimento_budget(
         label="Data (*)",
         hint_text="GG/MM/AAAA",
         value=data_vis_init,
-        text_size=13,
+        text_size=12,
         dense=True,
+        content_padding=ft.Padding(6, 10, 6, 10),
         on_change=formatta_data_input,
         text_align=ft.TextAlign.CENTER,
         expand=4,
     )
 
-    riga_importo_data = ft.Row([txt_importo, txt_data], spacing=8)
+    riga_importo_data = ft.Row([txt_importo, txt_data], spacing=6)
 
-    notif_attiva_init = (
-        str(movimento_esistente.get("notifica_attiva", True)).lower() in ["true", "1", "t", "y", "yes"]
-        if movimento_esistente
-        else (stato_form["stato"] == "PREVISTO")
-    )
+    # --- NOTIFICHE SCADENZA: DEFAULT OFF PER ENTRATA, ON PER SPESA PREVISTA ---
+    if movimento_esistente:
+        notif_attiva_init = str(movimento_esistente.get("notifica_attiva", False)).lower() in ["true", "1", "t", "y", "yes"]
+    else:
+        notif_attiva_init = (stato_form["stato"] == "PREVISTO" and stato_form["tipo"] == "SPESA")
+
     ora_notif_init = str(movimento_esistente.get("ora_notifica") or "09:00")[:5] if movimento_esistente else "09:00"
     preavviso_val_init = int(movimento_esistente.get("preavviso_valore") or 1) if movimento_esistente else 1
     preavviso_unita_init = (
@@ -540,10 +744,7 @@ def apri_form_movimento_budget(
     val_rip_db = movimento_esistente.get("preavviso_ripeti") if movimento_esistente else None
     preavviso_ripeti_init = True if val_rip_db is None else (str(val_rip_db).lower() in ["true", "1", "t", "y", "yes"])
 
-    switch_notifica = ft.Switch(
-        label="🔔 Avvisami alla scadenza",
-        value=notif_attiva_init,
-    )
+    switch_notifica = ft.Switch(value=notif_attiva_init, scale=0.78)
 
     def formatta_ora_notif(e):
         val_pulito = "".join([c for c in (txt_ora_notifica.value or "") if c.isdigit()])
@@ -558,24 +759,25 @@ def apri_form_movimento_budget(
             page.update()
 
     txt_ora_notifica = ft.TextField(
-        label="Ora avviso",
+        label="Ora",
         value=ora_notif_init,
-        width=74,
-        text_size=12,
+        width=68,
+        text_size=11.5,
         label_style=ft.TextStyle(size=10),
         dense=True,
-        content_padding=ft.Padding(4, 8, 4, 8),
+        content_padding=ft.Padding(4, 6, 4, 6),
         text_align=ft.TextAlign.CENTER,
         on_change=formatta_ora_notif,
+        visible=notif_attiva_init,
     )
     txt_preavviso_val = ft.TextField(
         label="Anticipo",
         value=str(preavviso_val_init),
-        width=54,
-        text_size=12,
+        width=62,
+        text_size=11.5,
         label_style=ft.TextStyle(size=10),
         dense=True,
-        content_padding=ft.Padding(2, 8, 2, 8),
+        content_padding=ft.Padding(4, 6, 4, 6),
         text_align=ft.TextAlign.CENTER,
     )
     dd_preavviso_unita = ft.Dropdown(
@@ -588,35 +790,49 @@ def apri_form_movimento_budget(
             ft.dropdown.Option(key="settimane", text="settimane"),
         ],
         dense=True,
-        text_size=12,
+        text_size=11.5,
         label_style=ft.TextStyle(size=10),
-        content_padding=ft.Padding(8, 8, 4, 8),
+        content_padding=ft.Padding(8, 6, 4, 6),
         expand=True,
     )
     switch_preavviso_ripeti = ft.Switch(value=preavviso_ripeti_init, scale=0.75)
+
+    riga_header_notifica = ft.Row(
+        [
+            ft.Row([
+                ft.Container(content=switch_notifica, width=38, height=26, alignment=ft.Alignment(0, 0)),
+                ft.Text("🔔 Avvisami alla scadenza", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            ], spacing=4, tight=True),
+            txt_ora_notifica,
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
     riga_dettagli_notifica = ft.Row(
         [
-            txt_ora_notifica,
             txt_preavviso_val,
             dd_preavviso_unita,
             ft.Row([
-                ft.Container(content=switch_preavviso_ripeti, width=38, height=28, alignment=ft.Alignment(0, 0)),
+                ft.Container(content=switch_preavviso_ripeti, width=36, height=26, alignment=ft.Alignment(0, 0)),
                 ft.Text("Ripeti", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
             ], spacing=2, tight=True),
         ],
-        spacing=5,
+        spacing=6,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
         visible=notif_attiva_init,
     )
 
     def on_change_switch_notifica(e):
-        riga_dettagli_notifica.visible = bool(switch_notifica.value)
+        att = bool(switch_notifica.value)
+        riga_dettagli_notifica.visible = att
+        txt_ora_notifica.visible = att
         page.update()
 
     switch_notifica.on_change = on_change_switch_notifica
 
     box_notifiche_scadenza = ft.Container(
-        content=ft.Column([switch_notifica, riga_dettagli_notifica], spacing=4, tight=True),
+        content=ft.Column([riga_header_notifica, riga_dettagli_notifica], spacing=6, tight=True),
         bgcolor="#F5F7FA",
         padding=8,
         border_radius=8,
@@ -643,22 +859,36 @@ def apri_form_movimento_budget(
         btn_stato_effettivo.content.color = ft.Colors.WHITE if not is_prev else ft.Colors.GREY_800
 
         box_notifiche_scadenza.visible = is_prev
-        txt_fornitore.label = (
-            "Luogo / Fornitore (es. Decò, Plenitude...)"
+        txt_fornitore.label = "Luogo / Fornitore" if is_spesa else "Fonte / Ente"
+        txt_fornitore.hint_text = (
+            "Es. Decò, Plenitude, Enel..."
             if is_spesa
-            else "Fonte / Ente (es. Datore di lavoro, INPS, Cliente...)"
+            else "Es. Regione Puglia, Datore, INPS..."
         )
 
     def imposta_tipo(nuovo_tipo):
         stato_form["tipo"] = nuovo_tipo
+        # Regola richiesta: per default una ENTRATA ha l'avviso in OFF, una SPESA prevista in ON
+        if nuovo_tipo == "ENTRATA":
+            switch_notifica.value = False
+            riga_dettagli_notifica.visible = False
+            txt_ora_notifica.visible = False
+        elif nuovo_tipo == "SPESA" and stato_form["stato"] == "PREVISTO" and not movimento_esistente:
+            switch_notifica.value = True
+            riga_dettagli_notifica.visible = True
+            txt_ora_notifica.visible = True
         aggiorna_stile_selettori()
+        if riga_sugg_fornitori.visible:
+            aggiorna_suggerimenti_fornitore(mostra_anche_vuoto=True)
         page.update()
 
     def imposta_stato(nuovo_stato):
         stato_form["stato"] = nuovo_stato
-        if nuovo_stato == "PREVISTO" and not movimento_esistente:
-            switch_notifica.value = True
-            riga_dettagli_notifica.visible = True
+        if nuovo_stato == "PREVISTO":
+            att_def = (stato_form["tipo"] == "SPESA") if not movimento_esistente else bool(switch_notifica.value)
+            switch_notifica.value = att_def
+            riga_dettagli_notifica.visible = att_def
+            txt_ora_notifica.visible = att_def
         aggiorna_stile_selettori()
         page.update()
 
@@ -668,6 +898,7 @@ def apri_form_movimento_budget(
     btn_stato_effettivo.on_click = lambda e: imposta_stato("EFFETTIVO")
     aggiorna_stile_selettori()
 
+    # --- ASSEGNAZIONE COMPONENTI FAMIGLIA COMPATTA ---
     selezionati_famiglia = set(assegnatari_init)
 
     def toggle_famiglia(e, f_id, colore_fam):
@@ -687,32 +918,23 @@ def apri_form_movimento_budget(
         is_sel = f["id"] in selezionati_famiglia
         bottoni_famiglia.append(
             ft.Container(
-                content=ft.Text(f["nome"], size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else colore_fam),
+                content=ft.Text(f["nome"], size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else colore_fam),
                 bgcolor=colore_fam if is_sel else ft.Colors.TRANSPARENT,
                 border=ft.Border(
-                    top=ft.BorderSide(2, colore_fam),
-                    bottom=ft.BorderSide(2, colore_fam),
-                    left=ft.BorderSide(2, colore_fam),
-                    right=ft.BorderSide(2, colore_fam),
+                    top=ft.BorderSide(1.5, colore_fam),
+                    bottom=ft.BorderSide(1.5, colore_fam),
+                    left=ft.BorderSide(1.5, colore_fam),
+                    right=ft.BorderSide(1.5, colore_fam),
                 ),
-                padding=6,
-                border_radius=15,
-                width=120,
-                alignment=ft.Alignment(0, 0),
+                padding=ft.Padding(10, 4, 10, 4),
+                border_radius=14,
                 on_click=lambda e, fid=f["id"], cf=colore_fam: toggle_famiglia(e, fid, cf),
             )
         )
 
-    mezzo = (len(bottoni_famiglia) + 1) // 2
-    griglia_assegnatari = ft.Row(
-        [
-            ft.Column(bottoni_famiglia[:mezzo], spacing=5),
-            ft.Column(bottoni_famiglia[mezzo:], spacing=5),
-        ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        vertical_alignment=ft.CrossAxisAlignment.START,
-    )
+    griglia_assegnatari = ft.Row(bottoni_famiglia, wrap=True, spacing=5, run_spacing=5)
 
+    # --- PERIODICITÀ ED EVIDENZIAZIONE (COMPATTI SU UNA RIGA) ---
     giorni_db_str = movimento_esistente.get("giorni_periodici") if movimento_esistente else None
     selezionati_giorni = set()
     if giorni_db_str:
@@ -720,13 +942,16 @@ def apri_form_movimento_budget(
     else:
         selezionati_giorni.add(data_istanza.weekday())
 
-    switch_periodico = ft.Switch(label="🔄 Movimento Periodico (es. Stipendio, Mutuo)", value=switch_per_init)
+    switch_periodico = ft.Switch(value=switch_per_init, scale=0.78)
+    switch_evidenziato = ft.Switch(value=evidenziato_init, scale=0.78)
+
     dd_tipo_periodicita = ft.Dropdown(
-        label="Frequenza di ripetizione",
+        label="Frequenza ripetizione",
         value=tipo_per_init if tipo_per_init in [x[0] for x in TIPI_PERIODICITA] else "MENSILE",
         options=[ft.dropdown.Option(key=k, text=lbl) for k, lbl in TIPI_PERIODICITA],
         dense=True,
         text_size=12,
+        content_padding=ft.Padding(8, 6, 4, 6),
         visible=switch_per_init,
     )
 
@@ -751,17 +976,17 @@ def apri_form_movimento_budget(
         is_g_sel = i in selezionati_giorni
         bottoni_giorni.append(
             ft.Container(
-                content=ft.Text(lettera, size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_g_sel else ft.Colors.GREY_600),
+                content=ft.Text(lettera, size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_g_sel else ft.Colors.GREY_600),
                 bgcolor=ft.Colors.BLUE_900 if is_g_sel else ft.Colors.TRANSPARENT,
                 border=ft.Border(
-                    top=ft.BorderSide(2, ft.Colors.BLUE_900),
-                    bottom=ft.BorderSide(2, ft.Colors.BLUE_900),
-                    left=ft.BorderSide(2, ft.Colors.BLUE_900),
-                    right=ft.BorderSide(2, ft.Colors.BLUE_900),
+                    top=ft.BorderSide(1.5, ft.Colors.BLUE_900),
+                    bottom=ft.BorderSide(1.5, ft.Colors.BLUE_900),
+                    left=ft.BorderSide(1.5, ft.Colors.BLUE_900),
+                    right=ft.BorderSide(1.5, ft.Colors.BLUE_900),
                 ),
                 shape=ft.BoxShape.CIRCLE,
-                width=30,
-                height=30,
+                width=28,
+                height=28,
                 alignment=ft.Alignment(0, 0),
                 on_click=lambda e, idx=i: toggle_giorno(e, idx),
             )
@@ -774,17 +999,47 @@ def apri_form_movimento_budget(
         visible=(switch_per_init and dd_tipo_periodicita.value == "SETTIMANALE"),
     )
 
-    def aggiorna_visibilita_periodicita(e=None):
-        dd_tipo_periodicita.visible = bool(switch_periodico.value)
+    def on_change_periodico(e=None):
+        is_per = bool(switch_periodico.value)
+        dd_tipo_periodicita.visible = is_per
+        riga_giorni_sett.visible = bool(is_per and dd_tipo_periodicita.value == "SETTIMANALE")
+        # Regola richiesta: Periodico = non evidenziato di default; Sporadico = evidenziato di default
+        switch_evidenziato.value = not is_per
+        page.update()
+
+    def on_change_tipo_per(e=None):
         riga_giorni_sett.visible = bool(switch_periodico.value and dd_tipo_periodicita.value == "SETTIMANALE")
         page.update()
 
-    switch_periodico.on_change = aggiorna_visibilita_periodicita
-    dd_tipo_periodicita.on_change = aggiorna_visibilita_periodicita
+    switch_periodico.on_change = on_change_periodico
+    dd_tipo_periodicita.on_change = on_change_tipo_per
 
-    switch_evidenziato = ft.Switch(label="Evidenziato nel calendario", value=evidenziato_init)
-    txt_note = ft.TextField(label="Note aggiuntive", value=note_init, multiline=True, min_lines=1, max_lines=3, text_size=12)
-    txt_errore_form = ft.Text("", color=ft.Colors.RED_700, size=12, weight=ft.FontWeight.BOLD, visible=False)
+    riga_switch_opzioni = ft.Row(
+        [
+            ft.Row([
+                ft.Container(content=switch_periodico, width=38, height=26, alignment=ft.Alignment(0, 0)),
+                ft.Text("🔄 Periodico", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            ], spacing=4, tight=True),
+            ft.Row([
+                ft.Container(content=switch_evidenziato, width=38, height=26, alignment=ft.Alignment(0, 0)),
+                ft.Text("✨ Evidenzia", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+            ], spacing=4, tight=True),
+        ],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+    txt_note = ft.TextField(
+        label="Note aggiuntive",
+        value=note_init,
+        multiline=True,
+        min_lines=1,
+        max_lines=2,
+        text_size=12,
+        dense=True,
+        content_padding=ft.Padding(8, 8, 8, 8),
+    )
+    txt_errore_form = ft.Text("", color=ft.Colors.RED_700, size=11.5, weight=ft.FontWeight.BOLD, visible=False)
 
     dlg_movimento = None
     dlg_categoria = None
@@ -828,7 +1083,7 @@ def apri_form_movimento_budget(
                 termina_operazione(page)
 
         dlg_categoria = ft.AlertDialog(
-            title=ft.Text("Nuova Categoria Budget", size=16, weight=ft.FontWeight.BOLD),
+            title=ft.Text("Nuova Categoria Budget", size=15, weight=ft.FontWeight.BOLD),
             content=ft.Column([txt_nuova_cat, dd_colore, txt_err_cat], tight=True),
             actions=[
                 ft.TextButton("Annulla", on_click=lambda ev: _chiudi_dlg(page, dlg_categoria)),
@@ -896,7 +1151,7 @@ def apri_form_movimento_budget(
                 termina_operazione(page)
 
         dlg_modifica_cat = ft.AlertDialog(
-            title=ft.Text(f"Modifica {cat_corr['nome']}", size=16, weight=ft.FontWeight.BOLD),
+            title=ft.Text(f"Modifica {cat_corr['nome']}", size=15, weight=ft.FontWeight.BOLD),
             content=ft.Column([txt_nome_mod, dd_colore_mod, txt_err_mod], tight=True),
             actions=[
                 ft.TextButton("Annulla", on_click=lambda ev: _chiudi_dlg(page, dlg_modifica_cat)),
@@ -911,8 +1166,8 @@ def apri_form_movimento_budget(
         )
         _apri_dlg(page, dlg_modifica_cat)
 
-    btn_edit_cat = ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, on_click=apri_modifica_categoria)
-    btn_add_cat = ft.IconButton(icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.BLUE_900, on_click=apri_nuova_categoria)
+    btn_edit_cat = ft.IconButton(icon=ft.Icons.EDIT, icon_color=ft.Colors.ORANGE_800, icon_size=18, width=32, height=32, on_click=apri_modifica_categoria)
+    btn_add_cat = ft.IconButton(icon=ft.Icons.ADD_CIRCLE, icon_color=ft.Colors.BLUE_900, icon_size=18, width=32, height=32, on_click=apri_nuova_categoria)
 
     def esegui_db_con_loading(funzione):
         if not inizia_operazione(page):
@@ -927,6 +1182,13 @@ def apri_form_movimento_budget(
         threading.Thread(target=worker, daemon=True).start()
 
     def _scrivi_movimento_db(dati_mov: dict, data_db: str, ambito: str):
+        if dati_mov.get("fornitore_luogo"):
+            salva_fornitore_ente_in_memoria(
+                dati_mov["fornitore_luogo"],
+                dati_mov.get("tipo", "SPESA"),
+                dati_mov.get("id_categoria"),
+            )
+
         if is_p_db and ambito == "Solo questa occorrenza":
             dati_mov["is_periodico"] = False
             dati_mov["tipo_periodicita"] = None
@@ -1103,7 +1365,7 @@ def apri_form_movimento_budget(
                 esegui_db_con_loading(lambda: _scrivi_movimento_db(dati_base, data_db, dd_scelta.value))
 
             dlg_scelta = ft.AlertDialog(
-                title=ft.Text("Modifica Movimento Periodico", size=16, weight=ft.FontWeight.BOLD),
+                title=ft.Text("Modifica Movimento Periodico", size=15, weight=ft.FontWeight.BOLD),
                 content=ft.Column([ft.Text("Come vuoi applicare le modifiche?"), dd_scelta], tight=True),
                 actions=[
                     ft.TextButton("Annulla", on_click=lambda ev: _chiudi_dlg(page, dlg_scelta)),
@@ -1160,7 +1422,7 @@ def apri_form_movimento_budget(
                 esegui_db_con_loading(op_del)
 
             dlg_del = ft.AlertDialog(
-                title=ft.Text("Elimina Movimento Periodico", size=16, weight=ft.FontWeight.BOLD),
+                title=ft.Text("Elimina Movimento Periodico", size=15, weight=ft.FontWeight.BOLD),
                 content=ft.Column([ft.Text("Scegli la modalità di eliminazione:"), dd_del], tight=True),
                 actions=[
                     ft.TextButton("Annulla", on_click=lambda ev: _chiudi_dlg(page, dlg_del)),
@@ -1188,7 +1450,7 @@ def apri_form_movimento_budget(
                 esegui_db_con_loading(op_del)
 
             dlg_del = ft.AlertDialog(
-                title=ft.Text("Elimina Movimento", size=16, weight=ft.FontWeight.BOLD),
+                title=ft.Text("Elimina Movimento", size=15, weight=ft.FontWeight.BOLD),
                 content=ft.Text("Sei sicuro di voler eliminare questa voce?"),
                 actions=[
                     ft.TextButton("Annulla", on_click=lambda ev: _chiudi_dlg(page, dlg_del)),
@@ -1211,10 +1473,10 @@ def apri_form_movimento_budget(
 
     btn_annulla = ft.TextButton("Annulla", on_click=lambda e: _chiudi_dlg(page, dlg_movimento))
     btn_salva = ft.Container(
-        content=ft.Text("Aggiorna" if movimento_esistente else "Salva", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+        content=ft.Text("Aggiorna" if movimento_esistente else "Salva", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
         bgcolor=ft.Colors.BLUE_900,
-        padding=10,
-        border_radius=5,
+        padding=ft.Padding(14, 8, 14, 8),
+        border_radius=6,
         on_click=avvia_salvataggio,
     )
 
@@ -1223,11 +1485,11 @@ def apri_form_movimento_budget(
         controlli_extra_modifica.append(
             ft.Container(
                 content=ft.Row([
-                    ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.WHITE, size=18),
-                    ft.Text("TRASFORMA IN EFFETTIVA (CONFERMA DATA E IMPORTO)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.WHITE, size=16),
+                    ft.Text("TRASFORMA IN EFFETTIVA (DATA E IMPORTO)", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=10.5),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=5),
                 bgcolor=ft.Colors.GREEN_700,
-                padding=10,
+                padding=8,
                 border_radius=6,
                 on_click=lambda e: (
                     _chiudi_dlg(page, dlg_movimento),
@@ -1238,13 +1500,13 @@ def apri_form_movimento_budget(
 
     if movimento_esistente:
         btn_elimina = ft.Container(
-            content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+            content=ft.Text("🗑️ Elimina", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
             bgcolor=ft.Colors.RED_700,
-            padding=10,
-            border_radius=5,
+            padding=ft.Padding(10, 8, 10, 8),
+            border_radius=6,
             on_click=apri_dialog_eliminazione,
         )
-        riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=5)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+        riga_azioni = ft.Row([btn_elimina, ft.Row([btn_annulla, btn_salva], spacing=4)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
     else:
         riga_azioni = ft.Row([btn_annulla, btn_salva], alignment=ft.MainAxisAlignment.END)
 
@@ -1252,43 +1514,44 @@ def apri_form_movimento_budget(
         *controlli_extra_modifica,
         ft.Row([btn_tipo_spesa, btn_tipo_entrata], spacing=6),
         ft.Row([btn_stato_previsto, btn_stato_effettivo], spacing=6),
-        ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-        txt_fornitore,
+        ft.Row([dd_categoria, ft.Row([btn_edit_cat, btn_add_cat], spacing=0)], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        ft.Row([txt_fornitore, btn_mostra_enti], spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        riga_sugg_fornitori,
         riga_importo_data,
         txt_titolo,
         box_notifiche_scadenza,
         ft.Divider(height=1, color="#E0E0E0"),
-        ft.Text("Assegna a (vuoto = Tutta la famiglia):", weight=ft.FontWeight.BOLD, size=12),
+        ft.Text("Assegna a (vuoto = Tutta la famiglia):", weight=ft.FontWeight.BOLD, size=11, color=ft.Colors.GREY_800),
         griglia_assegnatari,
         ft.Divider(height=1, color="#E0E0E0"),
-        switch_periodico,
+        riga_switch_opzioni,
         dd_tipo_periodicita,
         riga_giorni_sett,
-        switch_evidenziato,
         txt_note,
         txt_errore_form,
     ]
 
     dlg_movimento = ft.AlertDialog(
-        title=ft.Text(titolo_modal, size=16, weight=ft.FontWeight.BOLD),
+        title=ft.Text(titolo_modal, size=15, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
         content=ft.Container(
-            content=ft.Column(colonna_contenuto, tight=True, spacing=7, scroll=ft.ScrollMode.AUTO),
-            width=355,
+            content=ft.Column(colonna_contenuto, tight=True, spacing=6, scroll=ft.ScrollMode.AUTO),
+            width=340,
         ),
         actions=[riga_azioni],
         shape=ft.RoundedRectangleBorder(radius=10),
-        content_padding=15,
+        content_padding=12,
+        inset_padding=ft.Padding(10, 14, 10, 14),
     )
     _apri_dlg(page, dlg_movimento)
 
 
 # ==========================================================
-# CALENDARIO E CRUSCOTTO BUDGET (MESE, SETTIMANA, GIORNO, RIEPILOGO)
+# CALENDARIO E CRUSCOTTO BUDGET (DEFAULT: VISTA MESE)
 # ==========================================================
 def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switch_impegni=None):
     stato = {
         "data": (stato_condiviso.get("data") if stato_condiviso else None) or datetime.now(),
-        "vista": (stato_condiviso.get("vista") if stato_condiviso else None) or "Giorno",
+        "vista": (stato_condiviso.get("vista") if (stato_condiviso and stato_condiviso.get("vista")) else "Mese"),
         "filtro_categoria": [],
         "filtro_familiare": [],
         "filtro_stato": "TUTTI",
@@ -1325,11 +1588,11 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
 
     ricarica_dati_base()
 
-    testo_header = ft.Text(size=16, weight=ft.FontWeight.BOLD)
-    btn_giorno = ft.Container(content=ft.Text("Giorno", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Giorno"))
-    btn_settimana = ft.Container(content=ft.Text("Settimana", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Settimana"))
-    btn_mese = ft.Container(content=ft.Text("Mese", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Mese"))
-    btn_riepilogo = ft.Container(content=ft.Text("📊 Budget", size=12, weight=ft.FontWeight.BOLD), border_radius=5, padding=6, on_click=lambda e: cambia_vista("Budget"))
+    testo_header = ft.Text(size=15, weight=ft.FontWeight.BOLD)
+    btn_giorno = ft.Container(content=ft.Text("Giorno", size=11.5, weight=ft.FontWeight.BOLD), border_radius=5, padding=ft.Padding(8, 5, 8, 5), on_click=lambda e: cambia_vista("Giorno"))
+    btn_settimana = ft.Container(content=ft.Text("Settimana", size=11.5, weight=ft.FontWeight.BOLD), border_radius=5, padding=ft.Padding(8, 5, 8, 5), on_click=lambda e: cambia_vista("Settimana"))
+    btn_mese = ft.Container(content=ft.Text("Mese", size=11.5, weight=ft.FontWeight.BOLD), border_radius=5, padding=ft.Padding(8, 5, 8, 5), on_click=lambda e: cambia_vista("Mese"))
+    btn_riepilogo = ft.Container(content=ft.Text("📊 Budget", size=11.5, weight=ft.FontWeight.BOLD), border_radius=5, padding=ft.Padding(8, 5, 8, 5), on_click=lambda e: cambia_vista("Budget"))
 
     def bordo_standard():
         return ft.Border(
@@ -1347,10 +1610,18 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             right=ft.BorderSide(spessore, colore),
         )
 
+    def bordo_evidenziato_blu():
+        return ft.Border(
+            top=ft.BorderSide(2.2, "#64B5F6"),
+            left=ft.BorderSide(2.2, "#2196F3"),
+            right=ft.BorderSide(2.2, "#1565C0"),
+            bottom=ft.BorderSide(2.2, "#0D47A1"),
+        )
+
     box_cruscotto_mese = ft.Container()
-    layer_mese = ft.Column(spacing=0, visible=False)
+    layer_mese = ft.Column(spacing=0, visible=True)
     layer_settimana = ft.Column(spacing=0, visible=False)
-    layer_giorno = ft.Column(spacing=0, visible=True)
+    layer_giorno = ft.Column(spacing=0, visible=False)
     layer_budget = ft.Column(spacing=8, visible=False)
     area_dinamica = ft.Column([layer_mese, layer_settimana, layer_giorno, layer_budget], expand=True, spacing=0)
 
@@ -1421,6 +1692,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         stato_m = normalizza_stato_budget(mov.get("stato"))
         is_spesa = (tipo == "SPESA")
         is_previsto = (stato_m == "PREVISTO")
+        is_evid = is_movimento_evidenziato(mov)
 
         titolo = mov.get("titolo") or "Movimento"
         fornitore = mov.get("fornitore_luogo") or ""
@@ -1428,16 +1700,16 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         note = mov.get("note") or ""
 
         cat_dati = mappa_categorie.get(mov.get("id_categoria")) or {}
-        cat_nome = cat_dati.get("nome", "SENZA CATEGORIA")
+        cat_nome = cat_dati.get("nome", "ALTRO")
         cat_colore = cat_dati.get("colore", "#607D8B")
 
         val_p = mov.get("is_periodico")
         is_p = str(val_p).lower() in ["true", "1", "t", "y", "yes"]
-        per_label = f" 🔄 {mov.get('tipo_periodicita', 'MENSILE')[:4]}" if is_p else ""
+        per_label = f" 🔄" if is_p else ""
 
         assegnatari_ids = mov.get("assegnatari_ids") or []
         nomi_asg = [mappa_famiglia[fid]["nome"] for fid in assegnatari_ids if fid in mappa_famiglia]
-        testo_asg = ", ".join(nomi_asg) if nomi_asg else "Tutta la famiglia"
+        testo_asg = ", ".join(nomi_asg) if nomi_asg else "Tutti"
 
         segno = "-" if is_spesa else "+"
         colore_imp = "#C62828" if is_spesa else "#2E7D32"
@@ -1451,48 +1723,69 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             sfondo_m = "#FFEBEE" if (is_spesa and not is_previsto) else ("#FFF8E1" if is_previsto else "#E8F5E9")
             return ft.Container(
                 content=ft.Row([
-                    ft.Text(f"{'⏳' if is_previsto else ''}{segno}{int(round(importo))}€", size=7, weight=ft.FontWeight.BOLD, color=colore_imp, no_wrap=True),
-                    ft.Text(fornitore or titolo, size=7, color=ft.Colors.BLACK, no_wrap=True, expand=True),
+                    ft.Text(
+                        f"{'⏳' if is_previsto else ''}{segno}{int(round(importo))}€",
+                        size=6.8,
+                        weight=ft.FontWeight.BOLD,
+                        color=colore_imp,
+                        no_wrap=True,
+                    ),
+                    ft.Text(
+                        fornitore or titolo,
+                        size=6.8,
+                        weight=ft.FontWeight.BOLD if is_evid else ft.FontWeight.NORMAL,
+                        color=ft.Colors.BLACK,
+                        no_wrap=True,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        expand=True,
+                    ),
                 ], spacing=2),
                 bgcolor=sfondo_m,
-                padding=2,
+                padding=ft.Padding(2, 1, 2, 1),
                 border_radius=3,
                 border=ft.Border(left=ft.BorderSide(3, cat_colore)),
-                height=19,
+                height=18,
             )
 
         if vista_card == "Settimana":
             return ft.Container(
                 content=ft.Column([
                     ft.Row([
-                        ft.Text(cat_nome[:10] + per_label, size=8, weight=ft.FontWeight.BOLD, color=cat_colore, expand=True),
-                        ft.Text("⏳" if is_previsto else "✅", size=9),
-                    ], spacing=2),
-                    ft.Text(f"{segno} {formatta_euro(importo)}", size=10, weight=ft.FontWeight.BOLD, color=colore_imp),
-                    ft.Text(fornitore if fornitore else titolo, size=9, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK, no_wrap=True),
-                    ft.Text(testo_asg, size=8, color=ft.Colors.GREY_700, no_wrap=True),
-                ], spacing=1),
+                        ft.Text(cat_nome[:8] + per_label, size=7.5, weight=ft.FontWeight.BOLD, color=cat_colore, no_wrap=True, expand=True),
+                        ft.Text("⏳" if is_previsto else "✅", size=8),
+                    ], spacing=1),
+                    ft.Text(f"{segno}{int(round(importo))}€", size=9.5, weight=ft.FontWeight.BOLD, color=colore_imp, no_wrap=True),
+                    ft.Text(
+                        fornitore if fornitore else titolo,
+                        size=8,
+                        weight=ft.FontWeight.BOLD if is_evid else ft.FontWeight.NORMAL,
+                        color=ft.Colors.BLACK,
+                        no_wrap=True,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                ], spacing=1, tight=True),
                 bgcolor="#FFFDF7" if is_previsto else ft.Colors.WHITE,
-                padding=4,
-                border_radius=5,
+                padding=3,
+                border_radius=4,
                 border=ft.Border(
-                    left=ft.BorderSide(4, cat_colore),
-                    top=ft.BorderSide(1, "#FFE082" if is_previsto else "#E0E0E0"),
-                    bottom=ft.BorderSide(1, "#FFE082" if is_previsto else "#E0E0E0"),
-                    right=ft.BorderSide(1, "#FFE082" if is_previsto else "#E0E0E0"),
+                    left=ft.BorderSide(3.5, cat_colore),
+                    top=ft.BorderSide(0.8, "#FFE082" if is_previsto else "#E0E0E0"),
+                    bottom=ft.BorderSide(0.8, "#FFE082" if is_previsto else "#E0E0E0"),
+                    right=ft.BorderSide(0.8, "#FFE082" if is_previsto else "#E0E0E0"),
                 ),
                 on_click=lambda e, m_curr=mov, d_c=dt_mov: apri_form_movimento_budget(page, d_c, ricarica_e_aggiorna, m_curr),
             )
 
-        sottotitolo_luogo = f"📍 Luogo/Fornitore: {fornitore}" if fornitore else ""
+        # Vista Giorno
+        sottotitolo_luogo = f"🏪 {fornitore}" if (fornitore and is_spesa) else (f"🏛️ {fornitore}" if fornitore else "")
         azioni_extra = []
         if is_previsto:
             azioni_extra.append(
                 ft.Container(
                     content=ft.Row([
-                        ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=ft.Colors.WHITE, size=14),
-                        ft.Text("Converti in Effettiva", color=ft.Colors.WHITE, size=10, weight=ft.FontWeight.BOLD),
-                    ], spacing=4, tight=True),
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=ft.Colors.WHITE, size=13),
+                        ft.Text("Conferma", color=ft.Colors.WHITE, size=10, weight=ft.FontWeight.BOLD),
+                    ], spacing=3, tight=True),
                     bgcolor=ft.Colors.GREEN_700,
                     padding=ft.Padding(8, 4, 8, 4),
                     border_radius=6,
@@ -1504,38 +1797,38 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             content=ft.Column([
                 ft.Row([
                     ft.Container(
-                        content=ft.Text(cat_nome + per_label, size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        content=ft.Text(cat_nome + per_label, size=9.5, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                         bgcolor=cat_colore,
-                        padding=ft.Padding(7, 2, 7, 2),
-                        border_radius=6,
+                        padding=ft.Padding(6, 2, 6, 2),
+                        border_radius=5,
                     ),
                     ft.Container(
-                        content=ft.Text(badge_stato_txt, size=10, weight=ft.FontWeight.BOLD, color=badge_stato_col),
+                        content=ft.Text(badge_stato_txt, size=9.5, weight=ft.FontWeight.BOLD, color=badge_stato_col),
                         bgcolor=badge_stato_bg,
-                        padding=ft.Padding(7, 2, 7, 2),
-                        border_radius=6,
+                        padding=ft.Padding(6, 2, 6, 2),
+                        border_radius=5,
                     ),
                     ft.Container(expand=True),
-                    ft.Text(f"{segno} {formatta_euro(importo)}", size=15, weight=ft.FontWeight.BOLD, color=colore_imp),
-                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Text(f"{segno} {formatta_euro(importo)}", size=14, weight=ft.FontWeight.BOLD, color=colore_imp),
+                ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
                 ft.Row([
                     ft.Column([
-                        ft.Text(titolo, size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK),
+                        ft.Text(titolo, size=12.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLACK),
                         *([ft.Text(sottotitolo_luogo, size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_800)] if sottotitolo_luogo else []),
-                        ft.Text(f"👨‍👩‍👧‍👦 {testo_asg}", size=10, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD),
+                        ft.Text(f"👤 {testo_asg}", size=10, color=ft.Colors.BLUE_900, weight=ft.FontWeight.BOLD),
                         *([ft.Text(f"📝 {note}", size=10, color=ft.Colors.GREY_700, italic=True)] if note else []),
-                    ], spacing=2, expand=True),
+                    ], spacing=1, expand=True),
                     *azioni_extra,
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ], spacing=5),
+            ], spacing=4, tight=True),
             bgcolor="#FFFDE7" if is_previsto else ft.Colors.WHITE,
             padding=8,
             border_radius=8,
             border=ft.Border(
-                left=ft.BorderSide(6, cat_colore),
-                top=ft.BorderSide(1, "#FFD54F" if is_previsto else "#CFD8DC"),
-                bottom=ft.BorderSide(1, "#FFD54F" if is_previsto else "#CFD8DC"),
-                right=ft.BorderSide(1, "#FFD54F" if is_previsto else "#CFD8DC"),
+                left=ft.BorderSide(5, cat_colore),
+                top=ft.BorderSide(1.5 if is_evid else 1, "#1976D2" if is_evid else ("#FFD54F" if is_previsto else "#CFD8DC")),
+                bottom=ft.BorderSide(1.5 if is_evid else 1, "#1976D2" if is_evid else ("#FFD54F" if is_previsto else "#CFD8DC")),
+                right=ft.BorderSide(1.5 if is_evid else 1, "#1976D2" if is_evid else ("#FFD54F" if is_previsto else "#CFD8DC")),
             ),
             ink=True,
             on_click=lambda e, m_curr=mov, d_c=dt_mov: apri_form_movimento_budget(page, d_c, ricarica_e_aggiorna, m_curr),
@@ -1568,8 +1861,8 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                     content=ft.Text(lbl_s, size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if att else ft.Colors.BLUE_900),
                     bgcolor=ft.Colors.BLUE_900 if att else ft.Colors.TRANSPARENT,
                     border=bordo_personalizzato(ft.Colors.BLUE_900, 1.5),
-                    padding=6,
-                    border_radius=15,
+                    padding=ft.Padding(8, 4, 8, 4),
+                    border_radius=14,
                     on_click=lambda e, cs=cod_s: imposta_filtro_stato(cs),
                 )
             )
@@ -1580,9 +1873,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             ft.Container(
                 content=ft.Text("Tutte", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_tutte_cat else ft.Colors.BLACK),
                 bgcolor=ft.Colors.BLUE_900 if is_tutte_cat else ft.Colors.TRANSPARENT,
-                border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutte_cat else ft.Colors.GREY_400),
-                padding=6,
-                border_radius=15,
+                border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutte_cat else ft.Colors.GREY_400, 1.5),
+                padding=ft.Padding(8, 4, 8, 4),
+                border_radius=14,
                 on_click=lambda e: imposta_filtro_cat(None),
             )
         )
@@ -1592,9 +1885,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 ft.Container(
                     content=ft.Text(c["nome"], size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else c["colore"]),
                     bgcolor=c["colore"] if is_sel else ft.Colors.TRANSPARENT,
-                    border=bordo_personalizzato(c["colore"]),
-                    padding=6,
-                    border_radius=15,
+                    border=bordo_personalizzato(c["colore"], 1.5),
+                    padding=ft.Padding(8, 4, 8, 4),
+                    border_radius=14,
                     on_click=lambda e, cid=c["id"]: imposta_filtro_cat(cid),
                 )
             )
@@ -1605,9 +1898,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             ft.Container(
                 content=ft.Text("Tutti", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_tutti_fam else ft.Colors.BLACK),
                 bgcolor=ft.Colors.BLUE_900 if is_tutti_fam else ft.Colors.TRANSPARENT,
-                border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutti_fam else ft.Colors.GREY_400),
-                padding=6,
-                border_radius=15,
+                border=bordo_personalizzato(ft.Colors.BLUE_900 if is_tutti_fam else ft.Colors.GREY_400, 1.5),
+                padding=ft.Padding(8, 4, 8, 4),
+                border_radius=14,
                 on_click=lambda e: imposta_filtro_fam(None),
             )
         )
@@ -1618,9 +1911,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 ft.Container(
                     content=ft.Text(f["nome"], size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE if is_sel else colore_fam),
                     bgcolor=colore_fam if is_sel else ft.Colors.TRANSPARENT,
-                    border=bordo_personalizzato(colore_fam),
-                    padding=6,
-                    border_radius=15,
+                    border=bordo_personalizzato(colore_fam, 1.5),
+                    padding=ft.Padding(8, 4, 8, 4),
+                    border_radius=14,
                     on_click=lambda e, fid=f["id"]: imposta_filtro_fam(fid),
                 )
             )
@@ -1678,55 +1971,70 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
         saldo_effettivo = entrate_eff - spese_eff
         saldo_fine_mese = tot_entrate - tot_spese
 
+        # CRUSCOTTO BILANCIO COMPATTO E ALLINEATO PER MOBILE (NESSUN TESTO SPEZZATO)
         box_cruscotto_mese.content = ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text(f"📊 BILANCIO {MESI[data.month].upper()} {data.year}", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900, expand=True),
                     ft.Text(
-                        f"Saldo Previsto Fine Mese: {formatta_euro(saldo_fine_mese)}",
+                        f"📊 {MESI[data.month].upper()} {data.year}",
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.BLUE_900,
+                        no_wrap=True,
+                    ),
+                    ft.Text(
+                        f"Saldo Fine Mese: {formatta_euro(saldo_fine_mese)}",
                         size=11,
                         weight=ft.FontWeight.BOLD,
                         color=ft.Colors.GREEN_800 if saldo_fine_mese >= 0 else ft.Colors.RED_700,
+                        no_wrap=True,
                     ),
-                ]),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.Row([
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("💰 ENTRATE MESE", size=9, weight=ft.FontWeight.BOLD, color="#1B5E20"),
-                            ft.Text(formatta_euro(tot_entrate), size=13, weight=ft.FontWeight.BOLD, color="#2E7D32"),
-                            ft.Text(f"Eff: {formatta_euro(entrate_eff)} | Prev: {formatta_euro(entrate_prev)}", size=8.5, color=ft.Colors.GREY_800),
-                        ], spacing=1),
-                        bgcolor="#E8F5E9", padding=6, border_radius=6, expand=1,
+                            ft.Text("💰 ENTRATE", size=8.5, weight=ft.FontWeight.BOLD, color="#1B5E20", no_wrap=True),
+                            ft.Text(formatta_euro(tot_entrate), size=11.5, weight=ft.FontWeight.BOLD, color="#2E7D32", no_wrap=True),
+                            ft.Text(f"✅ {formatta_euro(entrate_eff)}", size=8, color=ft.Colors.GREY_800, no_wrap=True),
+                            ft.Text(f"⏳ {formatta_euro(entrate_prev)}", size=8, color="#E65100", no_wrap=True),
+                        ], spacing=1, tight=True),
+                        bgcolor="#E8F5E9", padding=6, border_radius=6, expand=1, height=64,
                     ),
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("💸 SPESE MESE", size=9, weight=ft.FontWeight.BOLD, color="#B71C1C"),
-                            ft.Text(formatta_euro(tot_spese), size=13, weight=ft.FontWeight.BOLD, color="#C62828"),
-                            ft.Text(f"Eff: {formatta_euro(spese_eff)} | Prev: {formatta_euro(spese_prev)}", size=8.5, color=ft.Colors.GREY_800),
-                        ], spacing=1),
-                        bgcolor="#FFEBEE", padding=6, border_radius=6, expand=1,
+                            ft.Text("💸 SPESE", size=8.5, weight=ft.FontWeight.BOLD, color="#B71C1C", no_wrap=True),
+                            ft.Text(formatta_euro(tot_spese), size=11.5, weight=ft.FontWeight.BOLD, color="#C62828", no_wrap=True),
+                            ft.Text(f"✅ {formatta_euro(spese_eff)}", size=8, color=ft.Colors.GREY_800, no_wrap=True),
+                            ft.Text(f"⏳ {formatta_euro(spese_prev)}", size=8, color="#E65100", no_wrap=True),
+                        ], spacing=1, tight=True),
+                        bgcolor="#FFEBEE", padding=6, border_radius=6, expand=1, height=64,
                     ),
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("🏦 CASSA ATTUALE", size=9, weight=ft.FontWeight.BOLD, color="#0D47A1"),
+                            ft.Text("🏦 CASSA OGGI", size=8.5, weight=ft.FontWeight.BOLD, color="#0D47A1", no_wrap=True),
                             ft.Text(
                                 formatta_euro(saldo_effettivo),
-                                size=13,
+                                size=11.5,
                                 weight=ft.FontWeight.BOLD,
                                 color="#1565C0" if saldo_effettivo >= 0 else "#C62828",
+                                no_wrap=True,
                             ),
-                            ft.Text("Entrate Eff. - Spese Eff.", size=8.5, color=ft.Colors.GREY_800),
-                        ], spacing=1),
-                        bgcolor="#E3F2FD", padding=6, border_radius=6, expand=1,
+                            ft.Text("Saldo reale", size=8, color=ft.Colors.GREY_800, no_wrap=True),
+                            ft.Text("Incass. - Pagato", size=7.5, color=ft.Colors.GREY_600, no_wrap=True),
+                        ], spacing=1, tight=True),
+                        bgcolor="#E3F2FD", padding=6, border_radius=6, expand=1, height=64,
                     ),
-                ], spacing=6),
-            ], spacing=4),
+                ], spacing=5),
+            ], spacing=4, tight=True),
             bgcolor="#F8F9FA",
-            padding=8,
+            padding=6,
             border_radius=8,
             border=bordo_standard(),
         )
 
+        # ==========================================
+        # VISTA MESE (PREDEFINITA)
+        # ==========================================
         if vista == "Mese":
             testo_header.value = f"{MESI[data.month]} {data.year}"
             layer_mese.controls.clear()
@@ -1737,7 +2045,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 riga = ft.Row(alignment=ft.MainAxisAlignment.SPACE_BETWEEN, spacing=0)
                 for giorno in settimana:
                     if giorno == 0:
-                        riga.controls.append(ft.Container(expand=1, height=90, border=bordo_standard()))
+                        riga.controls.append(ft.Container(expand=1, height=84, border=bordo_standard()))
                     else:
                         is_oggi = (giorno == oggi.day and data.month == oggi.month and data.year == oggi.year)
                         is_sel = (giorno == data.day)
@@ -1745,9 +2053,17 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                         mov_oggi = dizionario_movimenti.get(d_str, [])
 
                         cerchio = ft.Container(
-                            content=ft.Text(str(giorno), color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL),
+                            content=ft.Text(
+                                str(giorno),
+                                color=ft.Colors.WHITE if is_oggi else ft.Colors.BLACK,
+                                size=11,
+                                weight=ft.FontWeight.BOLD if is_oggi else ft.FontWeight.NORMAL,
+                            ),
                             bgcolor=ft.Colors.BLUE_900 if is_oggi else (ft.Colors.BLUE_100 if is_sel else ft.Colors.TRANSPARENT),
-                            border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0),
+                            border_radius=12,
+                            width=22,
+                            height=22,
+                            alignment=ft.Alignment(0, 0),
                         )
 
                         col_ind = ft.Column(spacing=1, expand=True)
@@ -1755,19 +2071,26 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                             col_ind.controls.append(crea_card_movimento(m_item, vista_card="Mese"))
                         if len(mov_oggi) > 2:
                             col_ind.controls.append(
-                                ft.Text(f"+{len(mov_oggi) - 2} altre", size=8, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700)
+                                ft.Text(f"+{len(mov_oggi) - 2} altre", size=7.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700, no_wrap=True)
                             )
 
+                        ha_evid = any(is_movimento_evidenziato(x) for x in mov_oggi)
                         ha_previsti = any(normalizza_stato_budget(x.get("stato")) == "PREVISTO" for x in mov_oggi)
+                        bordo_cella = (
+                            bordo_evidenziato_blu()
+                            if ha_evid
+                            else (bordo_personalizzato("#FB8C00", 1.4) if ha_previsti else bordo_standard())
+                        )
+
                         riga.controls.append(
                             ft.Container(
                                 content=ft.Column([
                                     ft.Container(content=cerchio, alignment=ft.Alignment(0, 0)),
                                     col_ind,
-                                ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                                ], spacing=1, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
                                 expand=1,
-                                height=90,
-                                border=bordo_personalizzato("#FB8C00", 1.8) if ha_previsti else bordo_standard(),
+                                height=84,
+                                border=bordo_cella,
                                 padding=2,
                                 data=giorno,
                                 on_click=vai_a_giorno,
@@ -1783,6 +2106,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 griglia,
             ])
 
+        # ==========================================
+        # VISTA SETTIMANA (COMPATTATA PER SMARTPHONE)
+        # ==========================================
         elif vista == "Settimana":
             lunedi = data - timedelta(days=data.weekday())
             domenica = lunedi + timedelta(days=6)
@@ -1799,33 +2125,47 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 gc = lunedi + timedelta(days=i)
                 d_str = gc.strftime("%Y-%m-%d")
                 mov_oggi = dizionario_movimenti.get(d_str, [])
+                ha_evid = any(is_movimento_evidenziato(x) for x in mov_oggi)
 
                 cerchio_s = ft.Container(
-                    content=ft.Text(str(gc.day), color=ft.Colors.WHITE if gc.date() == oggi.date() else ft.Colors.BLACK, size=14, weight=ft.FontWeight.BOLD),
+                    content=ft.Text(str(gc.day), color=ft.Colors.WHITE if gc.date() == oggi.date() else ft.Colors.BLACK, size=12, weight=ft.FontWeight.BOLD),
                     bgcolor=ft.Colors.BLUE_900 if gc.date() == oggi.date() else ft.Colors.TRANSPARENT,
-                    border_radius=15, width=24, height=24, alignment=ft.Alignment(0, 0),
+                    border_radius=12,
+                    width=22,
+                    height=22,
+                    alignment=ft.Alignment(0, 0),
                 )
-                col_ind = ft.Column([crea_card_movimento(m, vista_card="Settimana") for m in mov_oggi], spacing=3, scroll=ft.ScrollMode.AUTO)
+                col_ind = ft.Column(
+                    [crea_card_movimento(m, vista_card="Settimana") for m in mov_oggi],
+                    spacing=2,
+                    scroll=ft.ScrollMode.AUTO,
+                )
                 box_g = ft.Container(
                     content=ft.Column([
                         ft.Container(
-                            content=ft.Column([ft.Text(GIORNI[i], size=9, color=ft.Colors.GREY_700), cerchio_s], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
-                            padding=4,
+                            content=ft.Column([
+                                ft.Text(GIORNI[i], size=8.5, color=ft.Colors.GREY_700),
+                                cerchio_s,
+                            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                            padding=3,
                         ),
                         ft.Divider(height=1, color="#E0E0E0"),
                         ft.Container(content=col_ind, padding=2, expand=True),
-                    ]),
+                    ], spacing=1),
                     expand=1,
-                    height=340,
-                    border=bordo_standard(),
+                    height=150,  # Altezza compatta ottimizzata per smartphone
+                    border=bordo_evidenziato_blu() if ha_evid else bordo_standard(),
                     data=gc,
                     on_click=vai_a_giorno,
                 )
                 (riga1 if i < 4 else riga2).controls.append(box_g)
 
-            riga2.controls.append(ft.Container(expand=1))
-            layer_settimana.controls.extend([riga1, ft.Container(height=12), riga2])
+            riga2.controls.append(ft.Container(expand=1, height=150))
+            layer_settimana.controls.extend([riga1, ft.Container(height=6), riga2])
 
+        # ==========================================
+        # VISTA GIORNO (CON SWITCH DIRETTO IMPEGNI / SPESE)
+        # ==========================================
         elif vista == "Giorno":
             testo_header.value = f"{data.day} {MESI[data.month]} {data.year}"
             is_oggi = (data.date() == oggi.date())
@@ -1839,12 +2179,12 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             pulsante_switch_impegni = (
                 ft.Container(
                     content=ft.Row([
-                        ft.Icon(ft.Icons.SWAP_HORIZ, color=ft.Colors.BLUE_900, size=16),
-                        ft.Text("Passa a 📅 Impegni del giorno", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                        ft.Icon(ft.Icons.SWAP_HORIZ, color=ft.Colors.BLUE_900, size=15),
+                        ft.Text("📅 Vai a Impegni del giorno", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
                     ], spacing=4, tight=True),
                     bgcolor="#E3F2FD",
-                    padding=ft.Padding(10, 6, 10, 6),
-                    border_radius=15,
+                    padding=ft.Padding(10, 5, 10, 5),
+                    border_radius=14,
                     border=bordo_personalizzato("#1976D2", 1),
                     on_click=lambda e: on_switch_impegni(data) if on_switch_impegni else None,
                 )
@@ -1855,37 +2195,37 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             intestazione = ft.Container(
                 content=ft.Row([
                     ft.Column([
-                        ft.Text(GIORNI[data.weekday()], size=12, color=ft.Colors.GREY_700),
-                        ft.Text(str(data.day), size=24, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if is_oggi else ft.Colors.BLACK),
+                        ft.Text(GIORNI[data.weekday()], size=11, color=ft.Colors.GREY_700),
+                        ft.Text(str(data.day), size=22, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900 if is_oggi else ft.Colors.BLACK),
                     ], spacing=0),
                     ft.Column([
                         pulsante_switch_impegni,
                         ft.Text(
-                            f"Uscite giorno: -{formatta_euro(tot_spese_g)}  |  Entrate: +{formatta_euro(tot_entrate_g)}",
-                            size=11,
+                            f"Uscite: -{formatta_euro(tot_spese_g)} | Entrate: +{formatta_euro(tot_entrate_g)}",
+                            size=10.5,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.GREY_800,
                         ),
                     ], horizontal_alignment=ft.CrossAxisAlignment.END, spacing=4),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                padding=10,
+                padding=8,
                 border=bordo_standard(),
             )
 
             riga_bottoni_inserimento = ft.Row([
                 ft.Container(
-                    content=ft.Text("➕ Nuova Spesa / Entrata", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                    content=ft.Text("➕ Nuova Spesa / Entrata", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11.5, no_wrap=True),
                     bgcolor=ft.Colors.BLUE_900,
-                    padding=10,
+                    padding=ft.Padding(8, 9, 8, 9),
                     border_radius=6,
                     expand=1,
                     alignment=ft.Alignment(0, 0),
                     on_click=lambda e: apri_form_movimento_budget(page, data, ricarica_e_aggiorna, modalita_sporadica=False),
                 ),
                 ft.Container(
-                    content=ft.Text("⚡ Spesa Sporadica Rapida", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                    content=ft.Text("⚡ Spesa Sporadica", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=11.5, no_wrap=True),
                     bgcolor="#2E7D32",
-                    padding=10,
+                    padding=ft.Padding(8, 9, 8, 9),
                     border_radius=6,
                     expand=1,
                     alignment=ft.Alignment(0, 0),
@@ -1893,27 +2233,30 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 ),
             ], spacing=6)
 
-            col_cards = ft.Column(spacing=8)
+            col_cards = ft.Column(spacing=6)
             if mov_oggi:
                 for m_item in mov_oggi:
                     col_cards.controls.append(crea_card_movimento(m_item, vista_card="Giorno"))
             else:
                 col_cards.controls.append(
                     ft.Container(
-                        content=ft.Text("Nessuna spesa o entrata registrata in questa giornata.", color=ft.Colors.GREY_500, italic=True),
-                        padding=20,
+                        content=ft.Text("Nessuna spesa o entrata registrata in questa giornata.", color=ft.Colors.GREY_500, italic=True, size=12),
+                        padding=16,
                         alignment=ft.Alignment(0, 0),
                     )
                 )
 
             layer_giorno.controls.extend([
                 intestazione,
-                ft.Container(height=6),
+                ft.Container(height=5),
                 riga_bottoni_inserimento,
-                ft.Container(height=8),
+                ft.Container(height=6),
                 col_cards,
             ])
 
+        # ==========================================
+        # VISTA RIEPILOGO BUDGET PER CATEGORIA
+        # ==========================================
         elif vista == "Budget":
             testo_header.value = f"Budget {MESI[data.month]} {data.year}"
             layer_budget.controls.clear()
@@ -1944,7 +2287,7 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                         voce["entrate_prev"] += imp
 
             layer_budget.controls.append(
-                ft.Text("📂 Dettaglio Mensile per Categoria:", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
+                ft.Text("📂 Dettaglio Mensile per Categoria:", size=12.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900)
             )
             if not per_cat:
                 layer_budget.controls.append(ft.Text("Nessun movimento nel mese selezionato.", size=12, italic=True, color=ft.Colors.GREY_600))
@@ -1956,18 +2299,17 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                         ft.Container(
                             content=ft.Column([
                                 ft.Row([
-                                    ft.Icon(ft.Icons.CIRCLE, color=st_c["colore"], size=12),
-                                    ft.Text(nome_c, size=13, weight=ft.FontWeight.BOLD, expand=True),
-                                    *([ft.Text(f"Uscite: {formatta_euro(tot_s)}", size=12, weight=ft.FontWeight.BOLD, color="#C62828")] if tot_s > 0 else []),
-                                    *([ft.Text(f"Entrate: {formatta_euro(tot_e)}", size=12, weight=ft.FontWeight.BOLD, color="#2E7D32")] if tot_e > 0 else []),
+                                    ft.Icon(ft.Icons.CIRCLE, color=st_c["colore"], size=11),
+                                    ft.Text(nome_c, size=12, weight=ft.FontWeight.BOLD, expand=True),
+                                    *([ft.Text(f"-{formatta_euro(tot_s)}", size=12, weight=ft.FontWeight.BOLD, color="#C62828")] if tot_s > 0 else []),
+                                    *([ft.Text(f"+{formatta_euro(tot_e)}", size=12, weight=ft.FontWeight.BOLD, color="#2E7D32")] if tot_e > 0 else []),
                                 ]),
                                 ft.Text(
-                                    f"Spese Effettive: {formatta_euro(st_c['spese_eff'])} • Spese Previste: {formatta_euro(st_c['spese_prev'])}"
-                                    + (f"  |  Entrate Eff.: {formatta_euro(st_c['entrate_eff'])} • Prev.: {formatta_euro(st_c['entrate_prev'])}" if tot_e > 0 else ""),
-                                    size=10.5,
+                                    f"Effettive: {formatta_euro(st_c['spese_eff'] if tot_s > 0 else st_c['entrate_eff'])} • Previste: {formatta_euro(st_c['spese_prev'] if tot_s > 0 else st_c['entrate_prev'])}",
+                                    size=10,
                                     color=ft.Colors.GREY_800,
                                 ),
-                            ], spacing=3),
+                            ], spacing=2, tight=True),
                             bgcolor=ft.Colors.WHITE,
                             padding=8,
                             border_radius=6,
@@ -1977,9 +2319,9 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
 
             previsti_mese = [m for m in movimenti_mese_corrente if normalizza_stato_budget(m.get("stato")) == "PREVISTO"]
             previsti_mese.sort(key=lambda x: x.get("data_movimento", ""))
-            layer_budget.controls.append(ft.Divider(height=10))
+            layer_budget.controls.append(ft.Divider(height=8))
             layer_budget.controls.append(
-                ft.Text(f"⏳ Scadenze Previste nel mese da confermare ({len(previsti_mese)}):", size=13, weight=ft.FontWeight.BOLD, color="#E65100")
+                ft.Text(f"⏳ Scadenze Previste nel mese da confermare ({len(previsti_mese)}):", size=12.5, weight=ft.FontWeight.BOLD, color="#E65100")
             )
             for mp in previsti_mese:
                 layer_budget.controls.append(crea_card_movimento(mp, vista_card="Giorno"))
@@ -1998,25 +2340,25 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
     header = ft.Row(
         controls=[
             ft.Row([
-                ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20),
-                ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20),
+                ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=nav_prec, icon_size=20, width=32, height=32),
+                ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=nav_succ, icon_size=20, width=32, height=32),
                 testo_header,
             ], alignment=ft.MainAxisAlignment.START, spacing=0),
             ft.Row([btn_giorno, btn_settimana, btn_mese, btn_riepilogo], spacing=4),
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         wrap=True,
-        run_spacing=8,
+        run_spacing=6,
     )
 
     sezione_filtri = ft.Column([
-        ft.Text("Filtra per Stato:", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        ft.Text("Filtra per Stato:", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
         row_filtri_stato,
-        ft.Text("Filtra per Categoria Budget (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        ft.Text("Filtra per Categoria Budget (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
         row_filtri_cat,
-        ft.Text("Filtra per Componente Famiglia (Selezione Multipla):", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
+        ft.Text("Filtra per Componente Famiglia (Selezione Multipla):", size=10.5, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_600),
         row_filtri_fam,
-    ], spacing=5)
+    ], spacing=4)
 
     aggiorna_tutto()
 
@@ -2025,14 +2367,14 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             header,
             box_cruscotto_mese,
             area_dinamica,
-            ft.Divider(height=16, color="#EEEEEE"),
+            ft.Divider(height=12, color="#EEEEEE"),
             sezione_filtri,
-        ], spacing=8, scroll=ft.ScrollMode.AUTO),
+        ], spacing=6, scroll=ft.ScrollMode.AUTO),
         padding=5,
         expand=True,
     )
     container_principale.ricarica_e_aggiorna = ricarica_e_aggiorna
-    container_principale.imposta_data_e_vista = lambda dt, vst="Giorno": (
+    container_principale.imposta_data_e_vista = lambda dt, vst="Mese": (
         stato.update({"data": dt, "vista": vst}),
         sincronizza_stato_esterno(),
         aggiorna_tutto(),
