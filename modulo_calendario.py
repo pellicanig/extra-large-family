@@ -838,6 +838,8 @@ def crea_calendario(page: ft.Page, stato_condiviso: dict = None, on_switch_budge
             ft.Row([btn_giorno, btn_settimana, btn_mese], spacing=5)
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        wrap=True,
+        run_spacing=10
     )
 
     sezione_filtri = ft.Column([
