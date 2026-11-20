@@ -471,7 +471,17 @@ def apri_form_movimento_budget(
         page.update()
         return
 
-    res_cat = supabase.table("categorie_budget").select("*").order("nome").execu
+    if not CACHE_BUDGET["categorie"]:
+        res_cat = supabase.table("categorie_budget").select("*").order("nome").execute()
+        CACHE_BUDGET["categorie"] = res_cat.data if res_cat.data else []
+    lista_categorie = CACHE_BUDGET["categorie"]
+
+    if not CACHE_BUDGET["famiglia"]:
+        res_fam = supabase.table("famiglia").select("*").order("nome").execute()
+        CACHE_BUDGET["famiglia"] = res_fam.data if res_fam.data else []
+    lista_famiglia = CACHE_BUDGET["famiglia"]
+
+    lista_fornitori = carica_fornitori_enti_memoria(forza_ricarica=False)
 
     def get_colori_liberi_cat(id_cat_esclusa=None):
         occupati = [c["colore"] for c in lista_categorie if c.get("colore") and str(c["id"]) != str(id_cat_esclusa)]
