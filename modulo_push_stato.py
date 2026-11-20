@@ -139,10 +139,11 @@ def _crea_client_supabase_dedicato(fallback_client=None):
 def _rinnova_client_se_chiuso(ex: Exception):
     msg = str(ex)
     if any(k in msg for k in [
+        "Project not specified", "Bad Request", "400", "502", "503", "504",
         "ConnectionState", "SEND_HEADERS", "RECV_", "Server disconnected",
         "RemoteProtocolError", "LocalProtocolError", "ReadTimeout", "WriteTimeout", "PoolTimeout"
     ]):
-        log_push(f"🔄 Rilevata connessione Supabase chiusa ({msg[:80]}), rigenerazione client...")
+        log_push(f"🔄 Rilevata sessione Supabase corrotta ({msg[:80]}), rigenerazione client...")
         nuovo = _crea_client_supabase_dedicato()
         if nuovo is not None:
             _STATO["supabase"] = nuovo
