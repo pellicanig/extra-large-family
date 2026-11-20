@@ -779,7 +779,7 @@ def apri_popup_allineamento_bancario(page: ft.Page, data_rif: datetime, tutti_mo
     ]
     previsti_mese.sort(key=lambda x: (str(x.get("data_movimento") or ""), str(x.get("titolo") or "")))
 
-    def _ attach_date_formatter(tf_ctrl):
+    def _attach_date_formatter(tf_ctrl):
         def _on_chg(e):
             val_pulito = "".join([c for c in (tf_ctrl.value or "") if c.isdigit()])
             ris = ""
