@@ -89,10 +89,13 @@ def main(page: ft.Page):
     def ricevi_broadcast(messaggio):
         if messaggio == "aggiorna_dati":
             modulo_notifiche.forza_ricalcolo_impegni()
-            if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
-                page.aggiorna_vista_corrente()
-            if page.route == "/famiglia" and hasattr(page, "aggiorna_calendario_impegni") and callable(page.aggiorna_calendario_impegni):
+            if hasattr(page, "aggiorna_calendario_impegni") and callable(page.aggiorna_calendario_impegni):
                 page.aggiorna_calendario_impegni()
+            if page.route == "/famiglia":
+                if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
+                    page.aggiorna_vista_corrente()
+                if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
+                    page.aggiorna_vista_budget()
         elif messaggio == "aggiorna_budget":
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
