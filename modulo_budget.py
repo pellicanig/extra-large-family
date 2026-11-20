@@ -129,15 +129,21 @@ def _chiudi_dlg(page: ft.Page, dlg: ft.AlertDialog):
 
 
 # ==========================================================
-# GESTIONE MEMORIA AUTOCOMPILAZIONE FORNITORI / ENTI / FONTI
+# CACHE ANAGRAFICHE E MEMORIA AUTOCOMPILAZIONE FORNITORI / ENTI
 # ==========================================================
-def carica_fornitori_enti_memoria() -> list:
-    """
-    Carica l'elenco dei Fornitori/Luoghi/Enti dalla tabella dedicata 'fornitori_enti_budget'
-    e lo integra con eventuali voci storiche presenti in 'movimenti_budget'.
-    """
+CACHE_BUDGET = {
+    "categorie": [],
+    "famiglia": [],
+    "fornitori": None,
+}
+
+
+def carica_fornitori_enti_memoria(forza_ricarica: bool = False) -> list:
     if not supabase:
         return []
+    if not forza_ricarica and CACHE_BUDGET["fornitori"] is not None:
+        return list(CACHE_BUDGET["fornitori"])
+
     mappa = {}
     try:
         res_f = supabase.table("fornitori_enti_budget").select("*").order("nome").execute()
@@ -153,31 +159,11 @@ def carica_fornitori_enti_memoria() -> list:
     except Exception:
         pass
 
-    try:
-        res_m = (
-            supabase.table("movimenti_budget")
-            .select("fornitore_luogo, tipo, id_categoria")
-            .not_.is_("fornitore_luogo", "null")
-            .limit(500)
-            .execute()
-        )
-        for r in (res_m.data or []):
-            nome_clean = (r.get("fornitore_luogo") or "").strip()
-            if nome_clean and nome_clean.lower() not in mappa:
-                mappa[nome_clean.lower()] = {
-                    "id": None,
-                    "nome": nome_clean,
-                    "tipo": str(r.get("tipo") or "SPESA").upper(),
-                    "id_categoria_default": r.get("id_categoria"),
-                }
-    except Exception:
-        pass
-
-    return sorted(list(mappa.values()), key=lambda x: x["nome"].lower())
+    CACHE_BUDGET["fornitori"] = sorted(list(mappa.values()), key=lambda x: x["nome"].lower())
+    return list(CACHE_BUDGET["fornitori"])
 
 
 def salva_fornitore_ente_in_memoria(nome: str, tipo: str = "SPESA", id_categoria=None):
-    """Salva o aggiorna automaticamente il Fornitore / Ente nella tabella memoria su Supabase."""
     if not supabase or not nome:
         return
     nome_pulito = formatta_testo_intelligente(nome)
@@ -200,6 +186,7 @@ def salva_fornitore_ente_in_memoria(nome: str, tipo: str = "SPESA", id_categoria
             supabase.table("fornitori_enti_budget").update(payload).eq("id", esist.data[0]["id"]).execute()
         else:
             supabase.table("fornitori_enti_budget").insert(payload).execute()
+        CACHE_BUDGET["fornitori"] = None
     except Exception:
         pass
 
@@ -418,9 +405,6 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
 
                 _chiudi_dlg(page, dlg_conv)
                 page.pubsub.send_all("aggiorna_budget")
-                page.pubsub.send_all("aggiorna_dati")
-                if on_success_callback:
-                    on_success_callback()
             except Exception as ex:
                 txt_err.value = f"⚠️ Errore DB: {ex}"
                 txt_err.visible = True
@@ -487,13 +471,7 @@ def apri_form_movimento_budget(
         page.update()
         return
 
-    res_cat = supabase.table("categorie_budget").select("*").order("nome").execute()
-    lista_categorie = res_cat.data if res_cat.data else []
-
-    res_fam = supabase.table("famiglia").select("*").order("nome").execute()
-    lista_famiglia = res_fam.data if res_fam.data else []
-
-    lista_fornitori = carica_fornitori_enti_memoria()
+    res_cat = supabase.table("categorie_budget").select("*").order("nome").execu
 
     def get_colori_liberi_cat(id_cat_esclusa=None):
         occupati = [c["colore"] for c in lista_categorie if c.get("colore") and str(c["id"]) != str(id_cat_esclusa)]
@@ -1283,9 +1261,6 @@ def apri_form_movimento_budget(
 
             _chiudi_dlg(page, dlg_movimento)
             page.pubsub.send_all("aggiorna_budget")
-            page.pubsub.send_all("aggiorna_dati")
-            if on_success_callback:
-                on_success_callback()
         except Exception as ex:
             txt_errore_form.value = f"⚠️ Errore salvataggio DB: {ex}"
             txt_errore_form.visible = True
@@ -1429,9 +1404,6 @@ def apri_form_movimento_budget(
                         supabase.table("movimenti_budget").delete().eq("id", movimento_esistente["id"]).execute()
                     _chiudi_dlg(page, dlg_movimento)
                     page.pubsub.send_all("aggiorna_budget")
-                    page.pubsub.send_all("aggiorna_dati")
-                    if on_success_callback:
-                        on_success_callback()
 
                 esegui_db_con_loading(op_del)
 
@@ -1457,9 +1429,6 @@ def apri_form_movimento_budget(
                     supabase.table("movimenti_budget").delete().eq("id", movimento_esistente["id"]).execute()
                     _chiudi_dlg(page, dlg_movimento)
                     page.pubsub.send_all("aggiorna_budget")
-                    page.pubsub.send_all("aggiorna_dati")
-                    if on_success_callback:
-                        on_success_callback()
 
                 esegui_db_con_loading(op_del)
 
@@ -1591,10 +1560,12 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                 res_cat = supabase.table("categorie_budget").select("*").order("nome").execute()
                 lista_categorie.clear()
                 lista_categorie.extend(res_cat.data if res_cat.data else [])
+                CACHE_BUDGET["categorie"] = list(lista_categorie)
 
                 res_fam = supabase.table("famiglia").select("*").order("nome").execute()
                 lista_famiglia.clear()
                 lista_famiglia.extend(res_fam.data if res_fam.data else [])
+                CACHE_BUDGET["famiglia"] = list(lista_famiglia)
                 break
             except Exception as ex:
                 if tentativo == 2:
@@ -2362,8 +2333,6 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             ft.Row([btn_giorno, btn_settimana, btn_mese, btn_riepilogo], spacing=4),
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-        wrap=True,
-        run_spacing=6,
     )
 
     sezione_filtri = ft.Column([
