@@ -33,12 +33,13 @@ PALETTE_COLORI = [
 ]
 
 TIPI_PERIODICITA = [
+    ("SETTIMANALE", "Settimanale (ogni settimana)"),
+    ("BISETTIMANALE", "Bisettimanale (ogni 2 settimane)"),
     ("MENSILE", "Mensile (ogni mese)"),
     ("BIMESTRALE", "Bimestrale (ogni 2 mesi)"),
     ("TRIMESTRALE", "Trimestrale (ogni 3 mesi)"),
     ("SEMESTRALE", "Semestrale (ogni 6 mesi)"),
     ("ANNUALE", "Annuale (ogni anno)"),
-    ("SETTIMANALE", "Settimanale (giorni scelti)"),
 ]
 
 PASSO_MESI_PERIODICITA = {
@@ -227,10 +228,16 @@ def occorrenza_periodica_valida(mov: dict, target_date: date) -> bool:
         return False
 
     tipo_per = str(mov.get("tipo_periodicita") or "MENSILE").upper().strip()
-    if tipo_per == "SETTIMANALE":
+    if tipo_per in ["SETTIMANALE", "BISETTIMANALE"]:
         g_str = mov.get("giorni_periodici") or ""
         giorni_rep = [int(g) for g in g_str.split(",") if g.strip().isdigit()] if g_str else [d_start.weekday()]
-        return target_date.weekday() in giorni_rep
+        if target_date.weekday() not in giorni_rep:
+            return False
+        if tipo_per == "BISETTIMANALE":
+            lun_start = d_start - timedelta(days=d_start.weekday())
+            lun_target = target_date - timedelta(days=target_date.weekday())
+            return ((lun_target - lun_start).days // 7) % 2 == 0
+        return True
 
     passo_mesi = PASSO_MESI_PERIODICITA.get(tipo_per, 1)
     diff_mesi = (target_date.year - d_start.year) * 12 + (target_date.month - d_start.month)
@@ -797,7 +804,7 @@ def apri_form_movimento_budget(
     )
     switch_preavviso_ripeti = ft.Switch(value=preavviso_ripeti_init, scale=0.75)
 
-    riga_header_notifica = ft.Row(
+riga_header_notifica = ft.Row(
         [
             ft.Row([
                 ft.Container(content=switch_notifica, width=38, height=26, alignment=ft.Alignment(0, 0)),
@@ -805,7 +812,8 @@ def apri_form_movimento_budget(
             ], spacing=4, tight=True),
             txt_ora_notifica,
         ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=16,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
@@ -996,19 +1004,18 @@ def apri_form_movimento_budget(
         bottoni_giorni,
         spacing=5,
         alignment=ft.MainAxisAlignment.CENTER,
-        visible=(switch_per_init and dd_tipo_periodicita.value == "SETTIMANALE"),
+        visible=(switch_per_init and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"]),
     )
 
     def on_change_periodico(e=None):
         is_per = bool(switch_periodico.value)
         dd_tipo_periodicita.visible = is_per
-        riga_giorni_sett.visible = bool(is_per and dd_tipo_periodicita.value == "SETTIMANALE")
-        # Regola richiesta: Periodico = non evidenziato di default; Sporadico = evidenziato di default
+        riga_giorni_sett.visible = bool(is_per and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"])
         switch_evidenziato.value = not is_per
         page.update()
 
     def on_change_tipo_per(e=None):
-        riga_giorni_sett.visible = bool(switch_periodico.value and dd_tipo_periodicita.value == "SETTIMANALE")
+        riga_giorni_sett.visible = bool(switch_periodico.value and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"])
         page.update()
 
     switch_periodico.on_change = on_change_periodico
@@ -1025,7 +1032,8 @@ def apri_form_movimento_budget(
                 ft.Text("✨ Evidenzia", size=11.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
             ], spacing=4, tight=True),
         ],
-        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=28,
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
     )
 
@@ -1197,7 +1205,7 @@ def apri_form_movimento_budget(
             if switch_periodico.value:
                 dati_mov["is_periodico"] = True
                 dati_mov["tipo_periodicita"] = dd_tipo_periodicita.value or "MENSILE"
-                if dati_mov["tipo_periodicita"] == "SETTIMANALE":
+                if dati_mov["tipo_periodicita"] in ["SETTIMANALE", "BISETTIMANALE"]:
                     dati_mov["giorni_periodici"] = ",".join(map(str, sorted(list(selezionati_giorni))))
                 else:
                     dati_mov["giorni_periodici"] = None
@@ -1250,7 +1258,6 @@ def apri_form_movimento_budget(
                         res_ins = supabase.table("movimenti_budget").insert(dati_mov).execute()
                         id_op = res_ins.data[0]["id"]
                 else:
-                    else:
                     if is_p_db and vero_inizio < data_db:
                         dt_v = datetime.strptime(vero_inizio, "%Y-%m-%d")
                         dt_n = datetime.strptime(data_db, "%Y-%m-%d")
