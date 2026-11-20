@@ -592,6 +592,7 @@ def apri_form_movimento_budget(
             if item_f.get("id"):
                 supabase.table("fornitori_enti_budget").delete().eq("id", item_f["id"]).execute()
             lista_fornitori[:] = [x for x in lista_fornitori if x["nome"].lower() != item_f["nome"].lower()]
+            CACHE_BUDGET["fornitori"] = list(lista_fornitori)
             aggiorna_suggerimenti_fornitore(mostra_anche_vuoto=True)
         except Exception:
             pass
@@ -1246,11 +1247,16 @@ def apri_form_movimento_budget(
                         res_ins = supabase.table("movimenti_budget").insert(dati_mov).execute()
                         id_op = res_ins.data[0]["id"]
                 else:
-                    if is_p_db and vero_inizio < data_db:
-                        dt_v = datetime.strptime(vero_inizio, "%Y-%m-%d")
-                        dt_n = datetime.strptime(data_db, "%Y-%m-%d")
-                        ultimo_g_v = calendar.monthrange(dt_v.year, dt_v.month)[1]
-                        dati_mov["data_movimento"] = dt_v.replace(day=min(dt_n.day, ultimo_g_v)).strftime("%Y-%m-%d")
+                    if is_p_db:
+                        if data_db == data_istanza_str:
+                            dati_mov["data_movimento"] = vero_inizio
+                        elif dati_mov.get("tipo_periodicita") not in ["SETTIMANALE", "BISETTIMANALE"] and vero_inizio < data_db:
+                            dt_v = datetime.strptime(vero_inizio, "%Y-%m-%d")
+                            dt_n = datetime.strptime(data_db, "%Y-%m-%d")
+                            ultimo_g_v = calendar.monthrange(dt_v.year, dt_v.month)[1]
+                            dati_mov["data_movimento"] = dt_v.replace(day=min(dt_n.day, ultimo_g_v)).strftime("%Y-%m-%d")
+                        else:
+                            dati_mov["data_movimento"] = data_db
                     else:
                         dati_mov["data_movimento"] = data_db
                     supabase.table("movimenti_budget").update(dati_mov).eq("id", movimento_esistente["id"]).execute()
