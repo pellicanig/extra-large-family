@@ -363,6 +363,10 @@ def crea_calendario(page: ft.Page, stato_condiviso: dict = None, on_switch_budge
 
             except Exception as e:
                 print("Errore caricamento impegni:", e)
+                try:
+                    globals()["supabase"] = create_client(SUPABASE_URL.strip(), SUPABASE_KEY.strip())
+                except Exception:
+                    pass
 
         def crea_card(imp, vista="Giorno", espandi=False, offset_minuti=0, durata_minuti=60, livello_sovrapposizione=None):
             titolo = imp.get('titolo', 'Senza Titolo')
