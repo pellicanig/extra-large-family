@@ -593,26 +593,32 @@ def _aggiorna_coda_impegni_da_db():
                 _rinnova_client_se_chiuso(ex)
                 log_push(f"⚠️ Avviso lettura anagrafica famiglia/categorie: {ex}")
 
-    with _DB_LOCK:
-        try:
-            res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").execute()
-            tutti = res.data or []
-        except Exception as ex:
-            _rinnova_client_se_chiuso(ex)
-            log_push(f"❌ Errore lettura tabella impegni: {ex}")
-            return
+    if ora_ts - _STATO.get("ultimo_sync_impegni_db", 0.0) > 90.0 or "cache_impegni_db" not in _STATO:
+        with _DB_LOCK:
+            try:
+                res = sb.table("impegni").select("*, impegni_familiari(id_familiare)").execute()
+                _STATO["cache_impegni_db"] = res.data or []
+                _STATO["ultimo_sync_impegni_db"] = ora_ts
+            except Exception as ex:
+                _rinnova_client_se_chiuso(ex)
+                log_push(f"❌ Errore lettura tabella impegni: {ex}")
+                if "cache_impegni_db" not in _STATO:
+                    return
 
-        tutti_budget = []
-        try:
-            res_b = (
-                sb.table("movimenti_budget")
-                .select("*, movimenti_budget_familiari(id_familiare)")
-                .in_("stato", ["PREVISTO", "PREVISTA"])
-                .execute()
-            )
-            tutti_budget = res_b.data or []
-        except Exception:
-            tutti_budget = []
+            try:
+                res_b = (
+                    sb.table("movimenti_budget")
+                    .select("*, movimenti_budget_familiari(id_familiare)")
+                    .in_("stato", ["PREVISTO", "PREVISTA"])
+                    .execute()
+                )
+                _STATO["cache_budget_db"] = res_b.data or []
+            except Exception as ex_b:
+                _rinnova_client_se_chiuso(ex_b)
+                _STATO.setdefault("cache_budget_db", [])
+
+    tutti = list(_STATO.get("cache_impegni_db") or [])
+    tutti_budget = list(_STATO.get("cache_budget_db") or [])
 
     istanze_attive = []
 
@@ -1099,6 +1105,7 @@ def forza_ricalcolo_impegni():
     """Sveglia immediatamente lo scheduler quando un impegno o un movimento budget viene creato, modificato o cancellato."""
     log_push("⚡ Richiesto ricalcolo immediato impegni/budget da interfaccia utente.")
     _STATO["ultimo_sync_anagrafica"] = 0.0
+    _STATO["ultimo_sync_impegni_db"] = 0.0
     _STATO["evento_ricalcolo"].set()
 
 
