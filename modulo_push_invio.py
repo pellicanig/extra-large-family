@@ -73,11 +73,17 @@ def _data_cade_in_periodicita_budget(curr_d, d_start, tipo_per: str, giorni_str:
     if curr_d < d_start:
         return False
     tipo_u = (tipo_per or "MENSILE").strip().upper()
-    if tipo_u == "SETTIMANALE":
+    if tipo_u in ["SETTIMANALE", "BISETTIMANALE"]:
         giorni_rep = [int(g) for g in (giorni_str or "").split(",") if g.strip().isdigit()]
         if not giorni_rep:
             giorni_rep = [d_start.weekday()]
-        return curr_d.weekday() in giorni_rep
+        if curr_d.weekday() not in giorni_rep:
+            return False
+        if tipo_u == "BISETTIMANALE":
+            lun_start = d_start - timedelta(days=d_start.weekday())
+            lun_curr = curr_d - timedelta(days=curr_d.weekday())
+            return ((lun_curr - lun_start).days // 7) % 2 == 0
+        return True
 
     step_mesi = STEP_MESI_PERIODICITA.get(tipo_u, 1)
     diff_mesi = (curr_d.year - d_start.year) * 12 + (curr_d.month - d_start.month)
@@ -628,14 +634,14 @@ def _aggiorna_coda_impegni_da_db():
             except Exception:
                 continue
             escluse = {x.strip() for x in (imp.get("date_escluse") or "").split(",") if x.strip()}
+            tipo_per_imp = imp.get("tipo_periodicita") or "SETTIMANALE"
             g_str = imp.get("giorni_periodici") or ""
-            giorni_rep = [int(g) for g in g_str.split(",") if g.strip().isdigit()] if g_str else [d_start.weekday()]
 
             curr_d = max(oggi_date, d_start)
             fine_d = min(orizzonte_imp, d_stop) if d_stop else orizzonte_imp
             while curr_d <= fine_d:
                 d_s = curr_d.strftime("%Y-%m-%d")
-                if curr_d.weekday() in giorni_rep and d_s not in escluse:
+                if d_s not in escluse and _data_cade_in_periodicita_budget(curr_d, d_start, tipo_per_imp, g_str):
                     copia = dict(imp)
                     copia["data_evento_istanza"] = d_s
                     istanze_attive.append(copia)
