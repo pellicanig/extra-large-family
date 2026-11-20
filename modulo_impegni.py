@@ -260,21 +260,45 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Column(bottoni_famiglia[mezzo:], spacing=5)
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.START)
 
+        tipi_periodicita_impegni = [
+            ("SETTIMANALE", "Settimanale (ogni settimana)"),
+            ("BISETTIMANALE", "Bisettimanale (ogni 2 settimane)"),
+            ("MENSILE", "Mensile (ogni mese)"),
+            ("BIMESTRALE", "Bimestrale (ogni 2 mesi)"),
+            ("TRIMESTRALE", "Trimestrale (ogni 3 mesi)"),
+            ("SEMESTRALE", "Semestrale (ogni 6 mesi)"),
+            ("ANNUALE", "Annuale (ogni anno)"),
+        ]
+        tipo_per_init = (impegno_esistente.get('tipo_periodicita') or "SETTIMANALE").upper().strip() if impegno_esistente else "SETTIMANALE"
+        if tipo_per_init not in [k for k, _ in tipi_periodicita_impegni]:
+            tipo_per_init = "SETTIMANALE"
+
         giorni_db_str = impegno_esistente.get('giorni_periodici') if impegno_esistente else None
         selezionati_giorni = set()
-        
         if giorni_db_str:
             selezionati_giorni = set([int(g) for g in giorni_db_str.split(',') if g.strip().isdigit()])
-        elif is_p_db or not impegno_esistente:
+        if not selezionati_giorni:
             selezionati_giorni.add(data_istanza.weekday())
 
         etichette_giorni = ["L", "M", "M", "G", "V", "S", "D"]
         bottoni_giorni = []
 
-        switch_periodico = ft.Switch(label="Ripeti in questi giorni:", value=switch_on_iniziale)
+        switch_periodico = ft.Switch(value=switch_on_iniziale, scale=0.8)
+        switch_evidenziato = ft.Switch(value=evidenziato_iniziale, scale=0.8)
+
+        dd_tipo_periodicita = ft.Dropdown(
+            label="Frequenza ripetizione",
+            value=tipo_per_init,
+            options=[ft.dropdown.Option(key=k, text=lbl) for k, lbl in tipi_periodicita_impegni],
+            dense=True,
+            text_size=12,
+            content_padding=ft.Padding(8, 6, 4, 6),
+            visible=switch_on_iniziale,
+        )
 
         def toggle_giorno(e, indice_giorno):
-            if not switch_periodico.value: return
+            if not switch_periodico.value:
+                return
             if indice_giorno in selezionati_giorni:
                 if len(selezionati_giorni) > 1:
                     selezionati_giorni.remove(indice_giorno)
@@ -298,16 +322,48 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                 )
             )
 
-        riga_giorni = ft.Row(bottoni_giorni, spacing=5, alignment=ft.MainAxisAlignment.CENTER, visible=switch_on_iniziale)
-        switch_evidenziato = ft.Switch(label="Evidenziato", value=evidenziato_iniziale)
+        riga_giorni = ft.Row(
+            bottoni_giorni,
+            spacing=5,
+            alignment=ft.MainAxisAlignment.CENTER,
+            visible=(switch_on_iniziale and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"])
+        )
 
-        def cambia_stato_periodico(e):
-            riga_giorni.visible = switch_periodico.value
-            switch_evidenziato.value = not switch_periodico.value
-            try: page.update()
-            except: pass
+        def cambia_stato_periodico(e=None):
+            is_per = bool(switch_periodico.value)
+            dd_tipo_periodicita.visible = is_per
+            riga_giorni.visible = bool(is_per and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"])
+            switch_evidenziato.value = not is_per
+            try:
+                page.update()
+            except Exception:
+                pass
+
+        def cambia_tipo_periodicita(e=None):
+            riga_giorni.visible = bool(switch_periodico.value and dd_tipo_periodicita.value in ["SETTIMANALE", "BISETTIMANALE"])
+            try:
+                page.update()
+            except Exception:
+                pass
 
         switch_periodico.on_change = cambia_stato_periodico
+        dd_tipo_periodicita.on_change = cambia_tipo_periodicita
+
+        riga_switch_opzioni = ft.Row(
+            [
+                ft.Row([
+                    ft.Container(content=switch_periodico, width=40, height=28, alignment=ft.Alignment(0, 0)),
+                    ft.Text("🔄 Periodico", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                ], spacing=4, tight=True),
+                ft.Row([
+                    ft.Container(content=switch_evidenziato, width=40, height=28, alignment=ft.Alignment(0, 0)),
+                    ft.Text("✨ Evidenziato", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                ], spacing=4, tight=True),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=28,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
 
         dlg_impegno = None
         dlg_categoria = None
@@ -567,14 +623,19 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             # Valuta i parametri di periodicità
             if is_p_db and ambito == "Solo questo evento":
                 dati_impegno['giorni_periodici'] = None
+                dati_impegno['tipo_periodicita'] = None
                 dati_impegno['is_periodico'] = False
             else:
                 if switch_periodico.value:
-                    str_giorni = ",".join(map(str, sorted(list(selezionati_giorni))))
-                    dati_impegno['giorni_periodici'] = str_giorni
                     dati_impegno['is_periodico'] = True
+                    dati_impegno['tipo_periodicita'] = dd_tipo_periodicita.value or "SETTIMANALE"
+                    if dati_impegno['tipo_periodicita'] in ["SETTIMANALE", "BISETTIMANALE"]:
+                        dati_impegno['giorni_periodici'] = ",".join(map(str, sorted(list(selezionati_giorni))))
+                    else:
+                        dati_impegno['giorni_periodici'] = None
                 else:
                     dati_impegno['giorni_periodici'] = None
+                    dati_impegno['tipo_periodicita'] = None
                     dati_impegno['is_periodico'] = False
 
             if impegno_esistente and is_p_db:
@@ -775,9 +836,9 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
             ft.Text("Assegna a:", weight=ft.FontWeight.BOLD, size=13),
             griglia_assegnatari,
             ft.Divider(height=1, color="#E0E0E0"),
-            switch_periodico,
+            riga_switch_opzioni,
+            dd_tipo_periodicita,
             riga_giorni,
-            switch_evidenziato,
             txt_note,
             txt_errore_form
         ]
