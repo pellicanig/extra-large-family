@@ -91,10 +91,8 @@ def main(page: ft.Page):
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_corrente") and callable(page.aggiorna_vista_corrente):
                 page.aggiorna_vista_corrente()
-            if hasattr(page, "aggiorna_calendario_impegni") and callable(page.aggiorna_calendario_impegni):
+            if page.route == "/famiglia" and hasattr(page, "aggiorna_calendario_impegni") and callable(page.aggiorna_calendario_impegni):
                 page.aggiorna_calendario_impegni()
-            if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
-                page.aggiorna_vista_budget()
         elif messaggio == "aggiorna_budget":
             modulo_notifiche.forza_ricalcolo_impegni()
             if hasattr(page, "aggiorna_vista_budget") and callable(page.aggiorna_vista_budget):
@@ -210,11 +208,12 @@ def main(page: ft.Page):
             content=ft.Row(
                 [btn_tab_impegni, btn_tab_budget, btn_tab_menu],
                 alignment=ft.MainAxisAlignment.CENTER,
-                spacing=6,
-                wrap=True
+                spacing=8,
             ),
             bgcolor="#EEF2F6",
-            padding=5
+            padding=6,
+            width=float("inf"),
+            alignment=ft.Alignment(0, 0),
         )
 
         txt_menu_notifiche = ft.Text(
