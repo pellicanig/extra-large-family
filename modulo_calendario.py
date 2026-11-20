@@ -310,24 +310,41 @@ def crea_calendario(page: ft.Page, stato_condiviso: dict = None, on_switch_budge
                             data_stop = datetime.strptime(imp['data_fine_periodo'], "%Y-%m-%d").date() if imp.get('data_fine_periodo') else None
                             
                             date_escluse_str = imp.get('date_escluse') or ""
-                            lista_escluse = date_escluse_str.split(',') if date_escluse_str else []
+                            lista_escluse = [x.strip() for x in date_escluse_str.split(',') if x.strip()]
                             
+                            tipo_per = str(imp.get('tipo_periodicita') or "SETTIMANALE").upper().strip()
                             giorni_str = imp.get('giorni_periodici')
                             if giorni_str:
                                 giorni_da_ripetere = [int(g) for g in giorni_str.split(',') if g.strip().isdigit()]
                             else:
                                 giorni_da_ripetere = [data_start.weekday()]
 
+                            passo_mesi_map = {"MENSILE": 1, "BIMESTRALE": 2, "TRIMESTRALE": 3, "SEMESTRALE": 6, "ANNUALE": 12}
+                            lun_start = data_start - timedelta(days=data_start.weekday())
                             corrente = inizio_finestra.date()
                             fine_f = fine_finestra.date()
                             
                             while corrente <= fine_f:
-                                if corrente >= data_start and corrente.weekday() in giorni_da_ripetere:
-                                    if data_stop is None or corrente <= data_stop:
-                                        d_str = corrente.strftime("%Y-%m-%d")
-                                        if d_str not in lista_escluse:
-                                            if d_str not in dizionario_eventi: 
-                                                dizionario_eventi[d_str] = []
+                                if corrente >= data_start and (data_stop is None or corrente <= data_stop):
+                                    d_str = corrente.strftime("%Y-%m-%d")
+                                    if d_str not in lista_escluse:
+                                        cade_oggi = False
+                                        if tipo_per in ["SETTIMANALE", "BISETTIMANALE"]:
+                                            if corrente.weekday() in giorni_da_ripetere:
+                                                if tipo_per == "BISETTIMANALE":
+                                                    lun_curr = corrente - timedelta(days=corrente.weekday())
+                                                    cade_oggi = (((lun_curr - lun_start).days // 7) % 2 == 0)
+                                                else:
+                                                    cade_oggi = True
+                                        else:
+                                            passo_m = passo_mesi_map.get(tipo_per, 1)
+                                            diff_m = (corrente.year - data_start.year) * 12 + (corrente.month - data_start.month)
+                                            if diff_m >= 0 and (diff_m % passo_m) == 0:
+                                                ultimo_gg_m = calendar.monthrange(corrente.year, corrente.month)[1]
+                                                cade_oggi = (corrente.day == min(data_start.day, ultimo_gg_m))
+
+                                        if cade_oggi:
+                                            dizionario_eventi.setdefault(d_str, [])
                                             imp_copy = imp.copy()
                                             imp_copy['data_evento'] = d_str 
                                             dizionario_eventi[d_str].append(imp_copy)
