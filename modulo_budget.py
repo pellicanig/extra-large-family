@@ -2347,6 +2347,8 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
             ft.Row([btn_giorno, btn_settimana, btn_mese, btn_riepilogo], spacing=4),
         ],
         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        wrap=True,
+        run_spacing=6,
     )
 
     sezione_filtri = ft.Column([
