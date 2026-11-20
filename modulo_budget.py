@@ -1946,6 +1946,10 @@ def crea_calendario_budget(page: ft.Page, stato_condiviso: dict = None, on_switc
                         movimenti_mese_corrente.append(mov)
             except Exception as ex:
                 print("Errore lettura movimenti_budget:", ex)
+                try:
+                    globals()["supabase"] = create_client(SUPABASE_URL, SUPABASE_KEY)
+                except Exception:
+                    pass
 
         entrate_eff = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO")
         entrate_prev = sum(float(m["importo"] or 0) for m in movimenti_mese_corrente if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "PREVISTO")
