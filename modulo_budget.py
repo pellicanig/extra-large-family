@@ -804,7 +804,7 @@ def apri_form_movimento_budget(
     )
     switch_preavviso_ripeti = ft.Switch(value=preavviso_ripeti_init, scale=0.75)
 
-riga_header_notifica = ft.Row(
+    riga_header_notifica = ft.Row(
         [
             ft.Row([
                 ft.Container(content=switch_notifica, width=38, height=26, alignment=ft.Alignment(0, 0)),
