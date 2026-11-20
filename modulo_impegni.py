@@ -85,9 +85,7 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
 
         switch_on_iniziale = False
         if is_p_db:
-            if data_fine_db is None:
-                switch_on_iniziale = True
-            elif data_fine_db > data_istanza_str:
+            if data_fine_db is None or str(data_fine_db) >= data_istanza_str:
                 switch_on_iniziale = True
 
         val_ev_db = impegno_esistente.get('is_evidenziato') if impegno_esistente else None
@@ -683,10 +681,21 @@ def apri_form_impegno(page: ft.Page, data_selezionata: datetime, on_success_call
                             dati_impegno['date_escluse'] = None
                             res_imp = supabase.table('impegni').insert(dati_impegno).execute()
                             id_op = res_imp.data[0]['id']
-                    else: 
-                        if is_p_db: dati_impegno['data_evento'] = vero_inizio
-                        else: dati_impegno['data_evento'] = data_db
-                            
+                    else:
+                        if is_p_db:
+                            if data_db == data_istanza_str:
+                                dati_impegno['data_evento'] = vero_inizio
+                            elif dati_impegno.get('tipo_periodicita') not in ["SETTIMANALE", "BISETTIMANALE"] and vero_inizio < data_db:
+                                import calendar
+                                dt_v = datetime.strptime(vero_inizio, "%Y-%m-%d")
+                                dt_n = datetime.strptime(data_db, "%Y-%m-%d")
+                                ultimo_g_v = calendar.monthrange(dt_v.year, dt_v.month)[1]
+                                dati_impegno['data_evento'] = dt_v.replace(day=min(dt_n.day, ultimo_g_v)).strftime("%Y-%m-%d")
+                            else:
+                                dati_impegno['data_evento'] = data_db
+                        else:
+                            dati_impegno['data_evento'] = data_db
+
                         supabase.table('impegni').update(dati_impegno).eq('id', impegno_esistente['id']).execute()
                         supabase.table('impegni_familiari').delete().eq('id_impegno', impegno_esistente['id']).execute()
                         id_op = impegno_esistente['id']
