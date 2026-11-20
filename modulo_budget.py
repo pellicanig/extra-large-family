@@ -477,6 +477,69 @@ def _converti_singolo_previsto_in_effettivo_db(mov: dict, data_istanza_str: str,
         }).eq("id", mov["id"]).execute()
 
 
+def _converti_singolo_previsto_in_effettivo_db(mov: dict, data_istanza_str: str, data_eff_db: str, imp_eff: float, forn_clean: str = None):
+    """Trasforma su DB un movimento PREVISTO (singolo o periodico) in EFFETTIVO."""
+    val_p = mov.get("is_periodico")
+    is_p_db = str(val_p).lower() in ["true", "1", "t", "y", "yes"]
+    tipo_mov = str(mov.get("tipo") or "SPESA").upper()
+    titolo_mov = mov.get("titolo") or "Movimento"
+    imp_previsto = float(mov.get("importo") or 0.0)
+    if forn_clean is None:
+        forn_clean = mov.get("fornitore_luogo")
+
+    if forn_clean:
+        salva_fornitore_ente_in_memoria(forn_clean, tipo_mov, mov.get("id_categoria"))
+
+    if is_p_db:
+        res_orig = supabase.table("movimenti_budget").select("date_escluse").eq("id", mov["id"]).execute()
+        escl_attuali = (res_orig.data[0].get("date_escluse") or "") if res_orig.data else (mov.get("date_escluse") or "")
+        lista_escl = [x.strip() for x in escl_attuali.split(",") if x.strip()]
+        if data_istanza_str not in lista_escl:
+            lista_escl.append(data_istanza_str)
+        nuove_escl = ",".join(lista_escl)
+        supabase.table("movimenti_budget").update({"date_escluse": nuove_escl}).eq("id", mov["id"]).execute()
+
+        nuovo_rec = {
+            "tipo": tipo_mov,
+            "stato": "EFFETTIVO",
+            "titolo": titolo_mov,
+            "fornitore_luogo": forn_clean,
+            "importo": imp_eff,
+            "importo_previsto_originale": imp_previsto,
+            "data_movimento": data_eff_db,
+            "id_categoria": mov.get("id_categoria"),
+            "note": mov.get("note"),
+            "is_periodico": False,
+            "tipo_periodicita": None,
+            "giorni_periodici": None,
+            "data_fine_periodo": None,
+            "date_escluse": None,
+            "notifica_attiva": False,
+            "ora_notifica": mov.get("ora_notifica") or "09:00",
+            "preavviso_valore": mov.get("preavviso_valore") or 1,
+            "preavviso_unita": mov.get("preavviso_unita") or "giorni",
+            "preavviso_ripeti": False,
+            "is_evidenziato": bool(mov.get("is_evidenziato", False)),
+        }
+        res_ins = supabase.table("movimenti_budget").insert(nuovo_rec).execute()
+        if res_ins.data:
+            nuovo_id = res_ins.data[0]["id"]
+            for id_f in (mov.get("assegnatari_ids") or []):
+                supabase.table("movimenti_budget_familiari").insert({
+                    "id_movimento": nuovo_id,
+                    "id_familiare": id_f
+                }).execute()
+    else:
+        supabase.table("movimenti_budget").update({
+            "stato": "EFFETTIVO",
+            "data_movimento": data_eff_db,
+            "importo": imp_eff,
+            "importo_previsto_originale": imp_previsto,
+            "fornitore_luogo": forn_clean,
+            "notifica_attiva": False,
+        }).eq("id", mov["id"]).execute()
+
+
 def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callback=None):
     if not supabase:
         return
@@ -619,6 +682,508 @@ def apri_popup_trasforma_in_effettivo(page: ft.Page, mov: dict, on_success_callb
         inset_padding=ft.Padding(12, 16, 12, 16),
     )
     _apri_dlg(page, dlg_conv)
+
+
+# ==========================================================
+# POPUP ALLINEAMENTO BANCARIO GUIDATO + POPUP CONSIGLIO SPESE EFFETTIVE
+# ==========================================================
+def apri_popup_allineamento_bancario(page: ft.Page, data_rif: datetime, tutti_movimenti_mese: list, on_success_callback=None):
+    if not supabase:
+        return
+
+    anno_r, mese_r = data_rif.year, data_rif.month
+    nome_mese_r = f"{MESI[mese_r]} {anno_r}"
+    oggi_dt = datetime.now()
+    if oggi_dt.year == anno_r and oggi_dt.month == mese_r:
+        dt_default_all = oggi_dt
+    else:
+        ultimo_gg = calendar.monthrange(anno_r, mese_r)[1]
+        dt_default_all = data_rif.replace(day=min(data_rif.day, ultimo_gg))
+
+    mov_list = list(tutti_movimenti_mese or [])
+    entrate_eff_tot = sum(float(m.get("importo") or 0) for m in mov_list if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO")
+    spese_eff_tot = sum(float(m.get("importo") or 0) for m in mov_list if m.get("tipo") == "SPESA" and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO")
+    entrate_prev_tot = sum(float(m.get("importo") or 0) for m in mov_list if m.get("tipo") == "ENTRATA" and normalizza_stato_budget(m.get("stato")) == "PREVISTO")
+    spese_prev_tot = sum(float(m.get("importo") or 0) for m in mov_list if m.get("tipo") == "SPESA" and normalizza_stato_budget(m.get("stato")) == "PREVISTO")
+
+    cassa_oggi_app = round(entrate_eff_tot - spese_eff_tot, 2)
+    allineamento_esistente_netto = round(sum(
+        (float(m.get("importo") or 0) if m.get("tipo") == "ENTRATA" else -float(m.get("importo") or 0))
+        for m in mov_list
+        if is_movimento_allineamento(m) and normalizza_stato_budget(m.get("stato")) == "EFFETTIVO"
+    ), 2)
+
+    previsti_mese = [
+        m for m in mov_list
+        if normalizza_stato_budget(m.get("stato")) == "PREVISTO" and not is_movimento_allineamento(m)
+    ]
+    previsti_mese.sort(key=lambda x: (str(x.get("data_movimento") or ""), str(x.get("titolo") or "")))
+
+    txt_saldo_banca = ft.TextField(
+        label="🏛️ Saldo Reale attuale in Banca (€)",
+        hint_text="Es. 1250,00",
+        value=f"{cassa_oggi_app:.2f}".replace(".", ","),
+        dense=True,
+        text_size=14,
+        autofocus=True,
+        expand=True,
+    )
+
+    def formatta_data_all(e):
+        val_pulito = "".join([c for c in (txt_data_all.value or "") if c.isdigit()])
+        ris = ""
+        for i, num in enumerate(val_pulito):
+            if i in (2, 4):
+                ris += "/"
+            ris += num
+        ris = ris[:10]
+        if txt_data_all.value != ris:
+            txt_data_all.value = ris
+            page.update()
+
+    txt_data_all = ft.TextField(
+        label="Data",
+        value=dt_default_all.strftime("%d/%m/%Y"),
+        on_change=formatta_data_all,
+        dense=True,
+        text_size=12,
+        width=105,
+        text_align=ft.TextAlign.CENTER,
+    )
+
+    righe_spunta_previsti = []
+    col_previsti_ui = ft.Column(spacing=4, tight=True)
+
+    lbl_cassa_app = ft.Text("", size=11.5, color=ft.Colors.GREY_800)
+    lbl_diff_tot = ft.Text("", size=11.5, weight=ft.FontWeight.BOLD)
+    lbl_coperto_spunte = ft.Text("", size=11.5, color=ft.Colors.BLUE_900)
+    lbl_rettifica_finale = ft.Text("", size=12, weight=ft.FontWeight.BOLD)
+    lbl_nuova_previsione = ft.Text("", size=12.5, weight=ft.FontWeight.BOLD)
+    txt_err_all = ft.Text("", color=ft.Colors.RED_700, size=11.5, weight=ft.FontWeight.BOLD, visible=False)
+
+    def ricalcola_anteprima_allineamento(e=None):
+        saldo_banca = parse_importo(txt_saldo_banca.value)
+        diff_totale = round(saldo_banca - cassa_oggi_app, 2)
+
+        delta_cassa_spuntate = 0.0
+        entrate_prev_spuntate_orig = 0.0
+        spese_prev_spuntate_orig = 0.0
+        num_spuntate = 0
+
+        for item_sp in righe_spunta_previsti:
+            if item_sp["chk"].value:
+                num_spuntate += 1
+                imp_eff_riga = parse_importo(item_sp["tf_imp"].value)
+                imp_orig_riga = float(item_sp["mov"].get("importo") or 0.0)
+                if str(item_sp["mov"].get("tipo") or "SPESA").upper() == "ENTRATA":
+                    delta_cassa_spuntate += imp_eff_riga
+                    entrate_prev_spuntate_orig += imp_orig_riga
+                else:
+                    delta_cassa_spuntate -= imp_eff_riga
+                    spese_prev_spuntate_orig += imp_orig_riga
+
+        delta_cassa_spuntate = round(delta_cassa_spuntate, 2)
+        delta_residuo_non_spiegato = round(diff_totale - delta_cassa_spuntate, 2)
+        nuovo_allineamento_mese = round(allineamento_esistente_netto + delta_residuo_non_spiegato, 2)
+
+        entrate_prev_residue = max(0.0, round(entrate_prev_tot - entrate_prev_spuntate_orig, 2))
+        spese_prev_residue = max(0.0, round(spese_prev_tot - spese_prev_spuntate_orig, 2))
+        nuova_previsione_fine_mese = round(saldo_banca + entrate_prev_residue - spese_prev_residue, 2)
+
+        lbl_cassa_app.value = f"🏦 Cassa Oggi in App (prima): {formatta_euro(cassa_oggi_app)}"
+        segno_d = "+" if diff_totale > 0 else ""
+        lbl_diff_tot.value = f"⚖️ Differenza Banca vs App: {segno_d}{formatta_euro(diff_totale)}"
+        lbl_diff_tot.color = "#1B5E20" if abs(diff_totale) < 0.01 else ("#1565C0" if diff_totale > 0 else "#C62828")
+
+        segno_sp = "+" if delta_cassa_spuntate > 0 else ""
+        lbl_coperto_spunte.value = f"✅ Voci Previste spuntate ({num_spuntate}): {segno_sp}{formatta_euro(delta_cassa_spuntate)}"
+
+        if abs(nuovo_allineamento_mese) < 0.01:
+            lbl_rettifica_finale.value = "🏦 Voce 'Allineamento Bancario': 0,00 € (Nessuna forzatura)"
+            lbl_rettifica_finale.color = "#2E7D32"
+        elif nuovo_allineamento_mese > 0:
+            lbl_rettifica_finale.value = f"🏦 Voce 'Allineamento Bancario': +{formatta_euro(nuovo_allineamento_mese)} (Entrata forzata)"
+            lbl_rettifica_finale.color = "#E65100"
+        else:
+            lbl_rettifica_finale.value = f"🏦 Voce 'Allineamento Bancario': {formatta_euro(nuovo_allineamento_mese)} (Uscita forzata)"
+            lbl_rettifica_finale.color = "#C62828"
+
+        lbl_nuova_previsione.value = (
+            f"🔮 Nuova Previsione Fine Mese: {formatta_euro(nuova_previsione_fine_mese)}\n"
+            f"   (Banca {formatta_euro(saldo_banca)} + Entr.Prev {formatta_euro(entrate_prev_residue)} - Spese Prev {formatta_euro(spese_prev_residue)})"
+        )
+        lbl_nuova_previsione.color = "#1B5E20" if nuova_previsione_fine_mese >= 0 else "#C62828"
+
+        if e is not None:
+            try:
+                page.update()
+            except Exception:
+                pass
+
+    txt_saldo_banca.on_change = ricalcola_anteprima_allineamento
+
+    oggi_str_cmp = oggi_dt.strftime("%Y-%m-%d")
+    if not previsti_mese:
+        col_previsti_ui.controls.append(
+            ft.Text("Nessuna spesa o entrata prevista in attesa in questo mese.", size=11, italic=True, color=ft.Colors.GREY_600)
+        )
+    else:
+        for mp in previsti_mese:
+            d_m = str(mp.get("data_movimento") or "")[:10]
+            try:
+                d_vis = datetime.strptime(d_m, "%Y-%m-%d").strftime("%d/%m")
+            except Exception:
+                d_vis = d_m
+            is_scad_o_oggi = (d_m <= oggi_str_cmp)
+            tipo_m = str(mp.get("tipo") or "SPESA").upper()
+            imp_m = float(mp.get("importo") or 0.0)
+            tit_m = mp.get("fornitore_luogo") or mp.get("titolo") or "Movimento"
+            if mp.get("fornitore_luogo") and mp.get("titolo") and mp["fornitore_luogo"].lower() not in mp["titolo"].lower():
+                tit_m = f"{mp['titolo']} ({mp['fornitore_luogo']})"
+
+            chk_p = ft.Checkbox(value=False, on_change=ricalcola_anteprima_allineamento)
+            tf_imp_p = ft.TextField(
+                value=f"{imp_m:.2f}".replace(".", ","),
+                width=76,
+                dense=True,
+                text_size=11.5,
+                content_padding=ft.Padding(6, 6, 6, 6),
+                text_align=ft.TextAlign.RIGHT,
+                on_change=ricalcola_anteprima_allineamento,
+            )
+            righe_spunta_previsti.append({"mov": mp, "chk": chk_p, "tf_imp": tf_imp_p, "data_istanza": d_m})
+
+            badge_col = "#C62828" if tipo_m == "SPESA" else "#2E7D32"
+            pref_segno = "-" if tipo_m == "SPESA" else "+"
+            col_previsti_ui.controls.append(
+                ft.Container(
+                    content=ft.Row([
+                        chk_p,
+                        ft.Column([
+                            ft.Text(
+                                f"{'⚠️ ' if is_scad_o_oggi else '📅 '}{d_vis} • {tit_m}",
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.BLACK,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            ft.Text(
+                                f"{'Spesa Prevista' if tipo_m == 'SPESA' else 'Entrata Prevista'} ({pref_segno}{formatta_euro(imp_m)})",
+                                size=9.5,
+                                color=badge_col,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ], spacing=1, expand=True),
+                        tf_imp_p,
+                    ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    bgcolor="#FFF8E1" if is_scad_o_oggi else ft.Colors.WHITE,
+                    padding=ft.Padding(4, 3, 6, 3),
+                    border_radius=6,
+                    border=ft.Border(
+                        left=ft.BorderSide(3.5, badge_col),
+                        top=ft.BorderSide(1, "#FFE082" if is_scad_o_oggi else "#E0E0E0"),
+                        bottom=ft.BorderSide(1, "#FFE082" if is_scad_o_oggi else "#E0E0E0"),
+                        right=ft.BorderSide(1, "#FFE082" if is_scad_o_oggi else "#E0E0E0"),
+                    ),
+                )
+            )
+
+    ricalcola_anteprima_allineamento()
+    dlg_all = None
+
+    def esegui_salvataggio_allineamento_db(spuntate_da_convertire, nuovo_allineamento_mese, data_all_db, saldo_banca, dt_all_obj):
+        if not inizia_operazione(page):
+            return
+
+        def worker():
+            try:
+                for mov_p, d_ist_p, imp_eff_p in spuntate_da_convertire:
+                    _converti_singolo_previsto_in_effettivo_db(mov_p, d_ist_p, data_all_db, imp_eff_p)
+
+                imposta_allineamento_netto_mese_db(
+                    anno_r,
+                    mese_r,
+                    nuovo_allineamento_mese,
+                    data_db=data_all_db,
+                    nota_extra=f"Allineamento saldo conto bancario a {formatta_euro(saldo_banca)} ({dt_all_obj.strftime('%d/%m/%Y')})",
+                )
+                _chiudi_dlg(page, dlg_all)
+                page.pubsub.send_all("aggiorna_budget")
+            except Exception as ex:
+                txt_err_all.value = f"⚠️ Errore salvataggio allineamento: {ex}"
+                txt_err_all.visible = True
+                page.update()
+            finally:
+                termina_operazione(page)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def apri_popup_consiglio_forzatura(delta_residuo, spuntate_da_convertire, nuovo_allineamento_mese, data_all_db, saldo_banca, dt_all_obj):
+        """
+        Popup che avvisa l'utente quando sta forzando il saldo della banca con una differenza non spiegata
+        e consiglia di registrare/allineare invece le Spese o Entrate Effettive reali.
+        """
+        dlg_consiglio = None
+        is_uscita_mancante = (delta_residuo < 0)
+        tipo_consigliato = "SPESA" if is_uscita_mancante else "ENTRATA"
+        testo_diff = formatta_euro(abs(delta_residuo))
+
+        def vai_a_inserire_spesa_effettiva(ev):
+            _chiudi_dlg(page, dlg_consiglio)
+            _chiudi_dlg(page, dlg_all)
+            apri_form_movimento_budget(
+                page,
+                dt_all_obj,
+                on_success_callback,
+                modalita_sporadica=True,
+                tipo_default=tipo_consigliato,
+            )
+
+        def torna_a_spuntare_previste(ev):
+            _chiudi_dlg(page, dlg_consiglio)
+
+        def forza_comunque_banca(ev):
+            _chiudi_dlg(page, dlg_consiglio)
+            esegui_salvataggio_allineamento_db(
+                spuntate_da_convertire,
+                nuovo_allineamento_mese,
+                data_all_db,
+                saldo_banca,
+                dt_all_obj,
+            )
+
+        dlg_consiglio = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.Icons. tips_and_updates if hasattr(ft.Icons, "tips_and_updates") else ft.Icons.WARNING_AMBER_ROUNDED, color="#E65100", size=22),
+                ft.Text("Consiglio: Meglio allineare le Spese!", size=14.5, weight=ft.FontWeight.BOLD, color="#E65100", expand=True),
+            ], spacing=6),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        content=ft.Text(
+                            f"⚠️ Stai per forzare la banca con una differenza non spiegata di {'-' if is_uscita_mancante else '+'}{testo_diff}.",
+                            size=12.5,
+                            weight=ft.FontWeight.BOLD,
+                            color="#B71C1C" if is_uscita_mancante else "#1B5E20",
+                        ),
+                        bgcolor="#FFEBEE" if is_uscita_mancante else "#E8F5E9",
+                        padding=8,
+                        border_radius=6,
+                    ),
+                    ft.Text(
+                        "💡 Sarebbe molto meglio allineare le Spese/Entrate Effettive anziché forzare il saldo della banca:\n"
+                        "• Se questa differenza dipende da una Spesa o Entrata Prevista già passata sul conto, torna indietro e spuntala dall'elenco.\n"
+                        "• Se invece hai dimenticato di registrare una o più Spese/Entrate Effettive, inseriscile ora: in questo modo le statistiche per categoria e la Previsione Fine Mese resteranno esatte al 100%!",
+                        size=11.5,
+                        color=ft.Colors.GREY_800,
+                    ),
+                    ft.Divider(height=4),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.ADD_TASK, color=ft.Colors.WHITE, size=16),
+                            ft.Text(
+                                f"⚡ Registra ora {'Spesa' if is_uscita_mancante else 'Entrata'} Effettiva ({testo_diff})",
+                                color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                size=11.5,
+                            ),
+                        ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+                        bgcolor="#2E7D32",
+                        padding=10,
+                        border_radius=6,
+                        on_click=vai_a_inserire_spesa_effettiva,
+                    ),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.CHECKLIST, color=ft.Colors.BLUE_900, size=16),
+                            ft.Text(
+                                "🔙 Torna a spuntare le Voci Previste",
+                                color=ft.Colors.BLUE_900,
+                                weight=ft.FontWeight.BOLD,
+                                size=11.5,
+                            ),
+                        ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+                        bgcolor="#E3F2FD",
+                        padding=9,
+                        border_radius=6,
+                        border=ft.Border(
+                            top=ft.BorderSide(1, "#1976D2"),
+                            bottom=ft.BorderSide(1, "#1976D2"),
+                            left=ft.BorderSide(1, "#1976D2"),
+                            right=ft.BorderSide(1, "#1976D2"),
+                        ),
+                        on_click=torna_a_spuntare_previste,
+                    ),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.ACCOUNT_BALANCE, color=ft.Colors.WHITE, size=15),
+                            ft.Text(
+                                "⚖️ Forza comunque Allineamento Bancario",
+                                color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                size=11,
+                            ),
+                        ], alignment=ft.MainAxisAlignment.CENTER, spacing=6),
+                        bgcolor="#E65100",
+                        padding=9,
+                        border_radius=6,
+                        on_click=forza_comunque_banca,
+                    ),
+                ], spacing=8, tight=True),
+                width=335,
+            ),
+            shape=ft.RoundedRectangleBorder(radius=10),
+            content_padding=12,
+            inset_padding=ft.Padding(12, 16, 12, 16),
+        )
+        _apri_dlg(page, dlg_consiglio)
+
+    def conferma_allineamento(e):
+        txt_err_all.visible = False
+        if (txt_saldo_banca.value or "").strip() == "":
+            txt_err_all.value = "⚠️ Inserisci il saldo reale presente in banca."
+            txt_err_all.visible = True
+            page.update()
+            return
+
+        try:
+            dt_all_obj = datetime.strptime((txt_data_all.value or "").strip(), "%d/%m/%Y")
+            data_all_db = dt_all_obj.strftime("%Y-%m-%d")
+        except Exception:
+            txt_err_all.value = "⚠️ Data non valida! Usa GG/MM/AAAA."
+            txt_err_all.visible = True
+            page.update()
+            return
+
+        saldo_banca = parse_importo(txt_saldo_banca.value)
+        diff_totale = round(saldo_banca - cassa_oggi_app, 2)
+
+        spuntate_da_convertire = []
+        delta_cassa_spuntate = 0.0
+        for item_sp in righe_spunta_previsti:
+            if item_sp["chk"].value:
+                imp_eff_r = parse_importo(item_sp["tf_imp"].value)
+                if imp_eff_r <= 0:
+                    txt_err_all.value = "⚠️ Gli importi delle voci spuntate devono essere maggiori di 0."
+                    txt_err_all.visible = True
+                    page.update()
+                    return
+                spuntate_da_convertire.append((item_sp["mov"], item_sp["data_istanza"], imp_eff_r))
+                if str(item_sp["mov"].get("tipo") or "SPESA").upper() == "ENTRATA":
+                    delta_cassa_spuntate += imp_eff_r
+                else:
+                    delta_cassa_spuntate -= imp_eff_r
+
+        delta_residuo = round(diff_totale - delta_cassa_spuntate, 2)
+        nuovo_allineamento_mese = round(allineamento_esistente_netto + delta_residuo, 2)
+
+        # Se c'è una forzatura residua non spiegata (>= 0.01 €), apre il popup che consiglia di allineare le spese effettive!
+        if abs(delta_residuo) >= 0.01:
+            apri_popup_consiglio_forzatura(
+                delta_residuo,
+                spuntate_da_convertire,
+                nuovo_allineamento_mese,
+                data_all_db,
+                saldo_banca,
+                dt_all_obj,
+            )
+            return
+
+        esegui_salvataggio_allineamento_db(
+            spuntate_da_convertire,
+            nuovo_allineamento_mese,
+            data_all_db,
+            saldo_banca,
+            dt_all_obj,
+        )
+
+    dlg_all = ft.AlertDialog(
+        title=ft.Text(f"⚖️ Allinea Cassa con Banca ({nome_mese_r})", size=14.5, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Text(
+                        "💡 CONSIGLIO: È sempre preferibile inserire le Spese/Entrate Effettive reali o spuntare qui sotto le Previste già addebitate, usando la forzatura bancaria solo come ultima risorsa.",
+                        size=10.5,
+                        color="#E65100",
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    bgcolor="#FFF8E1",
+                    padding=6,
+                    border_radius=6,
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "#FFE082"),
+                        bottom=ft.BorderSide(1, "#FFE082"),
+                        left=ft.BorderSide(1, "#FFE082"),
+                        right=ft.BorderSide(1, "#FFE082"),
+                    ),
+                ),
+                ft.Text(
+                    "1️⃣ Inserisci il saldo reale che leggi sul conto in banca:",
+                    size=11.5,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.BLUE_900,
+                ),
+                ft.Row([txt_saldo_banca, txt_data_all], spacing=6),
+                ft.Divider(height=4),
+                ft.Text(
+                    "2️⃣ Spunta le Spese o Entrate PREVISTE già passate nel saldo in banca (così diventano Effettive e non falsano la Previsione Fine Mese):",
+                    size=11,
+                    weight=ft.FontWeight.BOLD,
+                    color="#1565C0",
+                ),
+                ft.Container(
+                    content=ft.Column([col_previsti_ui], scroll=ft.ScrollMode.AUTO, tight=True),
+                    height=min(175, max(55, len(previsti_mese) * 52)),
+                    bgcolor="#F8F9FA",
+                    padding=6,
+                    border_radius=6,
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "#CFD8DC"),
+                        bottom=ft.BorderSide(1, "#CFD8DC"),
+                        left=ft.BorderSide(1, "#CFD8DC"),
+                        right=ft.BorderSide(1, "#CFD8DC"),
+                    ),
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        lbl_cassa_app,
+                        lbl_diff_tot,
+                        lbl_coperto_spunte,
+                        lbl_rettifica_finale,
+                        ft.Divider(height=4),
+                        lbl_nuova_previsione,
+                    ], spacing=3, tight=True),
+                    bgcolor="#E8F5E9",
+                    padding=8,
+                    border_radius=8,
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "#81C784"),
+                        bottom=ft.BorderSide(1, "#81C784"),
+                        left=ft.BorderSide(1, "#81C784"),
+                        right=ft.BorderSide(1, "#81C784"),
+                    ),
+                ),
+                txt_err_all,
+            ], spacing=6, tight=True, scroll=ft.ScrollMode.AUTO),
+            width=345,
+        ),
+        actions=[
+            ft.TextButton("Annulla", on_click=lambda e: _chiudi_dlg(page, dlg_all)),
+            ft.Container(
+                content=ft.Text("⚖️ Applica Allineamento", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=12),
+                bgcolor=ft.Colors.BLUE_900,
+                padding=ft.Padding(12, 8, 12, 8),
+                border_radius=6,
+                on_click=conferma_allineamento,
+            ),
+        ],
+        shape=ft.RoundedRectangleBorder(radius=10),
+        content_padding=12,
+        inset_padding=ft.Padding(10, 12, 10, 12),
+    )
+    _apri_dlg(page, dlg_all)
 
 
 # ==========================================================
